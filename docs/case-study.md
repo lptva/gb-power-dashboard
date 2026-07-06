@@ -1,123 +1,30 @@
-# Case study: a GB power-market dashboard built on free data — and what it took to keep it honest
+# Case study: a GB power-market dashboard built on free data – and what it took to keep it honest
 
 ## The problem
 
-Commodity desks pay for terminals (Kpler, Refinitiv, Bloomberg) that show,
-at a glance, what a power market is doing and why: price against demand and
-wind, which technology is setting the price, whether gas plant is making
-money, which interconnectors are flowing. This project builds that view for
-Great Britain entirely from free public data — Elexon settlement feeds,
-Sheffield Solar's PV_Live, National Gas, gov.uk carbon prices, World Bank
-coal, Bank of England FX, and ENTSO-E for six neighbouring markets. The
-audience is an analyst who wants a defensible morning picture, not a toy:
-every number on screen is badged **Observed**, **Estimated**, **Proxy** or
-**Assumption**, and the central engineering problem turned out to be less
-"fetch and chart" than "never let a derived number masquerade as an
-observed one."
+Commodity desks pay for terminals (Kpler, Refinitiv, Bloomberg) that show, at a glance, what a power market is doing and why: price against demand and wind, which technology is setting the price, whether a gas plant is making money, which interconnectors are flowing. This project builds that view for Great Britain entirely from free public data: Elexon settlement feeds, Sheffield Solar's PV_Live, National Gas, gov.uk carbon prices, World Bank coal, Bank of England FX, and ENTSO-E for six neighbouring markets. The audience is an analyst who wants a defensible morning picture, not a toy: every number on screen is badged **Observed**, **Estimated**, **Proxy** or **Assumption**, and the central engineering problem turned out to be less "fetch and chart" than "never let a derived number masquerade as an observed one."
 
-It is a static site with no build step: a stdlib-Python ETL (~160 chunked
-API calls, 3–5 minutes for a full year; ~10 calls and seconds for the daily
-incremental run) publishes ~2.3 MB of columnar JSON behind a versioned
-manifest, and plain JavaScript renders it. A failed refresh cannot corrupt
-the published dataset — a validation guard refuses to publish a merged
-series whose time axis is broken or whose coverage drops.
+It is a static site with no build step: a stdlib-Python ETL (~160 chunked API calls, 3–5 minutes for a full year; ~10 calls and seconds for the daily incremental run) publishes ~2.3 MB of columnar JSON behind a versioned manifest, and plain JavaScript renders it. A failed refresh cannot corrupt the published dataset – a validation guard refuses to publish a merged series whose time axis is broken or whose coverage drops.
 
 ## Decisions and their trade-offs
 
-**A plant-level "bid stack" was scoped down to an observed dispatch
-snapshot — before any feature code was written.** The obvious flagship
-feature was an ERCOT-style supply curve of actual plant bids. A one-day
-investigation script (run before committing to the build, with written
-no-go criteria) established that free data cannot support it: physical
-notifications (PN) carry a unit's intended output but **no prices**, and
-the balancing-acceptance feed is 6.3 MB/day — too heavy for a static data
-folder. Rather than fake it, the feature shipped as what the data *can*
-say: a per-unit dispatch curve for the latest settlement period (564 units,
-25.7 GW notified, 95.4% of MW joined to a fuel type), explicitly captioned
-as observed *intent* priced by a modelled cluster cost, sitting beside —
-not replacing — the SRMC merit-order model. The trade-off is a less
-impressive headline; the gain is that nothing on the panel is invented.
+**A plant-level "bid stack" was scoped down to an observed dispatch snapshot – before any feature code was written.** The obvious flagship feature was an ERCOT-style supply curve of actual plant bids. A one-day investigation script (run before committing to the build, with written
+no-go criteria) established that free data cannot support it: physical notifications (PN) carry a unit's intended output, but **no prices**, and the balancing-acceptance feed is 6.3 MB/day – too heavy for a static data folder. Rather than fake it, the feature shipped as what the data *can* say: a per-unit dispatch curve for the latest settlement period (564 units, 25.7 GW notified, 95.4% of MW joined to a fuel type), explicitly captioned as observed *intent* priced by a modelled cluster cost, sitting beside – not replacing – the SRMC merit-order model. The trade-off is a less impressive headline; the gain is that nothing on the panel is invented.
 
-**An API layer was evaluated and deliberately not built.** FastAPI + DuckDB
-was the "productionise it" reflex. The written verdict
-(`plan/03-api-layer.md`): one consumer, a 2.3 MB payload, and a
-static-host deployment story do not justify a server process to run and
-secure. The decision is recorded with explicit revisit triggers (a second
-consumer; multi-zone payloads pushing initial load past ~10 MB; windows
-beyond the shipped year) so it is a checkpoint, not a permanent opinion.
-Saying no to plausible architecture — in writing, with reversal conditions
-— was cheaper than maintaining it.
+**An API layer was evaluated and deliberately not built.** FastAPI + DuckDB was the "productionise it" reflex. The written verdict (`plan/03-api-layer.md`): one consumer *(me)*, a 2.3 MB payload, and a static-host deployment story do not justify running and securing a server process. The decision is recorded with explicit revisit triggers (a *second* consumer – let me be optimistic!; multi-zone payloads pushing initial load past ~10 MB; windows beyond the shipped year), so it is a checkpoint, not a permanent opinion. Saying no to plausible architecture (in writing, with reversal conditions) was cheaper than maintaining it.
 
-**LLM-generated commentary is allowed only behind a deterministic guard —
-because it invented numbers twice.** The dashboard's one AI feature is an
-overnight briefing written by a small LLM agent from the published data,
-rendered in a visually distinct panel badged *AI-generated*. Two failures
-shaped the design. First, asked to compare the merit-order panel's implied
-clearing price with the observed price, the model substituted its own
-arithmetic — a "24-hour average" instead of the panel's marked price, and
-a single-point SRMC instead of the tranche model. Second, even with correct
-figures supplied, its prose cited "a standard 55% efficiency and
-0.40 tCO2/MWh" — parameters that appear nowhere in the methodology
-(reference: η 0.50 HHV, 0.184 tCO2/MWh thermal). The fix moved every
-checkable number out of the model's hands: a Python module recomputes the
-panel's exact figures deterministically and injects them into the prompt,
-and the publish gate rejects any summary whose figures deviate, or whose
-prose quotes an efficiency or carbon intensity outside the documented
-reference set. The LLM's job contracted to the one thing it is good at —
-causal narrative — and a failed run leaves the previous briefing untouched.
+**LLM-generated commentary is allowed only behind a deterministic guard – because it invented numbers before.** The dashboard's one AI feature is an overnight briefing written by a small LLM agent from the published data, rendered in a visually distinct panel badged as *AI-generated*. The LLM's job is contracted to the one thing it is good at – causal narrative – and a failed run leaves the previous briefing untouched.
 
-**Zone history is append-only, with the storage bill quoted before the
-code.** The European context panels originally kept a rolling ~30-day
-window. Making them deepen over time cost, measured: 5–8 kB/day per zone,
-~15 MB/year across all seven — trivial, so retention shipped, but with a
-`--retain-days` fallback and merge guards that refuse to publish a shorter
-or non-monotonic history than what is already live.
+**Zone history is append-only, with the storage bill quoted before the code.** The European context panels originally kept a rolling ~30-day window. Making them deepen over time cost, measured: 5–8 kB/day per zone, ~15 MB/year across all seven – trivial, so retention shipped, but with a `--retain-days` fallback and merge guards that refuse to publish a shorter or non-monotonic history than what is already live.
 
 ## The process that catches bad data
 
-The findings that matter here were not visible on any chart; they were
-caught by a standing rule: **no claim about a data gap survives without
-reading the raw source response.**
+The findings that matter here were not visible on any chart; they were caught by a standing rule: **no claim about a data gap survives without reading the raw source response.**
 
-Ireland's solar series appeared to be missing 1,377 half-hours. The lazy
-explanation ("patchy TSO reporting") was rejected, and the raw ENTSO-E XML
-showed the real cause: under curve type A03, an omitted position legally
-carries its value to the period's declared *end*, and the parser was
-writing one half-hour where the TSO meant days. After the fix, 34 genuinely
-missing half-hours remained. Applying the *same* audit to Norway then
-exposed a second parser defect — periods starting at :15/:45 were being
-silently discarded by the half-hour axis snap — which retracted two
-"genuine TSO outage" claims made earlier the same day (Norway's "805
-missing half-hours" and most of Denmark's "2.6-day outage" turned out to
-be data the pipeline had dropped). The retractions are recorded, dated, in
-the changelog. Ireland's solar then failed a third, subtler way: present,
-gap-free, and *constantly zero* — the TSO publishes a placeholder for a
-fleet it cannot meter. That became a detected data-quality class of its
-own ("reported but constant zero", which also caught Dutch hydro and
-Belgian nuclear), excluded from KPIs and exports but retained in the raw
-files, with the note shown on the Methodology tab.
+Ireland's solar series appeared to be missing 1,377 half-hours. The lazy explanation ("patchy TSO reporting") was rejected, and the raw ENTSO-E XML showed the real cause: under curve type A03, an omitted position legally carries its value to the period's declared *end*, and the parser was writing one half-hour where the TSO meant days. After the fix, 34 genuinely missing half-hours remained. Applying the *same* audit to Norway then exposed a second parser defect (periods starting at :15/:45 were being silently discarded by the half-hour axis snap), which retracted two "genuine TSO outage" claims made earlier the same day (Norway's "805 missing half-hours" and most of Denmark's "2.6-day outage" turned out to be data the pipeline had dropped). The retractions are recorded and dated in the changelog. Ireland's solar then failed in a third, subtler way: present, gap-free, and *constantly zero* – the TSO publishes a placeholder for a fleet it cannot meter. That became a detected data-quality class of its own ("reported but constant zero", which also caught Dutch hydro and Belgian nuclear), excluded from KPIs and exports but retained in the raw files, with the note shown on the Methodology tab.
 
-Each incident ends the same way: the lesson is encoded so it cannot recur
-silently. Off-grid timestamps are now a hard build failure, not a drop.
-Per-zone data-quality notes are computed at build time, not written by
-hand. And the two components with a track record of catching real bugs —
-the merit-figure recompute and the publish gate — have their own test
-suite (17 stdlib-`unittest` tests on fixtures sliced from real published
-data, with expected values produced by the app's own JavaScript in a
-browser). Building that oracle immediately caught one more live bug: the
-Python guard rounded 11.225 to 11.23 where JavaScript's `toFixed`,
-operating on the binary double, produces 11.22.
+Each incident ends the same way: the lesson is encoded so it cannot recur silently. Off-grid timestamps are now a hard build failure, not a drop. Per-zone data-quality notes are computed at build time, not written by hand. And the two components with a track record of catching real bugs – the merit-figure recompute and the publish gate – have their own test suite (17 stdlib-`unittest` tests on fixtures sliced from real published data, with expected values produced by the app's own JavaScript in a browser). Building that oracle immediately caught one more live bug: the Python guard rounded 11.225 to 11.23, where JavaScript's `toFixed`, operating on the binary double, produces 11.22.
 
 ## Where it stands
 
-Seven tabs (price, generation, merit order, spreads, flows, plus per-zone
-methodology), seven European zones with append-only history (six physical
-GB counterparties plus one labelled reference market), a
-daily scheduled refresh with atomic publishes, and a changelog that records
-what was retracted alongside what was shipped. The honest limitations are
-documented where a reviewer will look: MID is a proxy for the spot price,
-~6 GW of embedded wind is invisible to every free source, merit-curve
-capacity is an output-derived proxy, and the coal benchmark is Newcastle
-FOB standing in for API2. The project's one-line summary: free data can
-support a professional market view, provided the engineering treats "what
-exactly does this number mean, and can I prove it" as the primary feature.
+Seven tabs (price, generation, merit order, spreads, flows, plus per-zone methodology), seven European zones with append-only history (six physical GB counterparties plus one labelled reference market), a daily scheduled refresh with atomic publishes, and a changelog that records what was retracted alongside what was shipped. The honest limitations are documented where a reviewer will look: MID is a proxy for the spot price, ~6 GW of embedded wind is invisible to every free source, merit-curve capacity is an output-derived proxy, and the coal benchmark is Newcastle FOB standing in for API2. **The project's one-line summary:** free data can support a professional market view, provided the engineer treats *"what exactly does this number mean, and can I prove it?"* as the primary feature.
