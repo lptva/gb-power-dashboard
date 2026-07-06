@@ -331,6 +331,17 @@ def write_zone(zone: str, hh: dict, start: date, end: date,
                 "mandatory only for technologies above ~1% of national "
                 "generation, so small fleets are commonly absent")
             continue
+        if all(v == 0 for v in (col[i] for i in present)):
+            data_quality.append(
+                f"{column}: reported but CONSTANT ZERO for the entire "
+                "window. Two possible readings — fleet that genuinely did "
+                "not run, or a TSO placeholder for capacity it does not "
+                "meter (SEM's distribution-connected solar is a known "
+                "placeholder case). The zeros carry no information beyond "
+                "this note, so the column is excluded from KPI cards, "
+                "charts and CSV exports; raw values are retained in the "
+                "data files")
+            continue
         runs, start_i = [], None
         for i in range(present[0], present[-1] + 1):
             if col[i] is None and start_i is None:

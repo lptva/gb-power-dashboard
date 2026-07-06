@@ -182,6 +182,27 @@ live in `plan/`.
   genuinely absent — confirmed at raw-XML level: no B16 TimeSeries in the
   A75 response. IE's inter-period gaps stand as genuine.
 
+### IE constant-zero solar + hardcoded-label audit (2026-07-06, follow-up)
+- **IE solar zeros were the TSO's own data, not a pipeline bug** — verified
+  at every layer with cache bypassed: every B16 point EirGrid/SONI
+  publishes (18 periods, production and consumption series alike) is
+  exactly 0.0; the A03 fill faithfully expanded those zeros; `toCsv` writes
+  null as empty string, never 0. SEM's ~1 GW of solar is
+  distribution-connected and invisible to TSO metering, so the published
+  series is a placeholder.
+- **New data-quality class: "reported but constant zero"** — detected at
+  build time (also caught NL hydro and BE nuclear; wording deliberately
+  neutral between "genuinely idle fleet" and "unmetered-fleet placeholder").
+  Constant-zero columns are excluded from KPI cards, the wind/solar chart
+  and CSV exports — their zeros carry no information beyond the note — but
+  raw values are retained in the data files, and the Methodology tab shows
+  the note.
+- **Hardcoded GB label audit**: "Solar (PV_Live)" / "Wind (transmission)" /
+  "Demand (INDO)" now render only for GB ("Solar (ENTSO-E)",
+  "Wind (ENTSO-E, on+offshore)", "Demand (ENTSO-E load)" elsewhere); the
+  price-vs-net-load panel is hidden off-GB (its formula is the GB-specific
+  INDO − transmission wind, matching the residual-load treatment).
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

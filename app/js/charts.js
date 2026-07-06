@@ -314,6 +314,13 @@ const Charts = (() => {
      all embedded generation (incl. PV_Live solar), so solar is NOT
      subtracted again — it is carried only as tooltip context. */
   function priceNetLoad() {
+    // GB-only: net load = INDO − transmission wind is a GB-specific
+    // definition (see plan/04) — hide rather than plot a mislabelled
+    // series for ENTSO-E zones, matching the residual-load card.
+    const card = document.getElementById("ch-price-netload").closest(".card");
+    const away = State.get().zone !== "GB";
+    card.classList.toggle("hidden", away);
+    if (away) return;
     const st = State.get();
     const { fromTs, toTs } = State.window();
     const [lo, hi] = Data.hhRange(fromTs, toTs);
@@ -407,7 +414,9 @@ const Charts = (() => {
     });
     if (st.genDemandLine && !st.genPercent) {
       const demand = Data.aggregate("demand", fromTs, toTs, sec);
-      series.push(line("Demand (INDO)", demand.t, demand.v.map(GW),
+      series.push(line(State.get().zone === "GB"
+        ? "Demand (INDO)" : "Demand (ENTSO-E load)",
+        demand.t, demand.v.map(GW),
         css("--text"), { lineStyle: { width: 1.3, color: css("--text"),
           type: "dashed" } }));
     }
@@ -473,7 +482,9 @@ const Charts = (() => {
         ? { max: (extent) => Math.ceil(Math.max(extent.max, GW(dMax)) + 1) }
         : {}),
       series: [
-        { ...line("Wind (transmission)", wind.t, wind.v.map(GW), Data.FUELS.WIND.colour,
+        { ...line(State.get().zone === "GB"
+            ? "Wind (transmission)" : "Wind (ENTSO-E, on+offshore)",
+            wind.t, wind.v.map(GW), Data.FUELS.WIND.colour,
             { areaStyle: { opacity: 0.12 } }),
           ...(hasDemand ? { markArea: {
             silent: true,
@@ -487,8 +498,13 @@ const Charts = (() => {
               { yAxis: GW(dMax) },
             ]],
           } } : {}) },
-        line("Solar (PV_Live)", solar.t, solar.v.map(GW), Data.FUELS.solar.colour,
-          { areaStyle: { opacity: 0.12 } }),
+        // hasSignal drops constant-zero TSO placeholders (IE solar) — a
+        // flat zero line would read as "no sun", which is not what the
+        // data says; the Methodology data-quality note explains.
+        ...(Data.hasSignal("solar") ? [line(State.get().zone === "GB"
+            ? "Solar (PV_Live)" : "Solar (ENTSO-E)",
+            solar.t, solar.v.map(GW), Data.FUELS.solar.colour,
+          { areaStyle: { opacity: 0.12 } })] : []),
       ],
     }), true);
   }

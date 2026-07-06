@@ -172,7 +172,7 @@ const UI = (() => {
 
     // Wind/solar cards only where the zone actually reports the series
     // (e.g. NO_2 and IE publish no solar type — all-null column).
-    const wind = Data.latest("WIND");
+    const wind = Data.hasSignal("WIND") ? Data.latest("WIND") : null;
     if (wind) {
       const windShare = wind.value / demand.value * 100;
       cards.push(kpiCard({
@@ -183,7 +183,9 @@ const UI = (() => {
       }));
     }
 
-    const solar = Data.latest("solar");
+    // hasSignal also drops constant-zero TSO placeholders (e.g. IE solar
+    // — reported as 0 for fleet the TSO does not meter; see data_quality)
+    const solar = Data.hasSignal("solar") ? Data.latest("solar") : null;
     if (solar) {
       cards.push(kpiCard({
         label: "Solar", badge: "observed",
@@ -647,9 +649,10 @@ const UI = (() => {
       const zone = st.zone.toLowerCase();
       const curCode = (st.zone === "GB" ? "GBP"
         : (Data.meta.currency || "EUR")).toLowerCase();
-      const hasCol = (k) => Data.hh[k] && Data.hh[k].some((v) => v != null);
+      // hasSignal excludes absent AND constant-zero placeholder columns
+      // (e.g. IE solar) — their zeros are TSO artefacts, not output.
       const keys = ["price", "demand",
-        ...Data.STACK_ORDER.filter(hasCol),
+        ...Data.STACK_ORDER.filter((k) => Data.hasSignal(k)),
         ...(Object.keys(Data.INTERCONNECTORS).some((k) => Data.hh[k])
           ? ["netImports"] : [])];
       columns = {};

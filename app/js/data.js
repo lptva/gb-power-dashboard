@@ -179,6 +179,13 @@ const Data = (() => {
     return null;
   }
 
+  /* True when a column carries any real signal (non-null AND non-zero).
+     Constant-zero generation columns are TSO placeholders (e.g. IE solar)
+     — display paths exclude them; the raw data keeps them. */
+  function hasSignal(key) {
+    return !!hh[key] && hh[key].some((v) => v != null && v !== 0);
+  }
+
   /* p-quantile (0–1) of a half-hourly column over the whole dataset,
      ignoring nulls. Used as the "available capacity" proxy. Cached. */
   const quantileCache = new Map();
@@ -205,5 +212,6 @@ const Data = (() => {
     currency, ZONE_INFO,
     FUELS, INTERCONNECTORS, STACK_ORDER, LOW_CARBON,
     hhRange, aggregate, dailySlice, latest, latestDaily, hhQuantile,
+    hasSignal,
   };
 })();

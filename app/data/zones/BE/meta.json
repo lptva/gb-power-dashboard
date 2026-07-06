@@ -1,11 +1,12 @@
 {
-  "built_at": "2026-07-06T13:51:32+00:00",
+  "built_at": "2026-07-06T14:18:56+00:00",
   "zone": "BE",
   "label": "Belgium",
   "kind": "interconnected",
   "currency": "EUR",
   "data_quality": [
-    "NPSHYD: 2 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 23 Jun 09:00\u219223 Jun 09:30"
+    "NPSHYD: 2 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 23 Jun 09:00\u219223 Jun 09:30",
+    "NUCLEAR: reported but CONSTANT ZERO for the entire window. Two possible readings \u2014 fleet that genuinely did not run, or a TSO placeholder for capacity it does not meter (SEM's distribution-connected solar is a known placeholder case). The zeros carry no information beyond this note, so the column is excluded from KPI cards, charts and CSV exports; raw values are retained in the data files"
   ],
   "window": {
     "start": "2026-06-06",
