@@ -132,7 +132,7 @@ half-hour, `(GB low-carbon + Σ import_flow × zone_low_carbon_fraction) /
 at its counterparty zone's own low-carbon generation fraction from the
 ENTSO-E zone datasets. First-order counterparty-mix attribution only (no
 flow tracing; the zone's own imports are not re-attributed). Exists only over the
-accumulated zone history (append-only from late May 2026, extended by the
+accumulated zone history (append-only from 31 May 2026, extended by the
 daily refresh) — no backfill; missing zone data at a timestamp reverts that
 cable to denominator-only. Shown beside, never
 spliced into, the unbroken headline metric.
