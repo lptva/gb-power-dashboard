@@ -1,0 +1,119 @@
+{
+  "built_at": "2026-07-06T06:06:58+00:00",
+  "mode": "incremental",
+  "window": {
+    "start": "2025-07-06",
+    "end": "2026-07-05"
+  },
+  "timezone": "All timestamps UTC. Half-hourly values are interval starts (Elexon settlement periods mapped to startTime).",
+  "coverage": {
+    "demand": 1.0,
+    "price": 1.0,
+    "solar": 1.0,
+    "gas_days": 364,
+    "carbon_months_observed": 11,
+    "carbon_last_observed_month": "2026-05",
+    "coal_months_observed": 12,
+    "coal_last_observed_month": "2026-06"
+  },
+  "fuel_types": [
+    "BIOMASS",
+    "CCGT",
+    "COAL",
+    "INTELEC",
+    "INTEW",
+    "INTFR",
+    "INTGRNL",
+    "INTIFA2",
+    "INTIRL",
+    "INTNED",
+    "INTNEM",
+    "INTNSL",
+    "INTVKL",
+    "NPSHYD",
+    "NUCLEAR",
+    "OCGT",
+    "OIL",
+    "OTHER",
+    "PS",
+    "WIND"
+  ],
+  "series": {
+    "price": {
+      "name": "GB wholesale power price (Market Index, MID)",
+      "source": "Elexon Insights API, dataset MID",
+      "endpoint": "/balancing/pricing/market-index",
+      "unit": "\u00a3/MWh",
+      "resolution": "30 min",
+      "update_frequency": "near real time (settlement runs)",
+      "quality": "observed",
+      "transformations": "volume-weighted mean across data providers (APX, N2EX) per period",
+      "notes": "MID reflects short-term traded prices used for imbalance pricing; it is the standard public proxy for the GB spot price. Day-ahead auction prices (EPEX/N2EX) are commercial data."
+    },
+    "demand": {
+      "name": "GB national demand outturn (INDO)",
+      "source": "Elexon Insights API, dataset INDO",
+      "endpoint": "/demand/outturn",
+      "unit": "MW",
+      "resolution": "30 min",
+      "update_frequency": "near real time",
+      "quality": "observed",
+      "transformations": "none",
+      "notes": "Transmission-metered demand; excludes most behind-the-meter consumption offset by embedded generation."
+    },
+    "generation_by_fuel": {
+      "name": "Generation by fuel type incl. interconnectors",
+      "source": "Elexon Insights API, dataset FUELHH",
+      "endpoint": "/datasets/FUELHH",
+      "unit": "MW",
+      "resolution": "30 min",
+      "update_frequency": "near real time",
+      "quality": "observed",
+      "transformations": "none",
+      "notes": "Transmission-connected plant only. Embedded wind and all solar are not visible here. Interconnector flows appear as INT* fuel types (+ve = import)."
+    },
+    "solar": {
+      "name": "GB solar PV outturn (national)",
+      "source": "Sheffield Solar PV_Live v4",
+      "endpoint": "api.pvlive.uk /gsp/0",
+      "unit": "MW",
+      "resolution": "30 min",
+      "update_frequency": "near real time",
+      "quality": "observed (model-based estimate from metered sample sites \u2014 the accepted GB standard)",
+      "transformations": "none"
+    },
+    "gas_sap": {
+      "name": "Gas System Average Price (SAP), actual day",
+      "source": "National Gas data portal, item PUBOB603",
+      "endpoint": "data.nationalgas.com /api/find-gas-data-download",
+      "unit": "\u00a3/MWh (thermal, HHV)",
+      "resolution": "daily (gas day)",
+      "update_frequency": "daily",
+      "quality": "observed",
+      "transformations": "p/kWh \u00d7 10 \u2192 \u00a3/MWh",
+      "notes": "Volume-weighted average of all OTC trades on the National Balancing Point each gas day \u2014 a within-day benchmark, not the day-ahead curve."
+    },
+    "coal_proxy_gbp_mwh": {
+      "name": "Coal benchmark proxy (Australian 6,000 kcal/kg Newcastle futures, monthly avg)",
+      "source": "World Bank Commodity Price Data (Pink Sheet) + Bank of England XUDLUSS for FX",
+      "endpoint": "https://www.worldbank.org/en/research/commodity-markets",
+      "unit": "\u00a3/MWh (thermal)",
+      "resolution": "monthly",
+      "update_frequency": "monthly (Pink Sheet, ~2 working days after month end)",
+      "quality": "proxy / derived",
+      "transformations": "USD/t \u00f7 monthly-mean USD per GBP (BoE XUDLUSS) \u00f7 6.978 MWh th/t (6,000 kcal/kg = 25.12 GJ/t)",
+      "notes": "This is FOB Newcastle, not API2 CIF ARA \u2014 the European benchmark itself is ICE commercial data. Levels track but do not equal API2 (freight/quality basis). Manual coal input overrides this proxy."
+    },
+    "carbon_uka_month": {
+      "name": "UKA price (UK ETS), average by calendar month",
+      "source": "gov.uk \u2014 UK ETS Cost Containment Mechanism table",
+      "endpoint": "https://www.gov.uk/api/content/government/publications/taking-part-in-the-uk-emissions-trading-scheme-markets/cost-containment-mechanism-ccm-trigger-prices-and-average-monthly-prices-full-table",
+      "unit": "\u00a3/tCO2",
+      "resolution": "monthly",
+      "update_frequency": "monthly (published with ~1 month lag)",
+      "quality": "observed (monthly average); treated as ESTIMATED when held constant within a month for daily/half-hourly calculations",
+      "transformations": "parsed from CCM assessment windows; cross-row consistency checked",
+      "notes": "Daily UKA settlement prices are ICE commercial data. The dashboard forward-fills the monthly average and labels dependent metrics accordingly."
+    }
+  }
+}

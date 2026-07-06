@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "version": 22,
+  "built_at": "2026-07-06T06:06:58+00:00",
+  "mode": "incremental",
+  "files": {
+    "series_hh.json": {
+      "sha256": "80cd11d7717eb2894e590dd6a19083defcdfdc0a5a4908099f19fafc4f33c677",
+      "bytes": 2374358
+    },
+    "series_daily.json": {
+      "sha256": "5376d7b7e62dc6a72370e15d89a70bc67f4335085125ce4450547b9f0a1afab5",
+      "bytes": 88494
+    },
+    "meta.json": {
+      "sha256": "7b9bf9239d90e976d2a8500c4a1540043f88862696d3d5a2893217af91fd038f",
+      "bytes": 5122
+    },
+    "bmu_snapshot.json": {
+      "sha256": "349198082a63e23480e6960e988deca6d538a2a06f39231c865f29b02d4a1146",
+      "bytes": 57568
+    }
+  },
+  "zones": [
+    "GB",
+    "FR",
+    "DE_LU",
+    "NL",
+    "BE",
+    "NO_2",
+    "DK_1",
+    "IE"
+  ]
+}

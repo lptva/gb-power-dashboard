@@ -1,0 +1,38 @@
+{
+  "built_at": "2026-07-06T09:20:06+00:00",
+  "zone": "NL",
+  "label": "Netherlands",
+  "kind": "interconnected",
+  "currency": "EUR",
+  "data_quality": [],
+  "window": {
+    "start": "2026-06-06",
+    "end": "2026-07-05"
+  },
+  "timezone": "All timestamps UTC.",
+  "series": {
+    "price": {
+      "name": "NL day-ahead auction price",
+      "source": "ENTSO-E Transparency, document A44",
+      "unit": "EUR/MWh",
+      "resolution": "30 min (normalised)",
+      "quality": "observed",
+      "notes": "True auction price \u2014 unlike GB's MID proxy. Currency is EUR, not GBP."
+    },
+    "demand": {
+      "name": "NL actual total load",
+      "source": "ENTSO-E Transparency, A65/A16",
+      "unit": "MW",
+      "resolution": "30 min (normalised)",
+      "quality": "observed"
+    },
+    "generation_by_fuel": {
+      "name": "NL actual generation per production type",
+      "source": "ENTSO-E Transparency, A75/A16",
+      "unit": "MW",
+      "resolution": "30 min (normalised)",
+      "quality": "observed",
+      "notes": "Fossil Gas mapped to CCGT (ENTSO-E does not split CCGT/OCGT); Wind On+Offshore summed into WIND \u2014 coverage differs from Elexon's transmission-only metering. See plan/04-europe-extension.md."
+    }
+  }
+}

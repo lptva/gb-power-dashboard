@@ -1,0 +1,41 @@
+{
+  "built_at": "2026-07-06T09:20:07+00:00",
+  "zone": "NO_2",
+  "label": "Norway (NO2)",
+  "kind": "interconnected",
+  "currency": "EUR",
+  "data_quality": [
+    "solar: not reported by the TSO in this window \u2014 ENTSO-E generation-per-type reporting (16.1.B&C) is mandatory only for technologies above ~1% of national generation, so small fleets are legitimately absent",
+    "PS: 805 half-hours missing in 10 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 06 Jun 16:00\u219210 Jun 04:00; 10 Jun 15:30\u219211 Jun 03:30; 11 Jun 06:30\u219211 Jun 16:00 (+7 more)"
+  ],
+  "window": {
+    "start": "2026-06-06",
+    "end": "2026-07-05"
+  },
+  "timezone": "All timestamps UTC.",
+  "series": {
+    "price": {
+      "name": "NO_2 day-ahead auction price",
+      "source": "ENTSO-E Transparency, document A44",
+      "unit": "EUR/MWh",
+      "resolution": "30 min (normalised)",
+      "quality": "observed",
+      "notes": "True auction price \u2014 unlike GB's MID proxy. Currency is EUR, not GBP."
+    },
+    "demand": {
+      "name": "NO_2 actual total load",
+      "source": "ENTSO-E Transparency, A65/A16",
+      "unit": "MW",
+      "resolution": "30 min (normalised)",
+      "quality": "observed"
+    },
+    "generation_by_fuel": {
+      "name": "NO_2 actual generation per production type",
+      "source": "ENTSO-E Transparency, A75/A16",
+      "unit": "MW",
+      "resolution": "30 min (normalised)",
+      "quality": "observed",
+      "notes": "Fossil Gas mapped to CCGT (ENTSO-E does not split CCGT/OCGT); Wind On+Offshore summed into WIND \u2014 coverage differs from Elexon's transmission-only metering. See plan/04-europe-extension.md."
+    }
+  }
+}

@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en-GB" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GB Power Market Intelligence</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">GB</span>
+    <span class="brand-name">Power Market Intelligence</span>
+    <span class="brand-sub" id="data-window"></span>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="prices">Prices</button>
+    <button data-tab="generation">Generation</button>
+    <button data-tab="merit">Merit order</button>
+    <button data-tab="spreads">Spreads</button>
+    <button data-tab="flows">Flows</button>
+    <button data-tab="methodology">Methodology</button>
+  </nav>
+  <div class="controls">
+    <div class="seg" id="range-presets">
+      <button data-range="7">7D</button>
+      <button data-range="30" class="active">1M</button>
+      <button data-range="92">3M</button>
+      <button data-range="183">6M</button>
+      <button data-range="365">1Y</button>
+    </div>
+    <select id="zone" title="Bidding zone (more zones appear once an ENTSO-E dataset is fetched — see etl/fetch_entsoe.py)">
+      <option value="GB">GB</option>
+    </select>
+    <select id="resolution" title="Time resolution">
+      <option value="auto">Auto</option>
+      <option value="hh">30 min</option>
+      <option value="hour">Hourly</option>
+      <option value="day">Daily</option>
+    </select>
+    <button id="export-btn" title="Download the data behind the current view as CSV">⤓ CSV</button>
+    <button id="theme-btn" title="Toggle light / dark">◐</button>
+  </div>
+</header>
+
+<div id="loading" class="overlay">
+  <div class="spinner"></div>
+  <p>Loading market data…</p>
+</div>
+
+<div id="load-error" class="overlay hidden">
+  <div class="error-card">
+    <h2>Data failed to load</h2>
+    <p id="load-error-detail"></p>
+    <p>Run the ETL first: <code>python etl/build_dataset.py --days 365</code>,
+       then serve this folder over HTTP (e.g. <code>python -m http.server</code>).
+       Opening index.html directly from disk blocks data loading in most browsers.</p>
+    <button onclick="location.reload()">Retry</button>
+  </div>
+</div>
+
+<main id="main" class="hidden">
+
+  <section class="glance" id="glance"></section>
+
+  <section class="kpi-strip" id="kpi-strip"></section>
+
+  <!-- AI-generated interpretation — a different trust category from every
+       data panel, hence the distinct dashed styling and badge. Populated
+       from data/overnight_summary.json (ops/run_overnight_summary.sh). -->
+  <section class="card ai-card" id="overnight">
+    <div class="card-head">
+      <h2>Overnight summary <span class="badge ai">✦ AI-generated</span>
+        <span class="info" data-method="overnight">ⓘ</span></h2>
+      <p class="card-meta" id="overnight-meta"></p>
+    </div>
+    <div id="overnight-body"></div>
+  </section>
+
+  <!-- ============ OVERVIEW ============ -->
+  <section class="tab-panel" data-panel="overview">
+    <div class="grid-2">
+      <div class="card span-2">
+        <div class="card-head">
+          <h2>Price, demand and renewables <span class="badge observed">Observed</span></h2>
+          <p>Wholesale price — MID for GB, day-ahead auction for European zones — against demand and combined wind + solar output.</p>
+        </div>
+        <div class="chart tall" id="ch-overview-main"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Generation mix — period share <span class="badge observed">Observed</span></h2>
+          <p>Share of supply over the selected window, interconnector imports included.</p>
+        </div>
+        <div class="chart" id="ch-overview-donut"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Residual load <span class="badge estimated">Estimated</span></h2>
+          <p>Demand minus transmission wind — what thermal, hydro and imports
+             must cover. Solar is not subtracted: INDO demand is already net
+             of embedded generation.
+             <span class="info" data-method="residual">ⓘ</span></p>
+        </div>
+        <div class="chart" id="ch-overview-residual"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PRICES ============ -->
+  <section class="tab-panel hidden" data-panel="prices">
+    <div class="card">
+      <div class="card-head">
+        <h2>Wholesale power price <span class="badge observed">Observed</span></h2>
+        <p>GB: Market Index price (volume-weighted APX + N2EX). European
+           zones: ENTSO-E day-ahead auction price.
+           Toggle drivers to overlay (GB data).
+           <span class="info" data-method="price">ⓘ</span></p>
+        <div class="overlay-toggles" id="price-overlays">
+          <label><input type="checkbox" data-overlay="gas"> Gas SAP (£/MWh th)</label>
+          <label><input type="checkbox" data-overlay="carbon"> Carbon UKA (£/tCO2)</label>
+          <label><input type="checkbox" data-overlay="demand"> Demand (GW)</label>
+          <label><input type="checkbox" data-overlay="renewables"> Wind + solar (GW)</label>
+        </div>
+      </div>
+      <div class="chart tall" id="ch-price-main"></div>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-head">
+          <h2>Price distribution <span class="badge observed">Observed</span></h2>
+          <p>Half-hourly price histogram for the selected window.</p>
+        </div>
+        <div class="chart" id="ch-price-hist"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Intraday shape <span class="badge observed">Observed</span></h2>
+          <p>Average price by time of day (UTC) across the window.</p>
+        </div>
+        <div class="chart" id="ch-price-shape"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>Price vs net load <span class="badge estimated">Estimated</span></h2>
+        <p>Observed price against net load = demand − wind (derived) — system
+           tightness vs price. Solar is not subtracted again: INDO demand is
+           already net of embedded generation. Each point is one half-hour in
+           the selected window. <span class="info" data-method="netload">ⓘ</span></p>
+        <div class="overlay-toggles">
+          <label><input type="checkbox" id="nl-binned" checked>
+            Median price per 2 GW bin</label>
+        </div>
+      </div>
+      <div class="chart tall" id="ch-price-netload"></div>
+    </div>
+  </section>
+
+  <!-- ============ GENERATION ============ -->
+  <section class="tab-panel hidden" data-panel="generation">
+    <div class="card">
+      <div class="card-head">
+        <h2>Generation stack <span class="badge observed">Observed</span></h2>
+        <p>Output by fuel type. GB: solar from PV_Live, all other fuels
+           from Elexon transmission metering. European zones: ENTSO-E actual
+           generation per production type.
+           <span class="info" data-method="generation">ⓘ</span></p>
+        <div class="overlay-toggles">
+          <label><input type="checkbox" id="gen-imports" checked> Include imports</label>
+          <label><input type="checkbox" id="gen-percent"> Show as % share</label>
+          <label><input type="checkbox" id="gen-demand-line" checked> Demand line</label>
+        </div>
+      </div>
+      <div class="chart tall" id="ch-gen-stack"></div>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-head">
+          <h2>Low-carbon share <span class="badge estimated">Estimated</span></h2>
+          <p>Wind + solar + nuclear + hydro + biomass as a share of total supply.
+             <span class="info" data-method="lowcarbon">ⓘ</span></p>
+        </div>
+        <div class="chart" id="ch-gen-lowcarbon"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Wind and solar output <span class="badge observed">Observed</span></h2>
+          <p>Renewable output; the faint band marks the window's demand range
+             (half-hourly min to max), for scale.</p>
+        </div>
+        <div class="chart" id="ch-gen-renewables"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MERIT ORDER ============ -->
+  <section class="tab-panel hidden" data-panel="merit">
+    <div class="banner estimated-banner">
+      Everything on this tab is <strong>model-estimated</strong> from observed
+      fuel and carbon prices plus stated efficiency assumptions — it is not
+      observed bid data. Adjust assumptions in the panel below; historical data
+      is never modified.
+    </div>
+    <div class="grid-2">
+      <div class="card span-2">
+        <div class="card-head">
+          <h2>Merit order curve — latest <span class="badge estimated">Estimated</span></h2>
+          <p>Conventional merit-order stack: every technology's SRMC range is
+             split into 0.5 GW tranches (efficient units first) and all
+             tranches are sorted by cost, so blocks are contiguous and the
+             curve only rises; technologies interleave where cost ranges
+             overlap. Capacity is a proxy — p98 of observed output for
+             dispatchables, latest output for must-run wind and solar — not
+             registered capacity. Hover any block for its inputs.
+             <span class="info" data-method="meritcurve">ⓘ</span></p>
+        </div>
+        <div class="chart tall" id="ch-merit-curve"></div>
+      </div>
+      <div class="card span-2">
+        <div class="card-head">
+          <h2>Observed dispatch by unit (beta)
+            <span class="badge observed">Observed</span>
+            <span class="badge estimated">Est. costs</span></h2>
+          <p id="bmu-caption">Dispatch curve built from observed physical
+             notifications (PN): each block is one BM Unit — width is its
+             notified output for the most recent complete settlement period
+             (Observed), height is its technology cluster's SRMC midpoint
+             (Estimated — PN carries no prices, so unit-level costs do not
+             exist in free data). Sorted cheapest-first, same axes as the
+             modelled merit-order curve above, so the two can be compared
+             directly. PN is notified <em>intent</em>, not metered output.
+             Units without an SRMC benchmark are counted below but not
+             plotted; charging/pumping and interconnector units are excluded.
+             <span class="info" data-method="bmu">ⓘ</span></p>
+          <p class="card-meta" id="bmu-meta"></p>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart tall" id="ch-merit-bmu"></div>
+          <div class="chart-empty hidden" id="bmu-empty">
+            No dispatch snapshot available — run
+            <code>python etl/build_bmu_snapshot.py</code> to fetch the latest
+            settlement period.
+          </div>
+        </div>
+      </div>
+      <div class="card span-2">
+        <div class="card-head">
+          <h2>CCGT marginal cost vs price over time <span class="badge estimated">Estimated</span></h2>
+          <p>The shaded band is the CCGT SRMC range implied by the efficiency
+             spread; the line is the observed daily average price. Price above the
+             band ⇒ efficient gas plant earning margin.</p>
+        </div>
+        <div class="chart tall" id="ch-merit-time"></div>
+      </div>
+      <div class="card span-2">
+        <div class="card-head"><h2>Assumptions <span class="badge assumption">Assumption</span></h2>
+        <p>These sliders drive every estimate on this tab and the Spreads tab.</p></div>
+        <div class="assumptions" id="assumption-controls"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SPREADS ============ -->
+  <section class="tab-panel hidden" data-panel="spreads">
+    <div class="grid-2">
+      <div class="card span-2">
+        <div class="card-head">
+          <h2>Clean spark spread <span class="badge estimated">Estimated</span></h2>
+          <p>Margin of a reference CCGT after gas and carbon costs, daily.
+             Formula: price − gas/η − (EF/η)·carbon.
+             <span class="info" data-method="spark">ⓘ</span></p>
+        </div>
+        <div class="chart tall" id="ch-spread-spark"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>CCGT cost decomposition <span class="badge estimated">Estimated</span></h2>
+          <p>Daily average price split into implied fuel cost, carbon cost and
+             residual margin for the reference CCGT.</p>
+        </div>
+        <div class="chart" id="ch-spread-decomp"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Clean dark spread <span class="badge proxy" id="dark-badge">Proxy / Derived</span></h2>
+          <p>Coal cost from a futures-derived proxy: World Bank monthly average
+             of Newcastle 6,000 kcal/kg futures, converted to £/MWh thermal —
+             API2 (CIF ARA) itself is commercial data. Enter a price below to
+             override the proxy.
+             <span class="info" data-method="dark">ⓘ</span></p>
+          <div class="inline-input">
+            <label>Override coal price <input type="number" id="coal-price" placeholder="proxy" min="1" max="100" step="0.5"> £/MWh th</label>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart" id="ch-spread-dark"></div>
+          <div class="empty-state hidden" id="dark-empty">
+            <p>No coal benchmark available.</p>
+            <p class="dim">The futures proxy could not be built in the last ETL
+            run and no manual price is set. Clean dark spread = price − coal/η
+            − (EF/η)·carbon, with η and EF set on the Merit order tab. Enter a
+            coal price above to render this panel.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FLOWS ============ -->
+  <section class="tab-panel hidden" data-panel="flows">
+    <div class="card">
+      <div class="card-head">
+        <h2>Interconnector flows <span class="badge observed">Observed</span></h2>
+        <p>Positive = import to GB, negative = export. Per-cable detail in the
+           tooltip. <span class="info" data-method="flows">ⓘ</span></p>
+      </div>
+      <div class="chart tall" id="ch-flows-stack"></div>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-head">
+          <h2>Net imports vs price <span class="badge observed">Observed</span></h2>
+          <p>Each point is one half-hour in the window.</p>
+        </div>
+        <div class="chart" id="ch-flows-scatter"></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Import dependency <span class="badge observed">Observed</span></h2>
+          <p>Net imports as a share of demand, daily.</p>
+        </div>
+        <div class="chart" id="ch-flows-share"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ METHODOLOGY ============ -->
+  <section class="tab-panel hidden" data-panel="methodology">
+    <div class="card"><div class="card-head"><h2>Methodology &amp; data provenance</h2>
+    <p>Every series, formula, unit and limitation. Generated partly from the ETL
+       metadata so it cannot drift from the data.</p></div>
+    <div id="methodology-body" class="method-body"></div></div>
+  </section>
+
+  <footer class="foot">
+    <span id="foot-built"></span> · All timestamps UTC ·
+    <span id="foot-sources">Data: Elexon (BMRS), Sheffield Solar PV_Live, National Gas, gov.uk</span> ·
+    This tool aggregates public data and model estimates; it is not trading advice.
+  </footer>
+</main>
+
+<script src="vendor/echarts.min.js"></script>
+<script src="js/data.js"></script>
+<script src="js/metrics.js"></script>
+<script src="js/state.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

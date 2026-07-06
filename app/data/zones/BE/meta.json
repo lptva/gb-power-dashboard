@@ -1,0 +1,40 @@
+{
+  "built_at": "2026-07-06T09:20:06+00:00",
+  "zone": "BE",
+  "label": "Belgium",
+  "kind": "interconnected",
+  "currency": "EUR",
+  "data_quality": [
+    "NPSHYD: 2 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 23 Jun 09:00\u219223 Jun 09:30"
+  ],
+  "window": {
+    "start": "2026-06-06",
+    "end": "2026-07-05"
+  },
+  "timezone": "All timestamps UTC.",
+  "series": {
+    "price": {
+      "name": "BE day-ahead auction price",
+      "source": "ENTSO-E Transparency, document A44",
+      "unit": "EUR/MWh",
+      "resolution": "30 min (normalised)",
+      "quality": "observed",
+      "notes": "True auction price \u2014 unlike GB's MID proxy. Currency is EUR, not GBP."
+    },
+    "demand": {
+      "name": "BE actual total load",
+      "source": "ENTSO-E Transparency, A65/A16",
+      "unit": "MW",
+      "resolution": "30 min (normalised)",
+      "quality": "observed"
+    },
+    "generation_by_fuel": {
+      "name": "BE actual generation per production type",
+      "source": "ENTSO-E Transparency, A75/A16",
+      "unit": "MW",
+      "resolution": "30 min (normalised)",
+      "quality": "observed",
+      "notes": "Fossil Gas mapped to CCGT (ENTSO-E does not split CCGT/OCGT); Wind On+Offshore summed into WIND \u2014 coverage differs from Elexon's transmission-only metering. See plan/04-europe-extension.md."
+    }
+  }
+}

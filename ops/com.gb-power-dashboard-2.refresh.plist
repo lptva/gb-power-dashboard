@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.gb-power-dashboard-2.refresh</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/lptva/Documents/energy-modelling/03_projects/gb-power-dashboard-2/ops/refresh.sh</string>
+  </array>
+
+  <!-- Daily at 07:00 local time. launchd runs a missed interval on wake,
+       which is what we want on a laptop that sleeps overnight. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>7</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <!-- refresh.sh does its own dated logging; these catch anything emitted
+       before the script's own redirection is in place. -->
+  <key>StandardOutPath</key>
+  <string>/Users/lptva/Documents/energy-modelling/03_projects/gb-power-dashboard-2/ops/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/lptva/Documents/energy-modelling/03_projects/gb-power-dashboard-2/ops/logs/launchd.err.log</string>
+</dict>
+</plist>

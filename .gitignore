@@ -1,0 +1,11 @@
+# Secrets — the ENTSO-E token lives in .env at the project root
+.env
+.env.*
+!.env.example
+
+# Bulky/regenerable artefacts
+data_raw/cache/
+ops/logs/
+
+# macOS noise
+.DS_Store
