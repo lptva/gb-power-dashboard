@@ -1,18 +1,18 @@
 {
-  "built_at": "2026-07-06T09:20:07+00:00",
+  "built_at": "2026-07-06T13:51:38+00:00",
   "zone": "DK_1",
   "label": "Denmark (DK1)",
   "kind": "interconnected",
   "currency": "EUR",
   "data_quality": [
     "demand: 6 half-hours missing in 3 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 13 Jun 11:00\u219213 Jun 11:30; 01 Jul 12:00\u219201 Jul 12:30; 01 Jul 20:00\u219201 Jul 20:30",
-    "solar: 164 half-hours missing in 4 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 13 Jun 11:00\u219216 Jun 03:30; 18 Jun 20:30\u219219 Jun 02:00; 19 Jun 20:30\u219220 Jun 01:30 (+1 more)",
-    "BIOMASS: 130 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 13 Jun 11:00\u219216 Jun 03:30",
-    "CCGT: 130 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 13 Jun 11:00\u219216 Jun 03:30",
-    "COAL: 130 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 13 Jun 11:00\u219216 Jun 03:30",
-    "OIL: 130 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 13 Jun 11:00\u219216 Jun 03:30",
-    "OTHER: 130 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 13 Jun 11:00\u219216 Jun 03:30",
-    "WIND: 130 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 13 Jun 11:00\u219216 Jun 03:30"
+    "solar: 54 half-hours missing in 7 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 16 Jun 03:30\u219216 Jun 03:30; 18 Jun 20:30\u219219 Jun 02:00; 19 Jun 20:30\u219220 Jun 01:30 (+4 more)",
+    "BIOMASS: 1 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 16 Jun 03:30\u219216 Jun 03:30",
+    "CCGT: 1 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 16 Jun 03:30\u219216 Jun 03:30",
+    "COAL: 1 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 16 Jun 03:30\u219216 Jun 03:30",
+    "OIL: 1 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 16 Jun 03:30\u219216 Jun 03:30",
+    "OTHER: 1 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 16 Jun 03:30\u219216 Jun 03:30",
+    "WIND: 1 half-hours missing in 1 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 16 Jun 03:30\u219216 Jun 03:30"
   ],
   "window": {
     "start": "2026-06-06",

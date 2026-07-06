@@ -1,12 +1,11 @@
 {
-  "built_at": "2026-07-06T09:20:07+00:00",
+  "built_at": "2026-07-06T13:51:34+00:00",
   "zone": "NO_2",
   "label": "Norway (NO2)",
   "kind": "interconnected",
   "currency": "EUR",
   "data_quality": [
-    "solar: not reported by the TSO in this window \u2014 ENTSO-E generation-per-type reporting (16.1.B&C) is mandatory only for technologies above ~1% of national generation, so small fleets are legitimately absent",
-    "PS: 805 half-hours missing in 10 gap(s) \u2014 absent from the TSO submission, shown as gaps, never interpolated. E.g. 06 Jun 16:00\u219210 Jun 04:00; 10 Jun 15:30\u219211 Jun 03:30; 11 Jun 06:30\u219211 Jun 16:00 (+7 more)"
+    "solar: no generation-per-type TimeSeries published for this technology in the window (verified against the raw A75 response) \u2014 ENTSO-E reporting (16.1.B&C) is mandatory only for technologies above ~1% of national generation, so small fleets are commonly absent"
   ],
   "window": {
     "start": "2026-06-06",

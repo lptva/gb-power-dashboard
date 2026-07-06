@@ -121,11 +121,16 @@ empirical probing of all three documents under both codes): day-ahead
 prices [12.1.D] publish only against the SEM bidding-zone EIC
 (10Y1001A1001A59C); actual load [6.1.A] only against the Ireland
 control-area EIC (10YIE-1001A00010); generation [16.1.B&C] returns
-identical data under either. The fetcher's fallback handles the split. Settlement currency is read from each
-A44 response — EUR for all seven, NO_2 included. Mixed-resolution
-publications leak quarter-hour period starts onto the axis; off-grid
-timestamps are dropped with a logged count (half-hourly series verified
-complete). Methodology tab is zone-aware (per-zone source block, the fuel
+identical data under either. The fetcher's fallback handles the split.
+Official source confirming the area types — ENTSO-E EDI Working Group, "EIC: Area codes analysis" v2.1 (20 Oct 2020), slide "IE: Ireland" (p. 25): 10YIE-1001A00010 = Member State + Control Area + Scheduling Area (Republic of Ireland); 10Y1001A1001A59C = Bidding Zone + Market Balance Area (all-island SEM). https://eepublicdownloads.entsoe.eu/clean-documents/EDI/Library/Market_Areas_v2.1.pdf
+This matches the probe exactly: prices [12.1.D] publish against the bidding
+zone, load [6.1.A] against the control area. Settlement currency is read from each
+A44 response — EUR for all seven, NO_2 included. Parser handles ENTSO-E's
+curve semantics fully (2026-07-06): curveType A03 blocks fill to their
+declared period end, and all points are bucketed time-weighted onto the
+wall-clock half-hour grid — periods may start at :15/:45 (NO_2 PS), and
+the earlier "drop off-grid timestamps" behaviour silently discarded that
+data. Off-grid output is now a hard build failure. Methodology tab is zone-aware (per-zone source block, the fuel
 mapping table below rendered in-app, GB-only tabs explained); GB
 methodology unchanged when GB is selected.
 

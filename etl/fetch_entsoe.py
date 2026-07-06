@@ -51,7 +51,9 @@ API = "https://web-api.tp.entsoe.eu/api"
 # bidding-zone EIC (10Y1001A1001A59C) and actual total load [6.1.A] against
 # the Ireland control-area EIC (10YIE-1001A00010); generation per type
 # [16.1.B&C] accepts either (verified empirically against both). alt_eic is
-# the control-area fallback used for load.
+# the control-area fallback used for load. Official area-type source:
+# ENTSO-E EDI WG "EIC: Area codes analysis" v2.1 (2020), "IE: Ireland",
+# eepublicdownloads.entsoe.eu/clean-documents/EDI/Library/Market_Areas_v2.1.pdf
 ZONES = {
     "FR":    {"eic": "10YFR-RTE------C", "label": "France",
               "kind": "interconnected"},
@@ -166,19 +168,27 @@ def _points_to_hh(period_el, ns: str,
         last = raw.get(pos, last)
         values.append(last)
 
+    # Time-weighted bucketing onto the WALL-CLOCK half-hour grid. Periods
+    # are not guaranteed to start on the grid (NO_2 publishes PS periods
+    # starting at :15/:45), so mapping relative to the period start would
+    # put values on off-grid timestamps that then get discarded. Each
+    # point's [t, t+step) interval is split across the wall half-hours it
+    # overlaps; a slot's value is the time-weighted mean of what covered it.
     start_ts = int(start.timestamp())
-    out: dict[int, float] = {}
-    if step == 1800:
-        for i, value in enumerate(values):
-            out[start_ts + i * 1800] = value
-    elif step == 3600:  # repeat each hourly value across both half-hours
-        for i, value in enumerate(values):
-            out[start_ts + i * 3600] = value
-            out[start_ts + i * 3600 + HALF_HOUR] = value
-    else:  # PT15M — average each pair of quarter-hours into a half-hour
-        for i in range(0, len(values) - 1, 2):
-            out[start_ts + (i // 2) * 1800] = (values[i] + values[i + 1]) / 2
-    return out
+    acc: dict[int, list[float]] = {}
+    for i, value in enumerate(values):
+        t0 = start_ts + i * step
+        t1 = t0 + step
+        cur = t0
+        while cur < t1:
+            slot = cur - (cur % HALF_HOUR)
+            seg_end = min(slot + HALF_HOUR, t1)
+            weight = seg_end - cur
+            bucket = acc.setdefault(slot, [0.0, 0.0])
+            bucket[0] += weight
+            bucket[1] += value * weight
+            cur = seg_end
+    return {slot: w_val / w for slot, (w, w_val) in acc.items()}
 
 
 def fetch_zone(token: str, zone: str, start: date, end: date):
@@ -254,16 +264,14 @@ def fetch_zone(token: str, zone: str, start: date, end: date):
         print(f"    empty under {eic}; retrying with control-area EIC…")
         demand = _fetch_load(cfg["alt_eic"])
 
-    # Union axis, snapped to the half-hour grid: mixed-resolution ENTSO-E
-    # publications (PT15M periods starting at :15/:45) produce off-grid
-    # duplicates of values already present on the grid — dropped, counted.
-    axis_all = sorted(set(demand) | set(price)
-                      | {ts for col in gen.values() for ts in col})
-    axis = [ts for ts in axis_all if ts % HALF_HOUR == 0]
-    if len(axis) != len(axis_all):
-        print(f"  NOTE: dropped {len(axis_all) - len(axis)} off-grid "
-              "timestamps (quarter-hour period starts from mixed-resolution "
-              "publications; half-hourly series remain complete)")
+    # The parser buckets everything onto the wall half-hour grid, so an
+    # off-grid timestamp here would be a bug — fail loudly, never drop data.
+    axis = sorted(set(demand) | set(price)
+                  | {ts for col in gen.values() for ts in col})
+    off_grid = [ts for ts in axis if ts % HALF_HOUR != 0]
+    if off_grid:
+        raise SystemExit(f"BUG: {len(off_grid)} off-grid timestamps "
+                         "survived wall-grid bucketing — refusing to write")
     hh = {
         "t": axis,
         "demand": [demand.get(ts) for ts in axis],
@@ -317,10 +325,11 @@ def write_zone(zone: str, hh: dict, start: date, end: date,
         present = [i for i, v in enumerate(col) if v is not None]
         if not present:
             data_quality.append(
-                f"{column}: not reported by the TSO in this window — "
-                "ENTSO-E generation-per-type reporting (16.1.B&C) is "
+                f"{column}: no generation-per-type TimeSeries published "
+                "for this technology in the window (verified against the "
+                "raw A75 response) — ENTSO-E reporting (16.1.B&C) is "
                 "mandatory only for technologies above ~1% of national "
-                "generation, so small fleets are legitimately absent")
+                "generation, so small fleets are commonly absent")
             continue
         runs, start_i = [], None
         for i in range(present[0], present[-1] + 1):

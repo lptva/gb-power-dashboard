@@ -124,7 +124,12 @@ live in `plan/`.
   wording was wrong): ENTSO-E publishes day-ahead prices [12.1.D] against
   the SEM bidding-zone EIC and actual load [6.1.A] against the Ireland
   control-area EIC; generation [16.1.B&C] accepts either (verified
-  empirically under both). Settlement currency read
+  empirically under both; official confirmation: ENTSO-E EDI WG, "EIC:
+  Area codes analysis" v2.1, 20 Oct 2020, slide "IE: Ireland" p. 25 —
+  10YIE-1001A00010 = member state/control area/scheduling area,
+  10Y1001A1001A59C = bidding zone/market balance area (all-island SEM);
+  eepublicdownloads.entsoe.eu/clean-documents/EDI/Library/Market_Areas_v2.1.pdf).
+  Settlement currency read
   from each A44 response (EUR everywhere, NO_2 included). Off-grid
   quarter-hour timestamps from mixed-resolution publications are dropped
   with a logged count.
@@ -164,6 +169,18 @@ live in `plan/`.
   tab — labelled, never interpolated.
 - **Git repository initialised** at the project root (first commit
   2f63860): `.env`, `data_raw/cache/` and `ops/logs/` verified untracked.
+- **Same-day correction (wall-grid bucketing)**: applying the IE-style
+  raw-XML audit to NO_2 exposed a second parser defect — periods starting
+  off the half-hour grid (NO_2 PS at :15/:45) produced off-grid timestamps
+  that the axis snap then *discarded*. The parser now buckets every point
+  time-weighted onto the wall-clock half-hour grid (any period offset, any
+  resolution), and an off-grid timestamp is a hard build failure instead of
+  a silent drop. This retracts two "genuine TSO outage" claims from earlier
+  today: NO_2's "805 missing PS half-hours" (data was present in the XML —
+  now 1,440/1,488 populated) and most of DK_1's "2.6-day all-series
+  outage" (now 1 missing half-hour per fuel column). NO_2 solar remains
+  genuinely absent — confirmed at raw-XML level: no B16 TimeSeries in the
+  A75 response. IE's inter-period gaps stand as genuine.
 
 ## Skipped, with reasons
 
