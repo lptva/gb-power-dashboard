@@ -226,6 +226,26 @@ live in `plan/`.
   history. The headline KPI's definition and 365-day continuity are
   untouched — this is a second metric, not a splice.
 
+### Zone history retention + UI polish (2026-07-06, follow-up)
+- **Append-only zone retention**: `fetch_entsoe.py` now merges each fetch
+  onto the published zone history instead of replacing it (fresh values win
+  on overlap; a shorter-than-published or non-monotonic merge refuses to
+  write; zone files now written atomically). Measured growth ~6 kB/day/zone
+  → ~15 MB/yr across all seven zones (~77 MB in 5 yrs) — trivial;
+  `--retain-days N` trims as a fallback if size ever matters. The daily
+  refresh now includes a `--days 7` pass over all seven zones, so the
+  import-aware low-carbon line and counterparty context deepen over time
+  (verified: FR 1,488 → 1,728 rows with prior data retained). Captions and
+  methodology rephrased from "rolling ~30 days" to accumulated history.
+- **Counterparty cable selector** restyled to the header zone switcher's
+  exact design language (shared CSS rules; computed styles verified
+  identical across background, border, radius, font, padding and hover/
+  focus states).
+- **Low-carbon legend overlap fixed**: grid headroom raised to 58 px with
+  legend padding; measured geometry — legend row 479 px wide (single row in
+  a 629 px card), worst-case two-row height 40 px vs the "100" tick at
+  58 px — no collision at any practical width.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

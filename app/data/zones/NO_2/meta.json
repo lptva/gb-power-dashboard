@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-07-06T14:18:56+00:00",
+  "built_at": "2026-07-06T15:21:30+00:00",
   "zone": "NO_2",
   "label": "Norway (NO2)",
   "kind": "interconnected",
@@ -8,8 +8,8 @@
     "solar: no generation-per-type TimeSeries published for this technology in the window (verified against the raw A75 response) \u2014 ENTSO-E reporting (16.1.B&C) is mandatory only for technologies above ~1% of national generation, so small fleets are commonly absent"
   ],
   "window": {
-    "start": "2026-06-06",
-    "end": "2026-07-05"
+    "start": "2026-05-31",
+    "end": "2026-07-06"
   },
   "timezone": "All timestamps UTC.",
   "series": {

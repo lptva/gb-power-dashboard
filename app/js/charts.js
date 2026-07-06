@@ -449,8 +449,12 @@ const Charts = (() => {
       return total > 0 ? +(100 * low / total).toFixed(1) : null;
     });
     const renderLC = (extraSeries) => chart("ch-gen-lowcarbon").setOption(base({
-      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
-      grid: { left: 52, right: 56, top: 30, bottom: 42 },
+      // Two long legend labels wrap to a second row at narrow widths —
+      // reserve grid headroom so neither row collides with the y-axis
+      // "100"/"%" labels.
+      legend: { textStyle: { color: css("--text-dim") }, top: 0,
+        itemGap: 16, padding: [2, 8] },
+      grid: { left: 52, right: 56, top: 58, bottom: 42 },
       xAxis: timeAxis(),
       yAxis: valueAxis("%", { min: 0, max: 100 }),
       series: [
@@ -462,7 +466,7 @@ const Charts = (() => {
     renderLC([]);
 
     // Import-aware variant — GB only, and only where counterparty zone
-    // data exists (rolling ~30 days). Cable imports are attributed at the
+    // data exists (append-only, accumulating). Cable imports are attributed at the
     // exporting zone's own low-carbon fraction at that half-hour
     // (counterparty-mix, first-order — NOT flow tracing); cables whose
     // zone data is missing at a timestamp fall back to denominator-only,
@@ -529,7 +533,7 @@ const Charts = (() => {
       const aggD = Data.aggregateArrays(hh.t, den, fromTs, toTs, sec2);
       const ia = aggN.v.map((v, k) => (v == null || !aggD.v[k]
         ? null : +((100 * v) / aggD.v[k]).toFixed(1)));
-      renderLC([line("Import-aware (counterparty mix, ~30 d)", aggN.t, ia,
+      renderLC([line("Import-aware (counterparty mix)", aggN.t, ia,
         "#8ab4f8", { lineStyle: { width: 1.4, type: "dashed",
                                   color: "#8ab4f8" } })]);
     });
@@ -1156,8 +1160,8 @@ const Charts = (() => {
       `${info.label} (${zone}) · showing ` +
       `${Metrics.fmtDate(from * 1000, "day")} → ` +
       `${Metrics.fmtDate((to - 1800) * 1000, "day")}` +
-      (clipped ? " — zone context is a rolling ~30 days, so the selected "
-                 + "range is clipped to the overlap" : "") +
+      (clipped ? " — clipped to the accumulated zone history "
+                 + "(append-only; deepens daily)" : "") +
       (fx.size ? " · remote price converted at daily BoE EUR/GBP (Derived)"
                : " · EUR/GBP unavailable — remote price hidden");
 

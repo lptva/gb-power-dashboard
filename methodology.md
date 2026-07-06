@@ -131,17 +131,19 @@ half-hour, `(GB low-carbon + Σ import_flow × zone_low_carbon_fraction) /
 (GB generation + Σ import_flow)`, where each importing cable is attributed
 at its counterparty zone's own low-carbon generation fraction from the
 ENTSO-E zone datasets. First-order counterparty-mix attribution only (no
-flow tracing; the zone's own imports are not re-attributed). Exists only
-over the rolling ~30-day zone window — no backfill; missing zone data at a
-timestamp reverts that cable to denominator-only. Shown beside, never
+flow tracing; the zone's own imports are not re-attributed). Exists only over the
+accumulated zone history (append-only from late May 2026, extended by the
+daily refresh) — no backfill; missing zone data at a timestamp reverts that
+cable to denominator-only. Shown beside, never
 spliced into, the unbroken headline metric.
 
 **Counterparty context** (Flows tab): per-cable flow (Observed) with the
 counterparty zone's day-ahead price converted at daily BoE EUR/GBP
 (`fx_eur_per_gbp`, series XUDLERS — Derived, indicative only: day-ahead
 auction vs within-day MID) and the zone's generation mix (context, not
-attribution of the cable's electrons). Zone data is a rolling ~30 days;
-longer ranges clip to the overlap. DE_LU is a reference market with no GB
+attribution of the cable's electrons). Zone history accumulates append-only
+(~6 kB/day/zone; `--retain-days` trims as a fallback if size ever
+matters); longer ranges clip to the overlap, which deepens over time. DE_LU is a reference market with no GB
 cable and is excluded.
 
 ## Judgement calls a reviewer should know about

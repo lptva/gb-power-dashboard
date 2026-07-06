@@ -1,13 +1,13 @@
 {
-  "built_at": "2026-07-06T14:18:55+00:00",
+  "built_at": "2026-07-06T15:16:19+00:00",
   "zone": "FR",
   "label": "France",
   "kind": "interconnected",
   "currency": "EUR",
   "data_quality": [],
   "window": {
-    "start": "2026-06-06",
-    "end": "2026-07-05"
+    "start": "2026-05-31",
+    "end": "2026-07-06"
   },
   "timezone": "All timestamps UTC.",
   "series": {

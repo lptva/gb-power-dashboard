@@ -36,6 +36,15 @@ mkdir -p "$LOG_DIR"
   "$PYTHON" etl/build_bmu_snapshot.py \
     || echo "WARNING: bmu snapshot refresh failed (core dataset unaffected)"
 
+  # Counterparty zone context (append-only history, ~6 kB/day/zone —
+  # ~15 MB/yr across all seven). --days 7 keeps runs cheap; merge handles
+  # the overlap. Non-fatal per zone: a TSO hiccup must not fail the GB
+  # refresh.
+  for z in FR NL BE NO_2 DK_1 IE DE_LU; do
+    "$PYTHON" etl/fetch_entsoe.py --zone "$z" --days 7 \
+      || echo "WARNING: zone $z refresh failed (GB dataset unaffected)"
+  done
+
   # AI overnight summary (dashboard-watcher subagent → overnight_summary.json).
   # Non-fatal: an LLM/CLI failure must not fail the dataset refresh, and a
   # failed run leaves the previously published summary untouched.

@@ -90,12 +90,20 @@ body {
   border-radius: 5px;
 }
 .seg button.active { background: var(--accent-top); color: #fff; }
-.controls select, .controls > button {
+.controls select, .controls > button, .card-head select {
   background: var(--bg-raised); color: var(--text);
   border: 1px solid var(--border); border-radius: 6px;
   font: inherit; font-size: 12px; padding: 5px 9px; cursor: pointer;
 }
-.controls > button:hover { border-color: var(--text-dim); }
+/* In-card selectors (e.g. the Flows counterparty cable picker) share the
+   header controls' design language exactly — one component, two homes. */
+.card-head select { font-weight: 400; margin-left: auto; }
+.controls > button:hover, .controls select:hover,
+.card-head select:hover { border-color: var(--text-dim); }
+.controls select:focus-visible, .card-head select:focus-visible,
+.controls > button:focus-visible {
+  outline: 2px solid var(--accent-top); outline-offset: 1px;
+}
 
 /* ---------- layout ---------- */
 main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }

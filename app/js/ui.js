@@ -578,9 +578,9 @@ const UI = (() => {
          half-hour (ENTSO-E counterparty mix). Honesty limits, stated
          plainly: this is <b>first-order counterparty-mix attribution, not
          flow tracing</b> — the exporting zone's own imports are not
-         re-attributed; it exists only over the rolling ~30-day zone-context
-         window (no backfill — the line simply starts where zone history
-         does); where a zone's data is missing at a timestamp, that cable's
+         re-attributed; it exists only over the accumulated zone-context history
+         (append-only from late May 2026, deepening daily — no backfill:
+         the line simply starts where zone history does); where a zone's data is missing at a timestamp, that cable's
          import falls back to the headline treatment (denominator only);
          exports are excluded from both metrics. It is a second metric
          beside the headline, not a splice into it.</p>
@@ -600,9 +600,11 @@ const UI = (() => {
         <li><b>The mix is zone-wide context, not attribution.</b> It shows
             what the exporting zone was running, not which plants supplied
             the cable's electrons.</li>
-        <li><b>Zone context is a rolling ~30 days</b> versus GB's 365, so
-            longer ranges are clipped to the overlap (stated in the panel's
-            meta line). TSO reporting gaps appear as gaps.</li>
+        <li><b>Zone history is shorter than GB's 365 days</b> — it
+            accumulates append-only from late May 2026 and deepens with the
+            daily refresh — so longer ranges are clipped to the overlap
+            (stated in the panel's meta line). TSO reporting gaps appear as
+            gaps.</li>
       </ul>
 
       <h3 id="m-overnight">Overnight summary (AI-generated)</h3>

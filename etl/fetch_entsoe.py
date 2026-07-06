@@ -35,7 +35,7 @@ from pathlib import Path
 
 # Reuse the shared HTTP/caching helpers and output location.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_dataset import HALF_HOUR, OUT_DIR, http  # noqa: E402
+from build_dataset import HALF_HOUR, OUT_DIR, _atomic_write, http  # noqa: E402
 
 API = "https://web-api.tp.entsoe.eu/api"
 
@@ -284,11 +284,58 @@ def fetch_zone(token: str, zone: str, start: date, end: date):
     return hh, currency
 
 
+def merge_with_history(zone: str, hh_new: dict,
+                       retain_days: int = 0) -> dict:
+    """Append-only retention: merge the fresh fetch onto the previously
+    published zone history (fresh values win on overlap) so zone context
+    deepens over time instead of staying capped at the fetch window.
+    Growth is ~6 kB/day/zone (~15 MB/yr across all seven) — negligible;
+    retain_days > 0 trims the head as a fallback if size ever matters.
+    A merged axis that is non-monotonic or shorter than what was already
+    published aborts rather than overwriting history."""
+    path = OUT_DIR / "zones" / zone / "series_hh.json"
+    try:
+        hh_old = json.loads(path.read_text())
+        if not hh_old.get("t"):
+            raise ValueError("empty axis")
+    except (OSError, ValueError):
+        return hh_new  # first run for this zone — nothing to merge
+
+    columns = sorted({k for k in hh_old if k != "t"}
+                     | {k for k in hh_new if k != "t"})
+    rows: dict[int, dict] = {}
+    for source in (hh_old, hh_new):  # new second → fresh values win
+        for i, ts in enumerate(source["t"]):
+            row = rows.setdefault(ts, {})
+            for k in columns:
+                v = source[k][i] if k in source else None
+                if v is not None:
+                    row[k] = v
+    axis = sorted(rows)
+    if retain_days > 0:
+        cutoff = axis[-1] - retain_days * 86400 + HALF_HOUR
+        axis = [ts for ts in axis if ts >= cutoff]
+    if len(axis) < len(hh_old["t"]) and retain_days == 0:
+        raise SystemExit(f"REFUSING TO PUBLISH {zone}: merged history "
+                         f"({len(axis)} rows) is shorter than what is "
+                         f"already published ({len(hh_old['t'])} rows)")
+    if any(axis[i] >= axis[i + 1] for i in range(len(axis) - 1)):
+        raise SystemExit(f"REFUSING TO PUBLISH {zone}: merged axis is "
+                         "not strictly increasing")
+    merged = {"t": axis}
+    for k in columns:
+        merged[k] = [rows[ts].get(k) for ts in axis]
+    print(f"  history: {len(hh_old['t'])} stored + {len(hh_new['t'])} "
+          f"fetched → {len(axis)} half-hours "
+          f"({axis[0]} → {axis[-1]}, append-only)")
+    return merged
+
+
 def write_zone(zone: str, hh: dict, start: date, end: date,
                currency: str | None) -> None:
     zone_dir = OUT_DIR / "zones" / zone
     zone_dir.mkdir(parents=True, exist_ok=True)
-    (zone_dir / "series_hh.json").write_text(json.dumps(hh))
+    _atomic_write(zone_dir / "series_hh.json", json.dumps(hh))
 
     # Daily means, same shape as the GB series_daily.json (the app expects
     # the file to exist for every zone).
@@ -311,7 +358,7 @@ def write_zone(zone: str, hh: dict, start: date, end: date,
         round(max(buckets[d]["price"]), 2) if buckets[d]["price"] else None
         for d in days_sorted
     ]
-    (zone_dir / "series_daily.json").write_text(json.dumps(daily))
+    _atomic_write(zone_dir / "series_daily.json", json.dumps(daily))
     # Per-zone data-quality notes, computed rather than assumed. A03
     # variable-block periods are already filled to their declared ends by
     # the parser, so a null here is genuinely absent from the TSO
@@ -367,7 +414,12 @@ def write_zone(zone: str, hh: dict, start: date, end: date,
         "kind": cfg["kind"],  # interconnected with GB, or reference market
         "currency": currency or "EUR",  # read from A44, not assumed
         "data_quality": data_quality,
-        "window": {"start": start.isoformat(), "end": end.isoformat()},
+        "window": {
+            "start": datetime.fromtimestamp(hh["t"][0], tz=timezone.utc)
+            .date().isoformat(),
+            "end": datetime.fromtimestamp(hh["t"][-1], tz=timezone.utc)
+            .date().isoformat(),
+        },
         "timezone": "All timestamps UTC.",
         "series": {
             "price": {"name": f"{zone} day-ahead auction price",
@@ -392,7 +444,7 @@ def write_zone(zone: str, hh: dict, start: date, end: date,
                          "metering. See plan/04-europe-extension.md."},
         },
     }
-    (zone_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+    _atomic_write(zone_dir / "meta.json", json.dumps(meta, indent=2))
 
     # Register the zone in the manifest so the app's switcher can find it.
     manifest_path = OUT_DIR / "manifest.json"
@@ -409,7 +461,11 @@ def write_zone(zone: str, hh: dict, start: date, end: date,
 if __name__ == "__main__":
     cli = argparse.ArgumentParser()
     cli.add_argument("--zone", choices=sorted(ZONES), default="FR")
-    cli.add_argument("--days", type=int, default=30)
+    cli.add_argument("--days", type=int, default=30,
+                     help="fetch window; history is retained append-only")
+    cli.add_argument("--retain-days", type=int, default=0,
+                     help="trim retained history to N days (0 = keep all; "
+                          "fallback if size ever becomes a concern)")
     args = cli.parse_args()
 
     _load_dotenv()
@@ -424,4 +480,5 @@ if __name__ == "__main__":
     hh, currency = fetch_zone(token, args.zone, start, end)
     if not hh["t"]:
         raise SystemExit("ENTSO-E returned no data — nothing written")
+    hh = merge_with_history(args.zone, hh, args.retain_days)
     write_zone(args.zone, hh, start, end, currency)
