@@ -155,6 +155,25 @@ def main():
             "capacity_proxies_gw": {k: (js_round(v, 2) if v is not None else None)
                                     for k, v in cap.items()},
         },
+        # The dashboard's documented reference assumptions (methodology.md /
+        # state.js defaults). Injected so the agent quotes THESE — verbatim,
+        # thermal basis — anywhere prose mentions an efficiency or carbon
+        # intensity; the publisher rejects numbers outside this set.
+        "reference_assumptions": {
+            "spark_reference_ccgt": {"eta_hhv": 0.50,
+                                     "ef_gas_tco2_per_mwh_thermal": 0.184,
+                                     "vom_gbp_mwh": 3},
+            "ccgt_fleet_eta_band": [A["etaCcgtLow"], A["etaCcgtHigh"]],
+            "ocgt_eta_band": [A["etaOcgtLow"], A["etaOcgtHigh"]],
+            "ocgt_vom_gbp_mwh": A["vom"] + 4,
+            "dark_reference_coal": {"eta": 0.36,
+                                    "eta_band": [A["etaCoalLow"], A["etaCoalHigh"]],
+                                    "ef_coal_tco2_per_mwh_thermal": A["efCoal"],
+                                    "vom_gbp_mwh": 5},
+            "basis_note": "efficiencies are HHV; carbon intensities are per "
+                          "MWh THERMAL — never quote a derived per-MWh-"
+                          "electrical intensity as an assumption",
+        },
     }, indent=1))
 
 

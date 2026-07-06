@@ -1,8 +1,9 @@
 #!/bin/bash
 # Generate the AI overnight summary for the dashboard.
 #
-# Invokes the dashboard-watcher subagent (defined at the workspace root in
-# .claude/agents/dashboard-watcher.md) headlessly via `claude --agent … -p`,
+# Invokes the dashboard-watcher subagent (defined in this repo at
+# .claude/agents/dashboard-watcher.md — resolved from the project root this
+# script cds into) headlessly via `claude --agent … -p`,
 # asks for its JSON output mode, validates the result and writes it
 # atomically to app/data/overnight_summary.json (plus a human-readable
 # overnight_summary.md). On any failure the previously published summary is
@@ -39,7 +40,11 @@ flows), analysis-first. The Merit order panel's own headline figures,
 computed with the panel's exact model, are below — copy the 'figures'
 object VERBATIM into tabs.merit_order.figures and base the merit_order
 analysis on these numbers and the inputs shown (your job is the causal
-explanation of the gap, not the arithmetic):
+explanation of the gap, not the arithmetic). The 'reference_assumptions'
+block gives the dashboard's documented efficiency and carbon-intensity
+values: anywhere your prose (any tab) quotes an efficiency or a carbon
+intensity, use ONLY these values on their stated basis — the publisher
+rejects any other efficiency or tCO2/MWh figure:
 $MERIT_FIGURES
 JSON output mode: respond with ONLY the raw JSON object per your schema —
 the first character of your reply must be '{', no Markdown fences, no
@@ -136,6 +141,35 @@ else:
         if not same:
             sys.exit(f"REFUSING TO PUBLISH: merit figure {k} = {got!r} "
                      f"disagrees with the panel's own value {want!r}")
+# Vocabulary check on quoted assumptions: any efficiency ("NN% efficiency",
+# "η 0.NN") or carbon intensity ("0.NN tCO2/MWh...") in the prose must come
+# from the documented reference set injected into the prompt — this is the
+# failure class where the model previously invented "55% efficiency,
+# 0.40 tCO2/MWh". Prices like £52/tCO2 do not match the intensity pattern.
+import re
+ALLOWED_ETA = {"45", "50", "57", "32", "40", "33", "36", "39",
+               "0.45", "0.50", "0.5", "0.57", "0.32", "0.40", "0.4",
+               "0.33", "0.36", "0.39"}
+ALLOWED_INTENSITY = {"0.184", "0.34"}
+def prose_strings():
+    for tab in TABS:
+        section = data["tabs"][tab]
+        yield tab, section["takeaway"]
+        yield tab, section["analysis"]
+        for finding in section.get("findings", []):
+            yield tab, f"{finding.get('title', '')} {finding.get('detail', '')}"
+for tab, text in prose_strings():
+    for m in re.finditer(r"(\d{1,2}(?:\.\d+)?)\s*%\s*efficien|"
+                         r"(?:η|eta)\s*(?:=|of|at)?\s*(0\.\d+)", text):
+        value = m.group(1) or m.group(2)
+        if value not in ALLOWED_ETA:
+            sys.exit(f"REFUSING TO PUBLISH: {tab} prose quotes efficiency "
+                     f"{value!r}, not in the documented reference set")
+    for m in re.finditer(r"(0\.\d+)\s*tCO2", text):
+        if m.group(1) not in ALLOWED_INTENSITY:
+            sys.exit(f"REFUSING TO PUBLISH: {tab} prose quotes carbon "
+                     f"intensity {m.group(1)!r} tCO2, not in the documented "
+                     "reference set (thermal basis: 0.184 gas, 0.34 coal)")
 # Publication metadata, not model content: always stamp the real time (the
 # model has no reliable clock).
 data["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")

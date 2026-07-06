@@ -274,6 +274,25 @@ live in `plan/`.
   wrap narrower than the card; prose now uses the full container width like
   every other card body.
 
+### Overnight summary guard scope + agent move (2026-07-06, follow-up)
+- **Assumption vocabulary guard**: `merit_panel_figures.py` now injects the
+  dashboard's documented reference assumptions (spark η 0.50 HHV, EF gas
+  0.184 tCO2/MWh th, CCGT band 0.45–0.57, OCGT 0.32–0.40, dark η 0.36 band
+  0.33–0.39, EF coal 0.34 — thermal basis stated) into the watcher prompt,
+  and the publish validator rejects any efficiency or 0.xx-tCO2 intensity
+  in the prose outside that closed set. Chosen over a standalone prose
+  scanner because injection pins the allowed vocabulary first, making the
+  check a 15-line regex instead of fragile NLP; unit-tested against the
+  known-bad publish ("55% efficiency, 0.40 tCO2/MWh") — both values caught,
+  zero false positives (carbon *prices* like £52.41/tCO2 pass).
+- **dashboard-watcher.md moved into the repo** at
+  `.claude/agents/dashboard-watcher.md` (was at the workspace root,
+  untracked); resolved by `claude --agent` from the project root the runner
+  cds into. Re-verified with a full production run after the move: publish
+  succeeded, merit figures still exactly the panel's values, prose quotes
+  only reference-set assumptions. Note: the agent is no longer discoverable
+  by interactive sessions started at the workspace root.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one
