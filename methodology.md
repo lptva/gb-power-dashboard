@@ -126,6 +126,24 @@ optional median-per-2-GW-bin overlay (bins with < 12 half-hours dropped).
 Same reasoning as residual load: INDO already nets off embedded solar, so
 PV_Live solar appears in the tooltip as context but not in the formula.
 
+**Import-aware low-carbon share** (Estimated, GB Overview): per
+half-hour, `(GB low-carbon + Σ import_flow × zone_low_carbon_fraction) /
+(GB generation + Σ import_flow)`, where each importing cable is attributed
+at its counterparty zone's own low-carbon generation fraction from the
+ENTSO-E zone datasets. First-order counterparty-mix attribution only (no
+flow tracing; the zone's own imports are not re-attributed). Exists only
+over the rolling ~30-day zone window — no backfill; missing zone data at a
+timestamp reverts that cable to denominator-only. Shown beside, never
+spliced into, the unbroken headline metric.
+
+**Counterparty context** (Flows tab): per-cable flow (Observed) with the
+counterparty zone's day-ahead price converted at daily BoE EUR/GBP
+(`fx_eur_per_gbp`, series XUDLERS — Derived, indicative only: day-ahead
+auction vs within-day MID) and the zone's generation mix (context, not
+attribution of the cable's electrons). Zone data is a rolling ~30 days;
+longer ranges clip to the overlap. DE_LU is a reference market with no GB
+cable and is excluded.
+
 ## Judgement calls a reviewer should know about
 
 1. **MID, not day-ahead.** The dashboard's "price" is the Market Index Data

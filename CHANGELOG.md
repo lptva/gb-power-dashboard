@@ -203,6 +203,29 @@ live in `plan/`.
   price-vs-net-load panel is hidden off-GB (its formula is the GB-specific
   INDO − transmission wind, matching the residual-load treatment).
 
+### GB→zone context layer (2026-07-06)
+- **Flows tab counterparty context card**: pick a cable (defaults to the
+  largest current absolute flow) → its flow, GB MID price and the
+  counterparty zone's day-ahead price on one chart, with the zone's
+  generation mix stacked below and a tooltip tying flow + both prices +
+  the zone's top fuels together. Remote prices convert at a new daily BoE
+  EUR/GBP series (XUDLERS; direction asserted against the plausible
+  EUR-per-GBP range at fetch time, verified live at 1.1673) and are badged
+  Derived — day-ahead auction vs within-day MID is indicative, not a
+  spread. Zone data loads lazily via `Data.loadZoneContext()` without
+  touching the active GB dataset. Honesty guards: zone context is a
+  rolling ~30 days so longer ranges clip to the overlap (stated in the
+  panel meta line); the mix is zone-wide context, not electron
+  attribution; gaps stay gaps; DE_LU (reference market, no cable) is never
+  offered.
+- **Import-aware low-carbon share** (GB Overview): a second dashed line
+  attributing each importing cable at its counterparty zone's own
+  low-carbon fraction per half-hour. First-order counterparty-mix
+  attribution, not flow tracing; per-cable fallback to denominator-only
+  where zone data is missing; exports excluded; no backfill beyond zone
+  history. The headline KPI's definition and 365-day continuity are
+  untouched — this is a second metric, not a splice.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

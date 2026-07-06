@@ -448,13 +448,93 @@ const Charts = (() => {
       const total = allCols.reduce((s, c) => s + Math.max(c[i] ?? 0, 0), 0);
       return total > 0 ? +(100 * low / total).toFixed(1) : null;
     });
-    chart("ch-gen-lowcarbon").setOption(base({
+    const renderLC = (extraSeries) => chart("ch-gen-lowcarbon").setOption(base({
+      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
+      grid: { left: 52, right: 56, top: 30, bottom: 42 },
       xAxis: timeAxis(),
       yAxis: valueAxis("%", { min: 0, max: 100 }),
-      series: [line("Low-carbon share", axisT, share, "#5ad6a4",
-        { areaStyle: { opacity: 0.15 } })],
+      series: [
+        line("Low-carbon share (GB gen; imports dilute)", axisT, share,
+          "#5ad6a4", { areaStyle: { opacity: 0.15 } }),
+        ...extraSeries,
+      ],
     }), true);
+    renderLC([]);
+
+    // Import-aware variant — GB only, and only where counterparty zone
+    // data exists (rolling ~30 days). Cable imports are attributed at the
+    // exporting zone's own low-carbon fraction at that half-hour
+    // (counterparty-mix, first-order — NOT flow tracing); cables whose
+    // zone data is missing at a timestamp fall back to denominator-only,
+    // exactly the headline metric's treatment. No backfill: the line is
+    // simply absent before the zone window.
+    if (State.get().zone !== "GB") return;
+    const lcSeq = ++lcRenderSeq;
+    const cables = Object.keys(Data.CABLE_ZONE).filter((c) => Data.hh[c]);
+    const zones = [...new Set(cables.map((c) => Data.CABLE_ZONE[c]))];
+    Promise.all(zones.map((z) =>
+      Data.loadZoneContext(z).catch(() => null))).then((loaded) => {
+      if (lcSeq !== lcRenderSeq) return; // superseded by a newer render
+      const ctx = {};
+      zones.forEach((z, i) => { if (loaded[i]) ctx[z] = loaded[i]; });
+      if (!Object.keys(ctx).length) return;
+
+      const hh = Data.hh;
+      const lowKeys = Data.LOW_CARBON.filter((k) => hh[k]);
+      const genKeys = Data.STACK_ORDER.filter((k) => hh[k]);
+      const zoneFrac = (z, ts) => {
+        const c = ctx[z];
+        if (!c) return null;
+        const i = c.index.get(ts);
+        if (i == null) return null;
+        let low = 0, tot = 0;
+        Data.STACK_ORDER.forEach((k) => {
+          const v = c.hh[k] ? c.hh[k][i] : null;
+          if (v != null && v > 0) {
+            tot += v;
+            if (Data.LOW_CARBON.includes(k)) low += v;
+          }
+        });
+        return tot > 0 ? low / tot : null;
+      };
+
+      const num = new Array(hh.t.length).fill(null);
+      const den = new Array(hh.t.length).fill(null);
+      const ctxStart = Math.min(...Object.values(ctx).map((c) => c.hh.t[0]));
+      for (let i = 0; i < hh.t.length; i++) {
+        const ts = hh.t[i];
+        if (ts < ctxStart) continue; // no backfill beyond zone history
+        let gbLow = 0, gbTot = 0;
+        genKeys.forEach((k) => {
+          const v = hh[k][i];
+          if (v != null && v > 0) {
+            gbTot += v;
+            if (lowKeys.includes(k)) gbLow += v;
+          }
+        });
+        if (gbTot === 0) continue;
+        let n = gbLow, d = gbTot;
+        cables.forEach((c) => {
+          const flow = hh[c][i];
+          if (flow == null || flow <= 0) return; // exports excluded
+          d += flow;
+          const frac = zoneFrac(Data.CABLE_ZONE[c], ts);
+          if (frac != null) n += flow * frac; // else denominator-only
+        });
+        num[i] = n; den[i] = d;
+      }
+      const { fromTs, toTs } = State.window();
+      const sec2 = Math.max(State.bucketSeconds(), 3600);
+      const aggN = Data.aggregateArrays(hh.t, num, fromTs, toTs, sec2);
+      const aggD = Data.aggregateArrays(hh.t, den, fromTs, toTs, sec2);
+      const ia = aggN.v.map((v, k) => (v == null || !aggD.v[k]
+        ? null : +((100 * v) / aggD.v[k]).toFixed(1)));
+      renderLC([line("Import-aware (counterparty mix, ~30 d)", aggN.t, ia,
+        "#8ab4f8", { lineStyle: { width: 1.4, type: "dashed",
+                                  color: "#8ab4f8" } })]);
+    });
   }
+  let lcRenderSeq = 0;
 
   function genRenewables() {
     const { fromTs, toTs } = State.window();
@@ -972,13 +1052,197 @@ const Charts = (() => {
     }), true);
   }
 
+  /* Counterparty context: the zone on the other end of a GB cable.
+     Flow is Observed (GB side); the remote price is the zone's day-ahead
+     auction converted to GBP at the daily BoE EUR/GBP rate — Derived and
+     indicative only (different market segment from MID). The mix panel is
+     zone-wide CONTEXT, not attribution of the cable's electrons. Zone data
+     is a rolling ~30 days: longer GB ranges are clipped to the overlap,
+     stated in the caption meta line. Gaps stay gaps. */
+  let selectedCable = null;
+  let cableSelectWired = false;
+  let ctxRenderSeq = 0;
+
+  function flowsContext() {
+    const empty = document.getElementById("context-empty");
+    const metaLine = document.getElementById("cable-meta");
+    const select = document.getElementById("cable-select");
+    const cables = Object.keys(Data.CABLE_ZONE).filter((c) => Data.hh[c]);
+    if (!cables.length) return;
+
+    if (!cableSelectWired) {
+      select.innerHTML = cables.map((c) =>
+        `<option value="${c}">${Data.INTERCONNECTORS[c].label}</option>`)
+        .join("");
+      select.addEventListener("change", () => {
+        selectedCable = select.value;
+        flowsContext();
+      });
+      cableSelectWired = true;
+    }
+    if (!selectedCable || !Data.hh[selectedCable]) {
+      // default: cable with the largest current absolute flow
+      selectedCable = cables.reduce((best, c) => {
+        const v = Math.abs(Data.latest(c)?.value ?? 0);
+        const bv = Math.abs(Data.latest(best)?.value ?? 0);
+        return v > bv ? c : best;
+      }, cables[0]);
+    }
+    select.value = selectedCable;
+
+    const zone = Data.CABLE_ZONE[selectedCable];
+    const seq = ++ctxRenderSeq;
+    Data.loadZoneContext(zone).then((ctx) => {
+      if (seq !== ctxRenderSeq) return; // superseded
+      empty.classList.add("hidden");
+      renderContext(selectedCable, zone, ctx, metaLine);
+    }).catch((error) => {
+      if (seq !== ctxRenderSeq) return;
+      metaLine.textContent = "";
+      empty.textContent = `Zone context for ${zone} could not be loaded `
+        + `(${error.message}) — run etl/fetch_entsoe.py --zone ${zone}.`;
+      empty.classList.remove("hidden");
+      ["ch-flows-context", "ch-flows-context-mix"].forEach((id) => {
+        const existing = registry.get(id);
+        if (existing) existing.clear();
+      });
+    });
+  }
+
+  function renderContext(cable, zone, ctx, metaLine) {
+    const { fromTs, toTs } = State.window();
+    const zFirst = ctx.hh.t[0];
+    const zLast = ctx.hh.t[ctx.hh.t.length - 1] + 1800;
+    const from = Math.max(fromTs, zFirst);
+    const to = Math.min(toTs, zLast);
+    const sec = Math.max(State.bucketSeconds(), 3600);
+    const info = Data.ZONE_INFO[zone] || { label: zone };
+
+    // Daily EUR/GBP lookup (observed, weekend-ffilled in the ETL)
+    const fx = new Map();
+    if (Data.daily.fx_eur_per_gbp) {
+      Data.daily.d.forEach((day, i) => {
+        if (Data.daily.fx_eur_per_gbp[i] != null)
+          fx.set(day, Data.daily.fx_eur_per_gbp[i]);
+      });
+    }
+
+    const flow = Data.aggregate(cable, from, to, sec);
+    const gbPrice = Data.aggregate("price", from, to, sec);
+    const zPriceEur = Data.aggregateArrays(ctx.hh.t, ctx.hh.price,
+      from, to, sec);
+    const zPriceGbp = zPriceEur.v.map((v, k) => {
+      if (v == null || !fx.size) return null;
+      const rate = fx.get(new Date(zPriceEur.t[k]).toISOString()
+        .slice(0, 10));
+      return rate ? +(v / rate).toFixed(2) : null;
+    });
+
+    // Zone generation mix shares on the same buckets
+    const mixKeys = Data.STACK_ORDER.filter((k) => ctx.hh[k]
+      && ctx.hh[k].some((v) => v != null && v !== 0));
+    const mixAgg = mixKeys.map((k) =>
+      Data.aggregateArrays(ctx.hh.t, ctx.hh[k], from, to, sec));
+    const mixT = mixAgg.length ? mixAgg[0].t : [];
+    const totals = mixT.map((_, k) =>
+      mixAgg.reduce((sum, a) => sum + Math.max(a.v[k] ?? 0, 0), 0));
+    const shares = mixAgg.map((a) => a.v.map((v, k) =>
+      totals[k] > 0 && v != null
+        ? +((100 * Math.max(v, 0)) / totals[k]).toFixed(1) : null));
+    const bucketIdx = new Map(mixT.map((ms, k) => [ms, k]));
+
+    const clipped = from > fromTs;
+    metaLine.textContent =
+      `${info.label} (${zone}) · showing ` +
+      `${Metrics.fmtDate(from * 1000, "day")} → ` +
+      `${Metrics.fmtDate((to - 1800) * 1000, "day")}` +
+      (clipped ? " — zone context is a rolling ~30 days, so the selected "
+                 + "range is clipped to the overlap" : "") +
+      (fx.size ? " · remote price converted at daily BoE EUR/GBP (Derived)"
+               : " · EUR/GBP unavailable — remote price hidden");
+
+    const top = chart("ch-flows-context");
+    top.setOption(base({
+      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
+      grid: { left: 52, right: 56, top: 30, bottom: 42 },
+      tooltip: { trigger: "axis", backgroundColor: css("--bg-raised"),
+        borderColor: css("--border"), confine: true,
+        textStyle: { color: css("--text"), fontSize: 12 },
+        formatter: (params) => {
+          const list = Array.isArray(params) ? params : [params];
+          if (!list.length) return "";
+          const ms = list[0].value[0];
+          const rows = list
+            .filter((q) => q.value[1] != null)
+            .map((q) => `${q.marker} ${q.seriesName}<span style="float:right;`
+              + `margin-left:16px;font-weight:600">${(+q.value[1])
+                .toLocaleString("en-GB", { maximumFractionDigits: 2 })
+              }</span>`);
+          const k = bucketIdx.get(ms);
+          let fuels = "";
+          if (k != null && totals[k] > 0) {
+            const ranked = mixKeys.map((key, j) =>
+              [Data.FUELS[key].label, shares[j][k] ?? 0])
+              .sort((a, b) => b[1] - a[1]).slice(0, 3)
+              .map(([l, v]) => `${l} ${v.toFixed(0)}%`).join(" · ");
+            fuels = `<div style="margin-top:3px;opacity:.75">${info.label} `
+              + `mix: ${ranked}</div>`;
+          }
+          return `<div style="margin-bottom:3px">`
+            + `${Metrics.fmtDate(ms, "datetime")}</div>`
+            + rows.join("<br>") + fuels;
+        } },
+      xAxis: timeAxis(),
+      yAxis: [valueAxis("GW"),
+        valueAxis(`${CUR()}/MWh`, { position: "right",
+          splitLine: { show: false } })],
+      series: [
+        { name: `${Data.INTERCONNECTORS[cable].label} flow (+import)`,
+          type: "line", showSymbol: false, sampling: "lttb",
+          data: flow.t.map((x, k) => [x, GW(flow.v[k])]),
+          lineStyle: { width: 1.2,
+            color: Data.INTERCONNECTORS[cable].colour },
+          itemStyle: { color: Data.INTERCONNECTORS[cable].colour },
+          areaStyle: { opacity: 0.25 }, yAxisIndex: 0,
+          connectNulls: false },
+        line("GB price (MID)", gbPrice.t, gbPrice.v, css("--accent"),
+          { yAxisIndex: 1 }),
+        ...(fx.size ? [line(`${zone} day-ahead £ (Derived)`,
+          zPriceEur.t, zPriceGbp, "#8ab4f8",
+          { yAxisIndex: 1, lineStyle: { width: 1.4, type: "dashed",
+                                        color: "#8ab4f8" } })] : []),
+      ],
+    }), true);
+
+    const bottom = chart("ch-flows-context-mix");
+    bottom.setOption(base({
+      legend: { type: "scroll",
+        textStyle: { color: css("--text-dim") }, top: 0 },
+      grid: { left: 52, right: 56, top: 30, bottom: 42 },
+      xAxis: timeAxis(),
+      yAxis: valueAxis("% of zone generation", { min: 0, max: 100 }),
+      series: mixKeys.map((k, j) => ({
+        name: Data.FUELS[k].label, type: "line", stack: "mix",
+        showSymbol: false, sampling: "lttb",
+        data: mixT.map((x, i) => [x, shares[j][i]]),
+        lineStyle: { width: 0 },
+        itemStyle: { color: Data.FUELS[k].colour },
+        areaStyle: { opacity: 0.85 }, connectNulls: false,
+      })),
+    }), true);
+
+    top.group = "flows-context";
+    bottom.group = "flows-context";
+    echarts.connect("flows-context");
+  }
+
   const PANELS = {
     overview: [overviewMain, overviewDonut, overviewResidual],
     prices: [priceMain, priceHist, priceShape, priceNetLoad],
     generation: [genStack, genLowCarbon, genRenewables],
     merit: [meritCurve, meritBmu, meritTime],
     spreads: [spreadSpark, spreadDecomp, spreadDark],
-    flows: [flowsStack, flowsScatter, flowsShare],
+    flows: [flowsStack, flowsScatter, flowsShare, flowsContext],
     methodology: [],
   };
 

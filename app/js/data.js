@@ -43,6 +43,15 @@ const Data = (() => {
 
   const LOW_CARBON = ["NUCLEAR", "BIOMASS", "NPSHYD", "PS", "WIND", "solar"];
 
+  /* GB cable → counterparty bidding zone. DE_LU is deliberately absent:
+     it is a reference market with no GB cable and must never be treated
+     as a flow counterparty. */
+  const CABLE_ZONE = {
+    INTFR: "FR", INTIFA2: "FR", INTELEC: "FR",
+    INTNED: "NL", INTNEM: "BE", INTNSL: "NO_2", INTVKL: "DK_1",
+    INTIRL: "IE", INTEW: "IE", INTGRNL: "IE",
+  };
+
   /* Zone presentation config (mirrors etl/fetch_entsoe.py ZONES).
      kind: "interconnected" = physical GB counterparty zone;
      "reference" = price anchor only, no GB cable — labelled in the UI so
@@ -127,15 +136,15 @@ const Data = (() => {
     return [lo, hi];
   }
 
-  /* Aggregate one HH column into buckets of `seconds`, averaging non-nulls.
-     Returns { t: [bucketStartEpoch], v: [mean|null] }. */
-  function aggregate(key, fromTs, toTs, seconds) {
-    const [lo, hi] = hhRange(fromTs, toTs);
-    const col = hh[key];
+  /* Aggregate any (tArr, col) pair into buckets of `seconds`, averaging
+     non-nulls. Returns { t: [bucketStartMs], v: [mean|null] }. Used for the
+     active dataset and for zone-context series alike. */
+  function aggregateArrays(tArr, col, fromTs, toTs, seconds) {
     const t = [], v = [];
     let bucket = null, sum = 0, n = 0;
-    for (let i = lo; i < hi; i++) {
-      const b = Math.floor(hh.t[i] / seconds) * seconds;
+    for (let i = 0; i < tArr.length; i++) {
+      if (tArr[i] < fromTs || tArr[i] >= toTs) continue;
+      const b = Math.floor(tArr[i] / seconds) * seconds;
       if (b !== bucket) {
         if (bucket !== null) { t.push(bucket * 1000); v.push(n ? sum / n : null); }
         bucket = b; sum = 0; n = 0;
@@ -145,6 +154,11 @@ const Data = (() => {
     }
     if (bucket !== null) { t.push(bucket * 1000); v.push(n ? sum / n : null); }
     return { t, v };
+  }
+
+  /* Aggregate one active-dataset HH column into buckets of `seconds`. */
+  function aggregate(key, fromTs, toTs, seconds) {
+    return aggregateArrays(hh.t, hh[key], fromTs, toTs, seconds);
   }
 
   /* Daily series filtered to [fromIso, toIso]. Returns {d:[], <key>:[]…}. */
@@ -179,6 +193,33 @@ const Data = (() => {
     return null;
   }
 
+  /* Lazily load another zone's series for CONTEXT (Flows counterparty
+     panel, import-aware low-carbon) without replacing the active dataset.
+     Cached per session; concurrent callers share one in-flight promise. */
+  const zoneContextCache = new Map();
+  function loadZoneContext(z) {
+    if (zoneContextCache.has(z)) return zoneContextCache.get(z);
+    const v = manifest ? `?v=${manifest.version}` : "";
+    const get = async (path) => {
+      const resp = await fetch(path);
+      if (!resp.ok) throw new Error(`${path}: HTTP ${resp.status}`);
+      return resp.json();
+    };
+    const promise = Promise.all([
+      get(`data/zones/${z}/series_hh.json${v}`),
+      get(`data/zones/${z}/meta.json${v}`),
+    ]).then(([chh, cmeta]) => {
+      const index = new Map();
+      chh.t.forEach((ts, i) => index.set(ts, i));
+      return { hh: chh, meta: cmeta, index };
+    }).catch((error) => {
+      zoneContextCache.delete(z); // allow retry after a transient failure
+      throw error;
+    });
+    zoneContextCache.set(z, promise);
+    return promise;
+  }
+
   /* True when a column carries any real signal (non-null AND non-zero).
      Constant-zero generation columns are TSO placeholders (e.g. IE solar)
      — display paths exclude them; the raw data keeps them. */
@@ -211,7 +252,7 @@ const Data = (() => {
     get zone() { return zone; },
     currency, ZONE_INFO,
     FUELS, INTERCONNECTORS, STACK_ORDER, LOW_CARBON,
-    hhRange, aggregate, dailySlice, latest, latestDaily, hhQuantile,
-    hasSignal,
+    hhRange, aggregate, aggregateArrays, dailySlice, latest, latestDaily,
+    hhQuantile, hasSignal, loadZoneContext, CABLE_ZONE,
   };
 })();

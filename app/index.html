@@ -335,6 +335,30 @@
         <div class="chart" id="ch-flows-share"></div>
       </div>
     </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>Counterparty context
+          <span class="badge observed">Observed</span>
+          <span class="badge estimated">Derived £</span>
+          <select id="cable-select" title="GB interconnector cable"></select>
+        </h2>
+        <p>What was happening in the zone on the other end of the selected
+           cable: the cable's flow (GB side), GB price against the zone's
+           day-ahead price — converted to £ at the daily BoE EUR/GBP rate
+           and <b>indicative only</b> (day-ahead auction vs within-day MID,
+           different market segments) — and the zone's generation mix below.
+           The mix is zone-wide <b>context, not attribution</b>: it does not
+           trace the cable's electrons. Zone data is a rolling ~30 days, so
+           longer ranges show only the overlapping window.
+           <span class="info" data-method="counterparty">ⓘ</span></p>
+        <p class="card-meta" id="cable-meta"></p>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart tall" id="ch-flows-context"></div>
+        <div class="chart" id="ch-flows-context-mix"></div>
+        <div class="chart-empty hidden" id="context-empty"></div>
+      </div>
+    </div>
   </section>
 
   <!-- ============ METHODOLOGY ============ -->

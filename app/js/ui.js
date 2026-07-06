@@ -566,10 +566,44 @@ const UI = (() => {
 
       <h3 id="m-lowcarbon">Low-carbon share (estimated)</h3>
       <div class="formula">low_carbon = (nuclear + biomass + hydro + pumped storage + wind + solar) / total supply</div>
-      <p>Biomass is included per GB grid-intensity convention; imports are
-         counted in the denominator but excluded from the numerator because
-         their origin mix is not observed. Both choices are debatable — hence
-         Estimated.</p>
+      <p>Biomass is included per GB grid-intensity convention; in the
+         headline metric imports are counted in the denominator but excluded
+         from the numerator because their origin mix is not observed at the
+         cable. Both choices are debatable — hence Estimated. This headline
+         series keeps one unbroken definition across the full 365-day
+         history.</p>
+      <div class="formula">import_aware = (GB low-carbon + Σ import_flow × zone_low_carbon_fraction) / (GB generation + Σ import_flow)</div>
+      <p>The dashed <b>import-aware</b> line attributes each cable's imports
+         at the exporting zone's own low-carbon generation fraction at that
+         half-hour (ENTSO-E counterparty mix). Honesty limits, stated
+         plainly: this is <b>first-order counterparty-mix attribution, not
+         flow tracing</b> — the exporting zone's own imports are not
+         re-attributed; it exists only over the rolling ~30-day zone-context
+         window (no backfill — the line simply starts where zone history
+         does); where a zone's data is missing at a timestamp, that cable's
+         import falls back to the headline treatment (denominator only);
+         exports are excluded from both metrics. It is a second metric
+         beside the headline, not a splice into it.</p>
+
+      <h3 id="m-counterparty">Counterparty context (Flows tab)</h3>
+      <p>For a selected GB cable, the panel shows the cable's observed flow
+         alongside the counterparty zone's day-ahead price and generation
+         mix (loaded lazily from the per-zone ENTSO-E datasets; DE_LU is a
+         reference market with no GB cable and is never offered here).
+         Read the caveats:</p>
+      <ul>
+        <li><b>The remote price is Derived and indicative only.</b> It is a
+            day-ahead auction price in EUR converted at the daily Bank of
+            England EUR/GBP rate (weekends carry the last business day),
+            compared against GB's within-day MID index — different market
+            segments, so the gap is context, not a tradable spread.</li>
+        <li><b>The mix is zone-wide context, not attribution.</b> It shows
+            what the exporting zone was running, not which plants supplied
+            the cable's electrons.</li>
+        <li><b>Zone context is a rolling ~30 days</b> versus GB's 365, so
+            longer ranges are clipped to the overlap (stated in the panel's
+            meta line). TSO reporting gaps appear as gaps.</li>
+      </ul>
 
       <h3 id="m-overnight">Overnight summary (AI-generated)</h3>
       <p>The panel below the KPI strip is written by an LLM (the

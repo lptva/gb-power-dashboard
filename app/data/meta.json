@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-07-06T06:06:58+00:00",
+  "built_at": "2026-07-06T14:36:57+00:00",
   "mode": "incremental",
   "window": {
     "start": "2025-07-06",
@@ -10,7 +10,7 @@
     "demand": 1.0,
     "price": 1.0,
     "solar": 1.0,
-    "gas_days": 364,
+    "gas_days": 365,
     "carbon_months_observed": 11,
     "carbon_last_observed_month": "2026-05",
     "coal_months_observed": 12,
@@ -103,6 +103,17 @@
       "quality": "proxy / derived",
       "transformations": "USD/t \u00f7 monthly-mean USD per GBP (BoE XUDLUSS) \u00f7 6.978 MWh th/t (6,000 kcal/kg = 25.12 GJ/t)",
       "notes": "This is FOB Newcastle, not API2 CIF ARA \u2014 the European benchmark itself is ICE commercial data. Levels track but do not equal API2 (freight/quality basis). Manual coal input overrides this proxy."
+    },
+    "fx_eur_per_gbp": {
+      "name": "EUR per GBP, daily spot",
+      "source": "Bank of England IADB, series XUDLERS",
+      "endpoint": "https://www.bankofengland.co.uk/boeapps/iadb/fromshowcolumns.asp",
+      "unit": "EUR/GBP",
+      "resolution": "daily",
+      "update_frequency": "daily (business days)",
+      "quality": "observed",
+      "transformations": "weekends/holidays carry the last business day forward",
+      "notes": "Used only to convert counterparty zones' day-ahead prices to GBP for the Flows context panel; the converted price is labelled Derived (day-ahead auction vs within-day MID \u2014 indicative, not a tradable spread)."
     },
     "carbon_uka_month": {
       "name": "UKA price (UK ETS), average by calendar month",

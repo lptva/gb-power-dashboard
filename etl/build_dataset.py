@@ -558,6 +558,46 @@ def fetch_fx_monthly(start: date, end: date) -> dict[str, float]:
     return out
 
 
+def fetch_fx_eur_daily(start: date, end: date) -> dict[str, float]:
+    """Daily EUR per GBP from BoE spot series XUDLERS, weekends/holidays
+    carrying the last business day forward. Used to convert counterparty
+    zones' day-ahead prices (EUR) to GBP for the Flows context panel —
+    the converted price is labelled Derived in the app.
+
+    Direction is asserted, not assumed: XUDLERS quotes euros per pound
+    (~1.1–1.3 in recent years); a value outside [0.95, 1.6] aborts rather
+    than silently inverting the conversion.
+    """
+    url = (f"{BOE_IADB}?csv.x=yes&Datefrom={start:%d/%b/%Y}"
+           f"&Dateto={end:%d/%b/%Y}&SeriesCodes=XUDLERS&CSVF=TN"
+           f"&UsingCodes=Y&VPD=Y&VFD=N")
+    text = http(url, ua=BROWSER_UA)
+    observed: dict[str, float] = {}
+    for row in csv.DictReader(io.StringIO(text)):
+        day = datetime.strptime(row["DATE"], "%d %b %Y").date()
+        rate = float(row["XUDLERS"])
+        if not 0.95 <= rate <= 1.6:
+            raise SystemExit(f"FX sanity check failed: XUDLERS={rate} on "
+                             f"{day} is outside the plausible EUR-per-GBP "
+                             "range — refusing to publish a possibly "
+                             "inverted conversion")
+        observed[day.isoformat()] = round(rate, 4)
+    # forward-fill calendar days (weekends, holidays)
+    out: dict[str, float] = {}
+    last = None
+    cursor = start
+    while cursor <= end:
+        key = cursor.isoformat()
+        last = observed.get(key, last)
+        if last is not None:
+            out[key] = last
+        cursor += timedelta(days=1)
+    print(f"  BoE EUR/GBP daily: {len(observed)} business days, "
+          f"ffilled to {len(out)} calendar days "
+          f"(latest {max(observed)} = {observed[max(observed)]})")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Normalisation and output
 # ---------------------------------------------------------------------------
@@ -634,6 +674,16 @@ def build(days: int, incremental: bool = False) -> None:
               "app falls back to manual coal input")
         coal_gbp, coal_note = {}, str(error)
 
+    print("Fetching BoE EUR/GBP daily (Flows counterparty context)…")
+    try:
+        fx_eur = fetch_fx_eur_daily(start, end)
+    except SystemExit:
+        raise
+    except Exception as error:  # noqa: BLE001 — context FX is optional
+        print(f"  WARNING: EUR/GBP unavailable ({error}); the Flows "
+              "counterparty price overlay will be hidden")
+        fx_eur = {}
+
     # Canonical half-hourly time axis: union of FUELHH timestamps
     axis = sorted(fuel)
     fuel_types = sorted({ft for row in fuel.values() for ft in row})
@@ -673,6 +723,7 @@ def build(days: int, incremental: bool = False) -> None:
         for d in days_sorted
     ]
     daily_out["gas_sap"] = [gas.get(d) for d in days_sorted]
+    daily_out["fx_eur_per_gbp"] = [fx_eur.get(d) for d in days_sorted]
 
     # UKA: observed monthly average where published; forward-filled beyond
     # the last published month (publication lags ~1-2 months). The parallel
@@ -811,6 +862,21 @@ def build(days: int, incremental: bool = False) -> None:
                          "basis). Manual coal input overrides this proxy."
                          + (f" UNAVAILABLE THIS BUILD: {coal_note}"
                             if coal_note else ""),
+            },
+            "fx_eur_per_gbp": {
+                "name": "EUR per GBP, daily spot",
+                "source": "Bank of England IADB, series XUDLERS",
+                "endpoint": BOE_IADB,
+                "unit": "EUR/GBP", "resolution": "daily",
+                "update_frequency": "daily (business days)",
+                "quality": "observed",
+                "transformations": "weekends/holidays carry the last "
+                                   "business day forward",
+                "notes": "Used only to convert counterparty zones' "
+                         "day-ahead prices to GBP for the Flows context "
+                         "panel; the converted price is labelled Derived "
+                         "(day-ahead auction vs within-day MID — "
+                         "indicative, not a tradable spread).",
             },
             "carbon_uka_month": {
                 "name": "UKA price (UK ETS), average by calendar month",

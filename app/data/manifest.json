@@ -1,20 +1,20 @@
 {
   "schema": 1,
-  "version": 22,
-  "built_at": "2026-07-06T06:06:58+00:00",
+  "version": 23,
+  "built_at": "2026-07-06T14:36:57+00:00",
   "mode": "incremental",
   "files": {
     "series_hh.json": {
-      "sha256": "80cd11d7717eb2894e590dd6a19083defcdfdc0a5a4908099f19fafc4f33c677",
+      "sha256": "2ac0ae7484a3288267d618f4855a174331095e527b86e59d74056360a1cb691a",
       "bytes": 2374358
     },
     "series_daily.json": {
-      "sha256": "5376d7b7e62dc6a72370e15d89a70bc67f4335085125ce4450547b9f0a1afab5",
-      "bytes": 88494
+      "sha256": "865f3a4f53e1d9fc4b9324d0edaddec356fc95f3b18f706a2f95c01b35cbf1ce",
+      "bytes": 91396
     },
     "meta.json": {
-      "sha256": "7b9bf9239d90e976d2a8500c4a1540043f88862696d3d5a2893217af91fd038f",
-      "bytes": 5122
+      "sha256": "14fcc484864a596347557cab3c8b4e480c8035082fbd02ce17d82587f7c96ca1",
+      "bytes": 5783
     },
     "bmu_snapshot.json": {
       "sha256": "349198082a63e23480e6960e988deca6d538a2a06f39231c865f29b02d4a1146",
