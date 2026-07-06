@@ -1,137 +1,73 @@
 {
- "generated_at": "2026-07-05T21:35:33+00:00",
  "window": {
-  "from": "2026-07-03T22:30:00Z",
-  "to": "2026-07-04T22:30:00Z"
+  "from": "2026-07-04T22:30:00Z",
+  "to": "2026-07-05T22:30:00Z"
  },
- "baseline_days": 14,
- "summary": "Exceptionally high wind output averaged 10,703 MW across the 24-hour window (z=+1.75 against a 14-day baseline mean of 5,374 MW), and combined with strong solar generation it drove wholesale prices sharply negative for 13 of 49 half-hourly periods between 07:00 and 14:00 UTC on 4 July, troughing at -14.08 \u00a3/MWh. CCGT averaged only 2,857 MW versus a 14-day baseline of 10,060 MW, consistent with gas-fired plant being largely displaced from the stack by renewable abundance. By the evening peak, prices recovered to 100\u2013120 \u00a3/MWh as solar faded and demand rose above 24,000 MW; the Viking interconnector (INTVKL) switched from a baseline net-export position (-140 MW average) to net import (+442 MW overnight average).",
- "metrics": [
-  {
-   "metric": "price",
-   "unit": "\u00a3/MWh",
-   "overnight_avg": 54.35,
-   "overnight_min": -14.08,
-   "overnight_max": 123.57,
-   "baseline_avg": 104.79,
-   "baseline_std": 54.44,
-   "z": -0.93
+ "tabs": {
+  "overview": {
+   "takeaway": "A Sunday low-demand profile cushioned by 5,690 MW average net imports and strong daytime renewables kept the 24-hour average price near the 14-day mean despite a \u00a364 intraday range driven by a sharp morning wind trough.",
+   "analysis": "The 5 July 2026 window (Sunday) recorded GB demand at 20,072 MW on average \u2014 10% below the 14-day baseline of 22,382 MW (z=\u22120.62). Interconnectors absorbed the gap: net imports averaged 5,690 MW (z=+1.03 vs baseline 2,028 MW), peaking at 8,094 MW at 17:00 UTC as the evening demand ramp coincided with maximum Continental flows. CCGT was heavily displaced, averaging 3,750 MW (z=\u22121.25 vs baseline 9,692 MW) and running at or near its minimum of 2,339 MW between 02:30 and 14:00 UTC, with the shortfall covered by wind, solar, and imports. Wind averaged 6,441 MW (z=+0.17) but swung sharply: it opened at 11,322 MW at 22:30 UTC on 4 July, collapsed to 3,327 MW by 10:00 UTC on 5 July, then recovered to 8,509 MW by 22:30 UTC. Solar peaked at 11,023 MW and together with wind briefly exceeded GB demand, yielding a low-carbon share averaging 74.5% (peak 127% at solar midday, implying net low-carbon export via interconnectors). Nuclear ran flat at approximately 3,000 MW throughout. The 24-hour average price of \u00a396.69/MWh (z=\u22120.07 vs baseline \u00a3100.76) masked a \u00a364 intraday range: 16 of 49 periods cleared below the marginal SRMC in the overnight trough (minimum \u00a359.14 at 06:00 UTC), while the 10:00\u201311:00 UTC wind trough and 17:00\u201321:00 UTC evening peak pushed prices to \u00a3122\u2013123/MWh. Evening demand peaked at 26,207 MW at 18:30 UTC \u2014 31% above the overnight trough demand of 16,402 MW at 13:00 UTC.",
+   "findings": [
+    {
+     "title": "Wind fell 7,995 MW in 11.5 hours, driving the only sustained price spike",
+     "detail": "Wind dropped from 11,322 MW at 22:30 UTC (4 July) to 3,327 MW at 10:00 UTC (5 July) \u2014 a 7,995 MW decline in 11.5 hours. This was the sole cause of the \u00a3122\u2013123/MWh spike at 10:00\u201311:00 UTC; the subsequent recovery to 8,509 MW by 22:30 UTC confirmed a passing frontal system rather than a structural output loss."
+    },
+    {
+     "title": "Net imports peaked at 8,094 MW \u2014 near the practical interconnector ceiling",
+     "detail": "The 17:00 UTC net import peak of 8,094 MW approached the combined rated capacity of active interconnectors. At that hour CCGT was at only 4,915 MW with substantial remaining headroom, but the near-ceiling import position means future stress events with higher Continental prices could force more expensive domestic dispatch with limited relief from additional imports."
+    }
+   ]
   },
-  {
-   "metric": "demand",
-   "unit": "MW",
-   "overnight_avg": 19281.98,
-   "overnight_min": 15208.0,
-   "overnight_max": 24194.0,
-   "baseline_avg": 22527.41,
-   "baseline_std": 3622.55,
-   "z": -0.9
+  "merit_order": {
+   "takeaway": "Gas (CCGT) was marginal at 22:30 UTC on 5 July; the observed \u00a392.85/MWh clearing price sat 8.5% above the implied SRMC of \u00a385.61/MWh, driven by an import contraction of 5,390 MW from the 17:00 UTC peak and residual evening-peak CCGT commitment cost recovery.",
+   "analysis": "The merit order panel's reference period (22:30 UTC, 5 July) had demand of 21,795 MW and net imports of 2,704 MW, yielding a domestic net load target of 19.09 GW. The capacity proxies stack nuclear (5.16 GW) + biomass (3.33 GW) + hydro (0.92 GW) + wind (8.51 GW) = 17.92 GW of infra-CCGT supply, requiring CCGT to supply the residual 1.17 GW at the clearing point of the 40.02 GW merit curve; CCGT observed output was 5,541 MW, well inside CCGT capacity (21.82 GW), so the technology is unambiguously marginal. The panel's implied SRMC of \u00a385.61/MWh, derived from gas SAP of \u00a336.447/MWh thermal and UKA carbon of \u00a352.41/tCO2, sits 8.5% (\u00a37.24/MWh) below the \u00a392.85/MWh observed clearing price. Three factors explain the gap. First, net imports contracted sharply from 8,094 MW at 17:00 UTC to 2,704 MW at 22:30 UTC \u2014 a 5,390 MW withdrawal in 5.5 hours as Continental day-ahead trades unwound; each MW of import withdrawn required domestic CCGT at tight intra-day pricing that is structurally above the day-ahead SRMC benchmark. Second, CCGT units committed for the 17:00\u201321:00 evening peak (output reached 7,280 MW at 21:00 UTC) carry start-up and fixed commitment costs that are not captured in the clean SRMC but are recovered in market-clearing uplift; with CCGT backing down from 7,280 MW to 5,541 MW between 21:00 and 22:30 UTC, those units are still earning their commitment costs across post-peak periods. Third, earlier in the same settlement day 16 of 49 consecutive half-hourly periods (00:00\u201307:30 UTC) cleared below the implied SRMC \u2014 the overnight trough where high wind and maximum interconnector import suppressed prices to as low as \u00a359.14/MWh \u2014 demonstrating that overnight CCGT below-cost running is a real cost embedded in the unit's intra-day schedule; the post-peak premium partially compensates for that exposure.",
+   "figures": {
+    "observed_price_gbp_mwh": 92.85,
+    "implied_clearing_gbp_mwh": 85.61,
+    "marginal_technology": "Gas (CCGT)",
+    "gap_pct": 8.5
+   },
+   "findings": [
+    {
+     "title": "Import contraction of 5,390 MW in 5.5 hours is the primary gap driver",
+     "detail": "Net imports fell from 8,094 MW (17:00 UTC) to 2,704 MW (22:30 UTC) as day-ahead Continental flows unwound. This shift from low-cost Continental supply to domestic CCGT at tight intra-day margins is not reflected in the clean SRMC and is the single largest structural contributor to the 8.5% observed-vs-implied gap."
+    },
+    {
+     "title": "16 sub-SRMC periods earlier confirm overnight CCGT below-cost running",
+     "detail": "Between 00:00 and 07:30 UTC, 16 consecutive half-hourly periods cleared below the implied SRMC of \u00a385.61/MWh (minimum \u00a359.14/MWh at 06:00 UTC), with CCGT running at its minimum of approximately 3,007 MW to avoid restart costs. The evening premium at 22:30 UTC is partly the accounting counterpart to those overnight losses for committed CCGT units."
+    }
+   ]
   },
-  {
-   "metric": "wind",
-   "unit": "MW",
-   "overnight_avg": 10703.43,
-   "overnight_min": 6351.0,
-   "overnight_max": 12881.0,
-   "baseline_avg": 5374.42,
-   "baseline_std": 3046.27,
-   "z": 1.75
+  "spreads": {
+   "takeaway": "The day-average clean spark was approximately \u00a39.46/MWh \u2014 compressed by a rising gas SAP (\u00a336.45/MWh, +9.4% vs ten days prior) \u2014 with 16 of 49 intraday periods clearing below the implied SRMC; positive sparks were concentrated in the morning wind trough and evening peak.",
+   "analysis": "Gas SAP on 5 July was \u00a336.447/MWh (thermal HHV), above the 14-day mean of \u00a335.20/MWh (\u03c3=\u00a31.01, z\u2248+1.2), and continuing a 10-day upward trend from \u00a333.31/MWh on 25 June \u2014 a 9.4% rise in NBP conditions. At standard CCGT assumptions (55% efficiency, 0.40 tCO2/MWh thermal gas) this implies an SRMC of \u00a387.23/MWh, consistent with the panel's implied clearing of \u00a385.61/MWh (the small difference reflects the panel's own parameterisation). The 24-hour average price of \u00a396.69/MWh yields a day-average clean spark of approximately \u00a39.46/MWh, well below the estimated 14-day daily-average CSS of approximately \u00a315/MWh and reflecting the bimodal intraday price structure: 16 sub-SRMC periods in the overnight trough (minimum clean spark approximately \u2212\u00a326/MWh at 06:00 UTC when the \u00a359.14 price coincided with maximum overnight wind and imports) offset by sharply positive sparks during the 10:00\u201311:00 UTC wind trough (prices \u00a3122\u2013123/MWh, spark \u2248 +\u00a336/MWh) and the 17:00\u201321:00 UTC evening peak (\u00a3118\u2013122/MWh, spark \u2248 +\u00a332\u201336/MWh). Carbon (UKA) at \u00a352.41/tCO2, forward-filled from the May-2026 monthly average, is held constant across the window and contributes approximately \u00a320.96/MWh to the CCGT SRMC; any intra-month UKA price variation is not captured. The clean dark spread is approximately \u00a35.83/MWh on a day-average basis (using the coal proxy of \u00a314.89/MWh thermal at 36% efficiency and 0.34 tCO2/MWh thermal coal carbon intensity), leaving coal generation economically unviable at current carbon prices; no coal output was observed in any period, consistent with the post-market-exit position of GB coal.",
+   "findings": [
+    {
+     "title": "Gas SAP +9.4% in 10 days is compressing clean spark structurally",
+     "detail": "Gas SAP rose from \u00a333.31/MWh on 25 June to \u00a336.45/MWh on 5 July, lifting the CCGT SRMC from approximately \u00a381.53 to \u00a387.23/MWh (+\u00a35.70/MWh). On a positive-spark trading day the clean spark has narrowed from approximately \u00a322/MWh to approximately \u00a39.46/MWh over the same period. If the trend persists, CSS will approach break-even, reducing new-CCGT investment signals."
+    }
+   ]
   },
-  {
-   "metric": "solar",
-   "unit": "MW",
-   "overnight_avg": 3467.07,
-   "overnight_min": 0.0,
-   "overnight_max": 10565.0,
-   "baseline_avg": 4451.95,
-   "baseline_std": 4866.61,
-   "z": -0.2
-  },
-  {
-   "metric": "netImports",
-   "unit": "MW",
-   "overnight_avg": 2533.92,
-   "overnight_min": -2892.0,
-   "overnight_max": 6236.0,
-   "baseline_avg": 2198.49,
-   "baseline_std": 3615.92,
-   "z": 0.09
-  },
-  {
-   "metric": "residual_load",
-   "unit": "MW",
-   "overnight_avg": 5111.48,
-   "overnight_min": -7867.0,
-   "overnight_max": 15442.0,
-   "baseline_avg": 12701.04,
-   "baseline_std": 7753.71,
-   "z": -0.98
-  },
-  {
-   "metric": "CCGT",
-   "unit": "MW",
-   "overnight_avg": 2856.57,
-   "overnight_min": 2316.0,
-   "overnight_max": 4768.0,
-   "baseline_avg": 10059.97,
-   "baseline_std": 4479.97,
-   "z": -1.61
-  },
-  {
-   "metric": "NUCLEAR",
-   "unit": "MW",
-   "overnight_avg": 2942.0,
-   "overnight_min": 2645.0,
-   "overnight_max": 3022.0,
-   "baseline_avg": 3172.79,
-   "baseline_std": 252.38,
-   "z": -0.91
-  },
-  {
-   "metric": "clean_spark",
-   "unit": "\u00a3/MWh",
-   "overnight_avg": 24.43,
-   "overnight_min": 19.44,
-   "overnight_max": 27.92,
-   "baseline_avg": 11.81,
-   "baseline_std": 54.63,
-   "z": 0.23
-  },
-  {
-   "metric": "clean_dark",
-   "unit": "\u00a3/MWh",
-   "overnight_avg": -35.69,
-   "overnight_min": -104.11,
-   "overnight_max": 33.54,
-   "baseline_avg": 14.76,
-   "baseline_std": 54.44,
-   "z": -0.93
+  "flows": {
+   "takeaway": "GB imported heavily throughout the window (average 5,690 MW, z=+1.03); Viking Link, BritNed, and Nemo Link all reversed from 14-day net-export positions to significant imports, while French and Norwegian routes ran near rated capacity in the import direction.",
+   "analysis": "Aggregate net imports averaged 5,690 MW over the 24-hour window (z=+1.03 vs baseline 2,028 MW), peaking at 8,094 MW at 17:00 UTC. The French corridor (INTFR + INTIFA2 + INTELEC) accounted for 1,802 + 861 + 887 = 3,550 MW on average, approaching the combined corridor capacity ceiling. Norway's North Sea Link (INTNSL) averaged 1,363 MW import (z=+0.67 vs baseline 860 MW), also near its rated limit. The standout movers were three interconnectors that reversed direction relative to their 14-day baseline: Viking Link (INTVKL, Denmark) swung from \u2212143 MW baseline (net GB export) to +1,221 MW import (swing: +1,364 MW, z=+1.17), its range within the window 470\u20131,426 MW, indicating a persistent day-long Continental (Nordic/Danish) surplus pricing below the GB level; BritNed (INTNED, Netherlands) reversed from \u2212169 MW to +348 MW (swing: +517 MW); and Nemo Link (INTNEM, Belgium) moved from \u2212352 MW to +41 MW (swing: +392 MW), consistent with Dutch and Belgian day-ahead prices clearing below GB throughout. The Irish routes remained in export mode \u2014 INTIRL \u2212361 MW and INTEW \u2212471 MW \u2014 consistent with GB dispatching overnight and midday low-carbon surplus to Ireland. Greenlink (INTGRNL) reported zero flow across all 49 half-hourly periods; the 14-day baseline average was \u221245 MW, and the ETL records zero not null, making the cause indeterminate from the dataset alone.",
+   "findings": [
+    {
+     "title": "INTVKL reversed ~1,364 MW from export to import \u2014 persistent Continental surplus",
+     "detail": "Viking Link averaged +1,221 MW import vs a 14-day baseline of \u2212143 MW (swing: ~1,364 MW), remaining in import mode in every half-hourly period (range: 470\u20131,426 MW). If this directional shift becomes structural, it increases GB import dependency on Nordic/Danish market pricing and exposes GB wholesale prices to Nordic hydro dispatch and Danish wind conditions."
+    },
+    {
+     "title": "INTGRNL zero all 49 periods \u2014 check REMIT before next refresh",
+     "detail": "Greenlink reported zero flow in all 49 half-hourly periods (14-day baseline mean: \u221245 MW). The ETL records zero not null, making a genuine zero-flow condition indistinguishable from missing or failed telemetry. The Elexon REMIT/outage board should be checked to determine whether this is a planned outage or a data-coverage gap."
+    }
+   ]
   }
- ],
- "anomalies": [
-  {
-   "metric": "price_min",
-   "value": -14.08,
-   "z": -2.18,
-   "hypothesis": "consistent with wind output sustaining 11,000\u201312,600 MW throughout the morning alongside solar peaking at 10,565 MW, producing a combined renewable output that exceeded gross transmission-metered demand (~15,000\u201316,000 MW) during the 07:00\u201314:00 UTC window, clearing prices below zero across 13 half-hourly periods"
-  },
-  {
-   "metric": "residual_load_min",
-   "value": -7867.0,
-   "z": -2.65,
-   "hypothesis": "consistent with wind (12,510 MW) plus solar (10,565 MW) exceeding gross demand (15,208 MW) by 7,867 MW at 13:00 UTC on 4 July; net exports of -1,640 MW absorbed part of the surplus but residual turned deeply negative, coinciding with the period of most negative prices (-11.08 \u00a3/MWh); note this reflects a genuine oversupply condition rather than a methodology error"
-  },
-  {
-   "metric": "clean_dark_min",
-   "value": -104.11,
-   "z": -2.18,
-   "hypothesis": "consistent with the negative price periods driving coal dark spread to deeply negative levels; interpret with caution as both coal proxy and carbon price are forward-filled from prior monthly data for this date, making the absolute magnitude an estimate"
-  }
- ],
+ },
  "data_quality": [
-  "carbon_ffill=True on 2026-07-03, 2026-07-04: UKA carbon price forward-filled from 2026-05 monthly average; clean spark and dark spreads are estimates only",
-  "coal_ffill=True on 2026-07-03, 2026-07-04: coal proxy (Newcastle futures) forward-filled; clean dark spread is an estimate only",
-  "gas_sap=None for 2026-07-04: clean spark spread is computed on the three July-03 half-hourly periods only (22:30, 23:00, 23:30) \u2014 all 46 July-04 periods excluded; overnight clean_spark figure is not representative",
-  "Series ends at 2026-07-04T22:30:00Z; July-05 overnight window (00:00\u201306:00 UTC) is absent from the dataset despite the ETL build timestamp of 2026-07-05T06:03:38Z \u2014 analysis window is therefore 2026-07-03T22:30Z to 2026-07-04T22:30Z"
- ]
+  "carbon_ffill=True on 2026-07-04, 2026-07-05: UKA carbon price forward-filled from May-2026 monthly average (\u00a352.41/tCO2); clean spark and dark spreads are estimates only",
+  "coal_ffill=True on 2026-07-04, 2026-07-05: coal proxy (Newcastle futures) forward-filled from June-2026 monthly average (\u00a314.89/MWh th); clean dark spread is an estimate only",
+  "INTGRNL reported zero across all 49 half-hourly periods (vs \u221245 MW 14-day baseline mean): ETL records zero not null \u2014 a genuine zero-flow condition cannot be distinguished from missing telemetry without checking the Elexon notice board",
+  "fx_eur_per_gbp (1.1673) forward-filled from last business day (Friday 2026-07-03): zone day-ahead price conversions to GBP are indicative only"
+ ],
+ "generated_at": "2026-07-06T16:15:49+00:00"
 }

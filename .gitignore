@@ -9,3 +9,4 @@ ops/logs/
 
 # macOS noise
 .DS_Store
+ops/__pycache__/

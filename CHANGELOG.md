@@ -246,6 +246,34 @@ live in `plan/`.
   a 629 px card), worst-case two-row height 40 px vs the "100" tick at
   58 px — no collision at any practical width.
 
+### Overnight summary rework (2026-07-06, follow-up)
+- **Per-tab analysis**: `overnight_summary.json` now carries one section per
+  tab (`tabs.overview` / `merit_order` / `spreads` / `flows`) and each tab
+  renders only its own — Overview, Prices and Generation share the general
+  narrative; Merit order analyses the implied-clearing vs observed-price gap
+  (`ops/merit_panel_figures.py` recomputes the panel's exact model — same
+  ladder, tranches, rounding and capacity proxies as `metrics.js`, verified
+  identical to the browser's values — and injects the figures into the
+  prompt; the publisher rejects a summary whose figures deviate, so the LLM
+  explains the gap but never computes it, covering gaps > ~15% via marginal
+  technology, capacity binding, scarcity or known proxy limits); Spreads
+  places spark/dark against their own history; Flows covers cable direction
+  flips and import dependency. The card is hidden on the Methodology tab
+  (it documents the dashboard, not the market).
+- **Analysis over enumeration**: the `dashboard-watcher` system prompt now
+  demands synthesis — at most two causally-explained findings per tab,
+  correlated consecutive anomalies collapsed into one explained finding; the
+  runner's validator refuses to publish more than two findings per tab or a
+  missing `merit_order.figures` block (observed price, implied clearing,
+  marginal technology, gap %).
+- **Collapsed by default**: the panel shows badge, generated timestamp and a
+  one-line takeaway; clicking (or Enter/Space — the head is a keyboard
+  button) expands the full analysis, findings and data-quality flags.
+  Expansion state is in-memory only, per the no-browser-storage rule.
+- **Layout**: removed the 960 px `max-width` that made the first paragraph
+  wrap narrower than the card; prose now uses the full container width like
+  every other card body.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

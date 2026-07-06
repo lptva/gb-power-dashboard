@@ -15,11 +15,19 @@ Everything needed to re-run the ETL on a schedule, without manual steps.
    subagent** headlessly (`claude --agent dashboard-watcher -p …`, model:
    sonnet — a real LLM call) and writes its JSON analysis to
    `app/data/overnight_summary.json` plus a human-readable
-   `overnight_summary.md`. Non-fatal: a failed run leaves the previously
+   `overnight_summary.md`. The JSON carries one analysis section per
+   dashboard tab (`tabs.overview` / `merit_order` / `spreads` / `flows`);
+   the validator refuses to publish missing sections, empty
+   takeaway/analysis strings, more than two findings per tab, or a missing
+   merit-order figures block. The merit figures themselves are computed
+   deterministically (`ops/merit_panel_figures.py`, mirroring the panel's
+   model in `app/js/metrics.js`), injected into the prompt, and
+   cross-checked on publish — a summary whose figures deviate from the
+   panel's own numbers is rejected. Non-fatal: a failed run leaves the previously
    published summary untouched (agent stderr lands in
-   `ops/logs/overnight.err.log`). The dashboard renders this in the
-   "Overnight summary" panel, badged AI-generated — it is model
-   interpretation, not a data series.
+   `ops/logs/overnight.err.log`). The dashboard renders the active tab's
+   section in the collapsible "Overnight summary" panel, badged
+   AI-generated — it is model interpretation, not a data series.
 
 Output goes to `app/data/`, logs to `ops/logs/refresh_YYYY-MM-DD.log`.
 Non-zero exit if the core dataset refresh fails.

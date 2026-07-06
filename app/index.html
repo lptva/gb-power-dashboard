@@ -69,14 +69,21 @@
 
   <!-- AI-generated interpretation — a different trust category from every
        data panel, hence the distinct dashed styling and badge. Populated
-       from data/overnight_summary.json (ops/run_overnight_summary.sh). -->
+       from data/overnight_summary.json (ops/run_overnight_summary.sh),
+       which carries one section per tab; the active tab's section renders
+       here. Collapsed by default — head shows badge, timestamp and the
+       one-line takeaway; clicking expands the full analysis. -->
   <section class="card ai-card" id="overnight">
-    <div class="card-head">
+    <div class="card-head overnight-head" id="overnight-head" role="button"
+         tabindex="0" aria-expanded="false" aria-controls="overnight-body">
       <h2>Overnight summary <span class="badge ai">✦ AI-generated</span>
-        <span class="info" data-method="overnight">ⓘ</span></h2>
+        <span class="info" data-method="overnight">ⓘ</span>
+        <span class="overnight-chev" id="overnight-chev"
+              aria-hidden="true">▸</span></h2>
       <p class="card-meta" id="overnight-meta"></p>
+      <p class="overnight-takeaway" id="overnight-takeaway"></p>
     </div>
-    <div id="overnight-body"></div>
+    <div id="overnight-body" class="hidden"></div>
   </section>
 
   <!-- ============ OVERVIEW ============ -->

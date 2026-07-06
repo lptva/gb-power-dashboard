@@ -215,8 +215,21 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
 .badge.ai { color: #a78bfa; border-color: rgba(167, 139, 250, .4);
   background: rgba(167, 139, 250, .08); }
 :root[data-theme="light"] .badge.ai { color: #6d4fc4; }
-.overnight-summary { margin: 2px 0 10px; font-size: 13px;
-  color: var(--text); max-width: 960px; }
+/* Collapsed-by-default head: the whole head toggles (the ⓘ deep link is
+   excluded in JS). Prose runs the full card width — no max-width, matching
+   every other card body. */
+.overnight-head { cursor: pointer; }
+.overnight-head:focus-visible { outline: 2px solid var(--accent-top);
+  outline-offset: 2px; border-radius: 6px; }
+.overnight-chev { margin-left: auto; color: var(--text-dim);
+  font-size: 12px; line-height: 1; }
+.overnight-head:hover .overnight-chev { color: var(--text); }
+.overnight-head .card-meta { margin-bottom: 0; }
+.card-head p.overnight-takeaway { margin: 6px 0 0; font-size: 13px;
+  color: var(--text); }
+.overnight-analysis { margin: 8px 0 10px; font-size: 13px;
+  color: var(--text); }
+.overnight-figures { margin: 8px 0 0; font-size: 12px; }
 .overnight-block { margin-bottom: 8px; }
 .overnight-h { display: block; margin-bottom: 3px; font-size: 10.5px;
   text-transform: uppercase; letter-spacing: .07em; color: var(--text-dim); }
