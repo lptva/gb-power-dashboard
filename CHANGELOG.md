@@ -140,6 +140,31 @@ live in `plan/`.
   "what stays GB-only and why" section. GB's methodology is untouched when
   GB is selected.
 
+### Zone polish + data-quality audit (2026-07-06)
+- **CSV export zone-aware** (the defect was not a hardcoded path — the
+  export already read the in-memory zone dataset): dynamic fuel-column
+  list from what the zone actually reports, `price_<currency>_mwh` header
+  from the zone's settlement currency, net-imports column only where
+  interconnector data exists, `<zone>_market_…` filename.
+- **Footer zone-aware**: GB keeps its original source list verbatim;
+  ENTSO-E zones replace it with "Data: ENTSO-E Transparency Platform" plus
+  the zone dataset's build timestamp.
+- **A03 curve-type parser fix** (found while auditing IE "gaps"): under
+  curveType A03 an omitted position legally carries the previous value to
+  the period's declared END — IE solar publishes single points spanning
+  days, which the parser previously wrote as one half-hour (1,377
+  spuriously "missing" solar half-hours → 34 real ones after the fix).
+  Remaining gaps are genuine TSO submission holes, verified against the
+  raw XML (IE: ~1-hour inter-period holes from EirGrid/SONI; DK_1: one
+  2.6-day all-series outage 13–16 Jun; NO_2: solar never reported —
+  16.1.B&C is mandatory only above ~1% of national generation).
+- **Per-zone `data_quality` notes** now computed at build time into each
+  zone's meta.json (absent series get the threshold-exemption wording;
+  gaps get counts and example date ranges) and rendered on the Methodology
+  tab — labelled, never interpolated.
+- **Git repository initialised** at the project root (first commit
+  2f63860): `.env`, `data_raw/cache/` and `ops/logs/` verified untracked.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one
