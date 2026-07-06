@@ -293,6 +293,31 @@ live in `plan/`.
   only reference-set assumptions. Note: the agent is no longer discoverable
   by interactive sessions started at the workspace root.
 
+### Unit tests for the two proven-bug guards (2026-07-06)
+- `tests/` (stdlib `unittest`, no new dependency —
+  `python3 -m unittest discover -s tests -v`, 17 tests).
+- **Merit-figures parity**: three fixtures sliced from the real published
+  dataset at three regimes (2026-07-05 22:30 CCGT-marginal +4.4% gap;
+  2026-06-20 12:00 solar-glut with must-run Solar marginal; 2026-01-15
+  17:00 winter peak, 36.69 GW target on a 42.07 GW curve, +39.8%);
+  expected values are the app's own `metrics.js` functions executed on the
+  same slices in a real browser — a cross-implementation oracle, not
+  synthetic numbers. Building it immediately caught a real bug:
+  `js_round()` used decimal half-away-from-zero where JS `toFixed` rounds
+  the exact binary double ((11.225).toFixed(2) = "11.22"); fixed with
+  `Decimal`-based exact-binary rounding, pinned by eight browser-verified
+  probes.
+- **Publish-gate tests**: the validator heredoc moved out of
+  `run_overnight_summary.sh` into importable `ops/validate_overnight.py`
+  (same checks, now unit-testable and shared with the pipeline); tests
+  pin the assumption-vocabulary regex against the verbatim known-bad
+  sentence ("55% efficiency, 0.40 tCO2/MWh" → both caught), nine
+  legitimate sentence shapes (carbon prices, percentages of demand,
+  percentiles, reference values — zero false positives), figure-mismatch
+  rejection, findings cap, string-window rejection, prose-prefixed
+  envelope slicing, and that the currently published summary still
+  validates against the live panel recompute.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

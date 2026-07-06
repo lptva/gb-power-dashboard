@@ -1,0 +1,26 @@
+{
+ "figures": {
+  "observed_price_gbp_mwh": 92.85,
+  "implied_clearing_gbp_mwh": 88.94,
+  "marginal_technology": "Gas (CCGT)",
+  "gap_pct": 4.4
+ },
+ "inputs": {
+  "gas_sap_gbp_mwh_th": 36.447,
+  "carbon_uka_gbp_t": 52.41,
+  "demand_mw": 21795,
+  "net_imports_mw": 2704,
+  "target_gw": 19.09,
+  "curve_top_gw": 31.453,
+  "capacity_proxies_gw": {
+   "NUCLEAR": 3.61,
+   "BIOMASS": 2.41,
+   "NPSHYD": 0.6,
+   "CCGT": 15.87,
+   "OCGT": 0.46,
+   "COAL": 0,
+   "WIND": 8.51,
+   "solar": 0
+  }
+ }
+}

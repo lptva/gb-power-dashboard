@@ -65,6 +65,22 @@ Re-run `python etl/build_dataset.py --days 365` whenever you want newer data.
 Raw responses are cached in `data_raw/cache/`, so a refresh only fetches new chunks; delete the cache or pass `--no-cache` to force a full re-fetch.
 The app reads whatever is in `app/data/` at page load — no server restart needed beyond a browser refresh.
 
+## Tests
+
+```
+python3 -m unittest discover -s tests -v
+```
+
+Stdlib `unittest`, no dependencies — consistent with the rest of the
+project. Two suites cover the places that have already caught real bugs:
+`tests/test_merit_panel_figures.py` checks `ops/merit_panel_figures.py`
+against the app's own `metrics.js` outputs (captured in a real browser)
+on three real-data fixtures — this is the guard that stops the overnight
+LLM inventing SRMC figures, so it gets its own safety net;
+`tests/test_overnight_validator.py` pins the publish gate, including the
+assumption-vocabulary regex against the verbatim sentence from the run
+that motivated it.
+
 ## Known limitations
 
 - **MID is a proxy** for the GB spot price (volume-weighted short-term trades), not the day-ahead auction; auction prices are commercial data.

@@ -17,6 +17,7 @@ Stdlib only, like the rest of the ETL.
 import json
 import math
 import sys
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 # app/js/state.js default assumptions (sliders untouched)
@@ -36,10 +37,16 @@ DISPATCHABLE = ["NUCLEAR", "BIOMASS", "NPSHYD", "CCGT", "OCGT", "COAL"]
 
 
 def js_round(value, dp):
-    """JS toFixed()-style half-away-from-zero rounding (Python's round()
-    is banker's rounding, which would diverge on exact halves)."""
-    factor = 10 ** dp
-    return math.floor(abs(value) * factor + 0.5) / factor * (1 if value >= 0 else -1)
+    """Exact JS Number.prototype.toFixed semantics: round the BINARY value
+    of the double (ties, which are only exactly-representable halves, go
+    away from zero — the spec negates first, then picks the larger n).
+    A naive decimal half-up diverges: toFixed(11.225, 2) is 11.22 because
+    the double is 11.2249999…, which the parity tests caught against the
+    browser. Decimal(float) expands the exact binary value."""
+    sign = -1 if value < 0 else 1
+    quantum = Decimal(1).scaleb(-dp)
+    return sign * float(Decimal(abs(value)).quantize(quantum,
+                                                     rounding=ROUND_HALF_UP))
 
 
 def latest(col):
@@ -106,8 +113,11 @@ def merit_curve_steps(rows, capacity_gw, tranche_gw=0.5):
     return tranches
 
 
-def main():
-    data_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "app/data")
+def compute(data_dir):
+    """Full result dict for the dataset in `data_dir` — separated from
+    main() so tests can call it directly (tests/test_merit_panel_figures.py
+    checks parity against metrics.js outputs captured in the browser)."""
+    data_dir = Path(data_dir)
     hh = json.loads((data_dir / "series_hh.json").read_text())
     daily = json.loads((data_dir / "series_daily.json").read_text())
 
@@ -122,10 +132,9 @@ def main():
     net = latest(net_imports_col)
 
     if gas is None or carbon is None or price is None or demand is None:
-        print(json.dumps({"error": "missing input",
-                          "gas_sap": gas, "carbon_uka_month": carbon,
-                          "price": price, "demand": demand}))
-        return
+        return {"error": "missing input",
+                "gas_sap": gas, "carbon_uka_month": carbon,
+                "price": price, "demand": demand}
 
     rows = merit_ladder(gas, carbon, coal_proxy)
     cap = {k: (lambda q: None if q is None else q / 1000)
@@ -145,7 +154,7 @@ def main():
         "gap_pct": js_round((price - clearing["srmc"]) / clearing["srmc"] * 100, 1)
                    if clearing else None,
     }
-    print(json.dumps({
+    return {
         "figures": figures,
         "inputs": {
             "gas_sap_gbp_mwh_th": gas, "carbon_uka_gbp_t": carbon,
@@ -174,7 +183,12 @@ def main():
                           "MWh THERMAL — never quote a derived per-MWh-"
                           "electrical intensity as an assumption",
         },
-    }, indent=1))
+    }
+
+
+def main():
+    data_dir = sys.argv[1] if len(sys.argv) > 1 else "app/data"
+    print(json.dumps(compute(data_dir), indent=1))
 
 
 if __name__ == "__main__":
