@@ -10,3 +10,8 @@ ops/logs/
 # macOS noise
 .DS_Store
 ops/__pycache__/
+
+# Python bytecode and macOS metadata anywhere in the tree
+**/__pycache__/
+*.pyc
+**/.DS_Store
