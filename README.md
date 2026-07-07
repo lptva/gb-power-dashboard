@@ -6,6 +6,11 @@ A real-data market intelligence web app for the Great Britain power market, in t
 
 ## Quick start
 
+**Never used a terminal or installed Python?** Follow
+[docs/SETUP.md](docs/SETUP.md) instead — a step-by-step guide for Mac and
+Windows that assumes no experience at all. The three commands below are
+the short version for people already comfortable with a terminal.
+
 ```bash
 # 0. From wherever you cloned this repository
 cd gb-power-dashboard

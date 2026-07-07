@@ -334,6 +334,17 @@ machine, worked through in priority order.
   machine-specific plist at install time (verified with `plutil -lint`);
   the ops README's cron example uses a placeholder path. `.venv/` added
   to `.gitignore` for the repo-local venv the installer will create.
+- **Zero-experience setup guide (review item 2)**: `docs/SETUP.md`, linked
+  from the README quick start — separate Mac and Windows tracks assuming
+  no terminal or Python knowledge (ZIP download path, python.org installer
+  with the PATH checkbox called out, every command with where-to-type-it
+  and what-success-looks-like). Explicit `.venv/bin/python` /
+  `.venv\Scripts\python` paths instead of venv activation: activation
+  state silently vanishes when a novice reopens the terminal, and skipping
+  `Activate.ps1` sidesteps Windows execution policy completely.
+  Troubleshooting table covers the six realistic novice failures. The
+  command sequence was verified end-to-end in a fresh clone with a fresh
+  venv and nothing but certifi installed.
 
 ## Skipped, with reasons
 
