@@ -31,6 +31,24 @@ https://github.com/lptva/gb-power-dashboard` does the same job, and your
 folder is called `gb-power-dashboard` instead — adjust the `cd` commands
 below to match.)
 
+## The fast way: the installer
+
+Once Python is installed (each track's step 1–3 below), one command does
+everything else — private environment, dependency, data build, server,
+browser:
+
+- **Mac**: open Terminal, `cd` to the project folder (track step 4), then
+  run `python3 install.py`
+- **Windows**: **double-click `install.bat`** in the project folder — no
+  typing at all. It finds Python for you, or tells you plainly what to
+  install if it can't.
+
+The installer asks before the 3–5 minute data build, prints what it's
+doing at every step, and is safe to run again any time (it skips whatever
+is already done — running it again later is also the easiest way to start
+the dashboard). The manual steps below do exactly the same things, one at
+a time, if you prefer to see each one.
+
 ---
 
 ## Mac track
@@ -143,10 +161,18 @@ restore; just `cd` back and run the command).
 
 1. In your browser, go to `https://www.python.org/downloads/`.
 2. Click the yellow **Download Python 3.x.x** button.
-3. Run the downloaded installer. **On the very first screen, tick the box
-   that says "Add python.exe to PATH"** — this is the one step people
-   miss, and nothing works without it. Then click **Install Now**.
-4. Close the installer when it says setup was successful.
+3. Run the downloaded installer — and read the warning below **before**
+   clicking anything.
+
+> [!WARNING]
+> **On the very first installer screen, tick the checkbox
+> "Add python.exe to PATH"** (bottom of the window, unticked by
+> default). This is the single step new users miss most, and commands
+> like `py` won't be recognised without it. If you've already installed
+> Python and forgot: run the installer again — the box is still there.
+
+4. Click **Install Now** and close the installer when it says setup was
+   successful.
 
 (Already have Python? Open PowerShell — next step — and type
 `py --version`. Anything from `Python 3.10` up is fine and you can skip
@@ -228,7 +254,7 @@ needs reinstalling).
 
 | What you see | What it means | Fix |
 |---|---|---|
-| `command not found: python3` (Mac) or `'py' is not recognized` (Windows) | Python isn't installed, or the terminal window is older than the installation | Do the install step for your track, then **close and reopen** the terminal window and try again. On Windows, re-run the installer and make sure "Add python.exe to PATH" was ticked. |
+| `command not found: python3` (Mac) or `'py' is not recognized` (Windows) | Python isn't installed, or the terminal window is older than the installation | Do the install step for your track, then **close and reopen** the terminal window and try again. On Windows, re-run the python.org installer and make sure **"Add python.exe to PATH"** was ticked — or just double-click `install.bat`, which finds Python by other means and tells you plainly if it truly isn't installed. |
 | A macOS pop-up offering "command line developer tools" | macOS trying to install a large developer package you don't need | Click Cancel and install Python from python.org instead (Mac track, step 3). |
 | `CERTIFICATE_VERIFY_FAILED` or another SSL error during the build | Python can't verify the data sources' security certificates | Make sure step "install certifi" succeeded, and that you're running the build with `.venv/bin/python` (Mac) or `.venv\Scripts\python` (Windows), not plain `python3`/`py`. |
 | `Address already in use` when starting the server | Something else on your computer is using port 8872 | Use a different number: replace `8872` with `8000` in the server command, and open `http://localhost:8000` instead. |

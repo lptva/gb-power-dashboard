@@ -8,8 +8,10 @@ A real-data market intelligence web app for the Great Britain power market, in t
 
 **Never used a terminal or installed Python?** Follow
 [docs/SETUP.md](docs/SETUP.md) instead — a step-by-step guide for Mac and
-Windows that assumes no experience at all. The three commands below are
-the short version for people already comfortable with a terminal.
+Windows that assumes no experience at all. Or, with Python already
+installed, `python3 install.py` (Mac) / double-clicking `install.bat`
+(Windows) does everything below with prompts. The three commands that
+follow are the short version for people comfortable with a terminal.
 
 ```bash
 # 0. From wherever you cloned this repository

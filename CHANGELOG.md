@@ -345,6 +345,23 @@ machine, worked through in priority order.
   Troubleshooting table covers the six realistic novice failures. The
   command sequence was verified end-to-end in a fresh clone with a fresh
   venv and nothing but certifi installed.
+- **One-command installer (review item 3)**: `install.py` (both
+  platforms) + double-clickable `install.bat` (Windows). Creates the
+  repo-local venv, installs certifi, asks before the 3–5 minute data
+  build, then serves and opens the browser; idempotent — re-running skips
+  what's done, so it doubles as the "start the dashboard" command. Port
+  8872 falls back automatically to the next free port. A missing-Python
+  machine can't run install.py at all (the interpreter IS the missing
+  piece), so the human-readable guidance for that case lives in
+  install.bat (which tries the `py` launcher first — it works even when
+  "Add to PATH" was missed) and in SETUP.md's warning box on the PATH
+  checkbox, now a proper GitHub alert. No Homebrew bootstrap by decision:
+  the python.org GUI installer is the simpler, more reliable novice path
+  and keeps Mac and Windows on the same script. Verified in a fresh
+  clone: fresh run (venv + deps + real 3-day build, exit 0), idempotent
+  re-run, serve with port fallback (8872 busy → 8873, HTTP 200 on page
+  and data), clean Ctrl+C. install.bat logic reviewed but not executed
+  (no Windows machine here) — flagged for the next Windows tester.
 
 ## Skipped, with reasons
 
