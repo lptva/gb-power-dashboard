@@ -6,6 +6,10 @@ A real-data market intelligence web app for the Great Britain power market, in t
 
 **This is not a stylised model.** Every observed series comes from a public market data source; every estimated or assumption-based metric is labelled as such in the UI, panel by panel.
 
+![Overview tab — headline KPIs with quality badges, the AI overnight summary, wholesale price against demand and renewables, generation mix and residual load; all real GB data](docs/images/overview.png)
+
+*The Overview tab on real data (July 2026). More screenshots [below](#screenshots).*
+
 ## Quick start
 
 **Never used a terminal or installed Python?** Follow
@@ -194,6 +198,23 @@ verifies the precomputed summary statistics against a hand-calculated
 synthetic dataset; `tests/test_env_flags.py` pins the AI summary's
 opt-in default (absent means off) and its environment-over-`.env`
 precedence.
+
+## Screenshots
+
+The Merit order tab — the modelled SRMC merit-order curve with its
+implied clearing price, the observed per-unit dispatch curve beside it
+for direct comparison, and the assumption sliders that drive every
+estimate on the tab:
+
+![Merit order tab — modelled merit-order curve with implied clearing price and observed price, observed dispatch by unit, CCGT marginal cost vs price over time, and assumption sliders](docs/images/merit-order.png)
+
+| Prices | Flows |
+|---|---|
+| ![Prices tab — wholesale price with gas, carbon and demand drivers overlaid, price distribution histogram, intraday shape, and price vs net load](docs/images/prices.png) | ![Flows tab — ten interconnectors stacked with net flow, import dependency, and the counterparty context card showing IFA flow against French day-ahead vs GB price](docs/images/flows.png) |
+
+Every value in these captures is what the app computes from the public
+sources — nothing is mocked up for the screenshots, which is also why
+the timestamps in them will lag the repository's live data.
 
 ## Known limitations
 

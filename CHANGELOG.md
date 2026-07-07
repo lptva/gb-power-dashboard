@@ -528,6 +528,13 @@ machine, worked through in priority order.
   suites (was "two"); the Architecture block lists `manifest.json`,
   `bmu_snapshot.json` and `zones/<ZONE>/`; the case study's "seven tabs"
   parenthetical now names all seven (overview was missing).
+- **README screenshots** (`docs/images/`): Overview as the hero image,
+  Merit order full-width plus Prices/Flows side by side in a
+  Screenshots section — real captures of live data, resampled to
+  1100–1400 px (~2.7 MB total, the repo's only binary docs). A
+  1280×640 top crop of the Overview (`docs/images/social-preview.png`)
+  is prepared for the GitHub **Settings → Social preview** upload, which
+  controls the link card social feeds render for the repository.
 
 ## Skipped, with reasons
 
