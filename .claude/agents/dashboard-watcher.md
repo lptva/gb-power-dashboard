@@ -19,16 +19,19 @@ methodology.md):
 - `window` — the overnight analysis window. Copy it VERBATIM into your
   output's `window` field; the publisher rejects any deviation.
 - `metrics.<key>` — overnight mean/min/max (with timestamps of the
-  extremes) against a 14-day baseline mean/std, a z-score, and a
-  `notable` flag at |z| > 2. Includes price, demand, WIND, solar,
-  netImports, residual (= demand − transmission wind) and key fuels.
+  extremes), below-zero counts (total and longest consecutive run — use
+  these for "negative for N consecutive half-hours" colour) against a
+  14-day baseline mean/std, a z-score, and a `notable` flag at |z| > 2.
+  Includes price, demand, WIND, solar, netImports, residual (= demand −
+  transmission wind) and key fuels.
 - `spreads` — latest clean spark and dark values on the reference
   assumptions, their percentile within the full dataset history, the
   value 7 days earlier, and the spark's cost decomposition (gas, carbon,
   VOM).
 - `flows` — per-cable overnight vs baseline means with direction-flip
-  flags, and import dependency (net imports as % of demand) overnight vs
-  baseline.
+  flags and window min/max with timestamps (describe intra-window swings
+  from these), and import dependency (net imports as % of demand)
+  overnight vs baseline.
 - `merit` — the Merit order panel's own figures (observed price, implied
   clearing, marginal technology, gap%), its inputs (demand target,
   curve size, capacity proxies) and the documented

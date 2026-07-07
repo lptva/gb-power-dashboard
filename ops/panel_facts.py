@@ -54,9 +54,23 @@ def stats(values, times):
     vs = [p[0] for p in pairs]
     lo = min(pairs, key=lambda p: p[0])
     hi = max(pairs, key=lambda p: p[0])
+    # Below-zero counts give the narrative its intra-window colour
+    # ("negative for eight consecutive half-hours") without shipping the
+    # series itself — meaningful for price and net flows, harmlessly zero
+    # elsewhere.
+    below, longest, run = 0, 0, 0
+    for v in vs:
+        if v < 0:
+            below += 1
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
     return {"mean": rnd(sum(vs) / len(vs)),
             "min": rnd(lo[0]), "min_at": iso(lo[1]),
             "max": rnd(hi[0]), "max_at": iso(hi[1]),
+            "below_zero_n": below,
+            "below_zero_longest_consecutive": longest,
             "n": len(vs)}
 
 
@@ -183,11 +197,19 @@ def compute_facts(data_dir):
         b_mean, _ = mean_std(col[base_cut:cut])
         if o_mean is None or b_mean is None:
             continue
+        # Window extremes with timestamps let the narrative describe an
+        # intra-window swing ("exported 1,072 MW overnight, importing
+        # 1,426 MW by 15:00") — a mean alone hides the reversal's shape.
+        extremes = stats(col[cut:], t[cut:]) or {}
         cables[key] = {
             "overnight_mean_mw": rnd(o_mean, 0),
             "baseline_mean_mw": rnd(b_mean, 0),
             "direction_flipped": (o_mean > 0) != (b_mean > 0)
                                  and abs(o_mean) > 50 and abs(b_mean) > 50,
+            "window_min_mw": rnd(extremes.get("min"), 0),
+            "window_min_at": extremes.get("min_at"),
+            "window_max_mw": rnd(extremes.get("max"), 0),
+            "window_max_at": extremes.get("max_at"),
         }
     dem_o = metrics.get("demand", {}).get("overnight") or {}
     net_o = metrics.get("netImports", {}).get("overnight") or {}

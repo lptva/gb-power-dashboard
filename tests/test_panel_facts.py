@@ -39,16 +39,20 @@ def build_dataset(tmp):
                  + [120] * n_over,
         "demand": col(20000, 22000),
         "WIND": col(5000, 8000),
-        "solar": col(1000, 1000),
         "NUCLEAR": col(4000, 4000),
         "BIOMASS": col(2000, 2000),
         "NPSHYD": col(500, 500),
         "CCGT": col(8000, 6000),
         "OCGT": col(100, 100),
         "COAL": col(0, 0),
-        # one cable exporting in baseline, importing overnight → flip
-        "INTFR": col(-800, 900),
+        # one cable exporting in baseline, importing overnight → flip;
+        # one overnight dip to -200 exercises the window extremes
+        "INTFR": [-800] * n_base + [900] * (n_over - 1) + [-200],
         "INTNED": col(400, 500),   # no flip
+        # solar: 5 sub-zero values, longest consecutive run of 3 —
+        # exercises the below-zero counters (values synthetic, maths real)
+        "solar": [1000] * n_base + [1000] * 40 + [-5] * 3 + [1000] * 2
+                 + [-5] * 2 + [1000],
     }
     # 16 daily rows; last day complete for spreads
     days = 16
@@ -115,9 +119,26 @@ class TestPanelFacts(unittest.TestCase):
         self.assertFalse(cables["INTNED"]["direction_flipped"])
 
     def test_import_dependency(self):
-        # overnight net = 900 + 500 = 1400 of 22000 demand → 6.4%
+        # overnight net mean = (47·900 − 200)/48 + 500 = 1377.08 of 22000
+        # demand → 6.3%
         dep = self.facts["flows"]["import_dependency_pct"]
-        self.assertEqual(dep["overnight"], 6.4)
+        self.assertEqual(dep["overnight"], 6.3)
+
+    def test_below_zero_counters(self):
+        # solar overnight: 5 sub-zero values, longest consecutive run 3
+        solar = self.facts["metrics"]["solar"]["overnight"]
+        self.assertEqual(solar["below_zero_n"], 5)
+        self.assertEqual(solar["below_zero_longest_consecutive"], 3)
+        # price overnight all positive → both zero
+        price = self.facts["metrics"]["price"]["overnight"]
+        self.assertEqual(price["below_zero_n"], 0)
+        self.assertEqual(price["below_zero_longest_consecutive"], 0)
+
+    def test_cable_window_extremes(self):
+        intfr = self.facts["flows"]["cables"]["INTFR"]
+        self.assertEqual(intfr["window_min_mw"], -200)
+        self.assertEqual(intfr["window_max_mw"], 900)
+        self.assertTrue(intfr["window_min_at"].endswith("Z"))
 
     def test_window_covers_last_24h(self):
         w = self.facts["window"]
