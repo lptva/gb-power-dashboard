@@ -45,11 +45,12 @@ locally published dataset during the daily refresh. If you enable it:
 - it requires the [claude CLI](https://claude.com/claude-code) signed in
   to a **Claude subscription**, and **consumes your own usage
   allowance**;
-- measured cost (not an estimate — every run's tokens are logged to
-  `ops/logs/overnight.metrics.log`): **$0.36 API-equivalent per run**,
-  one run per daily refresh, occasionally ~2× on the roughly 1-in-5 days
-  a structurally invalid reply forces a retry. Order of $11-equivalent
-  (≈ £8–9) per month at current API pricing;
+- running it daily costs roughly **£8–9 a month** in usage, occasionally
+  a little more on the ~1-in-5 days a structurally invalid reply forces a
+  retry. That figure is measured, not estimated: every run's tokens and
+  API-equivalent cost are logged to `ops/logs/overnight.metrics.log`
+  (source of truth: **$0.36 API-equivalent per run**, ~$11-equivalent per
+  month at current API pricing);
 - one run is a single ~5–6 minute model call inside the scheduled
   refresh — all statistics are precomputed deterministically
   (`ops/panel_facts.py`) and the model only writes the narrative; a
@@ -136,34 +137,7 @@ that motivated it.
 - **Embedded wind (~6 GW)** is invisible to every free source used; "wind" here means transmission-metered wind. Residual/net load (INDO − wind)
   absorb it silently on the demand side; gross wind output and share metrics understate it.
 - **Merit-curve capacity is a proxy** — p98 of observed output for dispatchables, latest output for wind/solar — not registered capacity.
-- Technology-cluster merit order only — plant-level requires joining BM Unit-level data (see roadmap).
-
-## Next steps to productionise
-
-1. **Scheduled refresh** — ✅ done locally: a launchd job re-runs the ETL daily at 07:00 (see `ops/README.md`; install with `bash ops/install_schedule.sh`). For guaranteed daily runs regardless of laptop sleep, move the same script to a GitHub Action cron and publish `app/` to any static host or object storage behind a CDN.
-2. **Incremental ETL** — ✅ done: `python etl/build_dataset.py --incremental` re-fetches only the last two stored days plus anything newer (~10 HTTP calls, seconds instead of minutes), merges, keeps the window rolling at 365 days and publishes atomically behind a validation guard. A versioned `app/data/manifest.json` cache-busts the data files; if nothing changed upstream, nothing is written. Falls back to a full rebuild when no readable dataset exists.
-3. **API layer** — evaluated and **deferred** (see `plan/03-api-layer.md`): one consumer and a 2.3 MB payload do not justify a server to operate. Revisit triggers are documented there (second consumer, multi-zone payloads >10 MB, windows beyond the shipped year, AuthN/AuthZ needs); static JSON remains the interface either way.
-4. **AuthN/AuthZ** — static front-end behind SSO (e.g. oauth2-proxy); nothing in the current data requires licensing, but commercial additions(day-ahead auction prices, daily UKA, API2 coal) would.
-5. **Europe extension** — ✅ live (see `plan/04-europe-extension.md`):
-   `etl/fetch_entsoe.py` (token from the environment or a project-root
-   `.env` — never under `app/`, which is web-served) writes per-zone files
-   under `app/data/zones/<zone>/`; the header zone switcher lazy-loads
-   them.
-
-   **Zone-set logic, stated explicitly.** Two inclusion rules, never mixed
-   silently: *interconnected* zones are GB's physical counterparty bidding
-   zones, one per cable landing market — FR (IFA/IFA2/ElecLink),
-   NL (BritNed), BE (Nemo), NO_2 (North Sea Link), DK_1 (Viking Link) and
-   IE/SEM (Moyle, EWIC, Greenlink). DE_LU has **no direct GB cable** and
-   is included as a *reference market* only — the European price anchor —
-   labelled "· ref" in the switcher and flagged on the Methodology tab so
-   it is never read as a flow counterparty. Settlement currency is read
-   from each zone's A44 response (EUR for all current zones, NO_2
-   included), not assumed. Merit order, Spreads and Flows remain GB-only
-   (no per-zone SRMC assumptions, no CCGT/OCGT split in ENTSO-E data,
-   interconnector flows not yet fetched) — the tabs hide off-GB and the
-   Methodology tab says why. IE quirk: ENTSO-E publishes each data
-   item against a specific area type — prices against the SEM bidding-zone
-   EIC, load against the Ireland control-area EIC (both current; verified
-   empirically). The fetcher handles the split automatically.
-6. **Plant-level merit order** — ✅ done, scoped honestly (see `plan/05-plant-level-merit-order.md`): free keyless data supports an *observed dispatch snapshot*, not a bid stack (PN carries no prices). `python etl/build_bmu_snapshot.py` writes per-unit physical notifications for the latest complete settlement period (~95% of MW classified to a fuel type; unclassified shown explicitly), rendered as the "Observed dispatch by unit (beta)" panel on the Merit tab and refreshed by the daily job alongside the dataset.
+- **Merit-order costs are technology-cluster level.** The "Observed
+  dispatch by unit" panel shows per-unit notified volumes, but unit-level
+  costs do not exist in free data (physical notifications carry no
+  prices) — see `plan/05-plant-level-merit-order.md` for the scoping.

@@ -101,8 +101,8 @@ with the path replaced by wherever you cloned the repository — is:
   the laptop stays asleep all day the dataset simply stays stale — nothing
   retries in the background of a closed laptop. For guaranteed daily runs,
   this belongs on an always-on host or a CI schedule (GitHub Actions cron
-  publishing `app/` to static hosting — noted in the README's
-  productionisation list).
+  publishing `app/` to static hosting — tracked in the repository's
+  GitHub Issues).
 - **Failures land in the log, not in your face.** Check
   `ops/logs/` occasionally, or `launchctl list` — a non-zero
   `LastExitStatus` means the last run failed. The dashboard footer's

@@ -2,9 +2,10 @@
 
 Forked from `03_projects/gb-power-dashboard/` on 2026-07-01 (full copy,
 including the ETL HTTP cache). The original folder is unchanged and remains
-the stable reference version. All work below implements the README's
-"Next steps to productionise" list; per-milestone design docs and outcomes
-live in `plan/`.
+the stable reference version. All work below implements the roadmap
+formerly listed in the README as "Next steps to productionise" (removed
+2026-07-07 — now tracked as GitHub Issues); per-milestone design docs and
+outcomes live in `plan/`.
 
 ## Built
 
@@ -452,6 +453,24 @@ machine, worked through in priority order.
   16×16 `favicon.ico` fallback (stdlib struct packing — the project has
   no image dependencies), linked from index.html. Both serve 200; the
   fresh-install reviewer's `/favicon.ico` 404 is gone.
+
+### Roadmap moved out of the README (2026-07-07)
+- **"Next steps to productionise" removed from README.md** — the roadmap
+  now lives in GitHub Issues/Projects, where items carry status and can
+  be closed individually; a static list duplicating that had already
+  drifted into a status page. Before deletion the section was checked
+  for permanent documentation: the zone-set inclusion logic (two
+  inclusion rules, DE_LU as labelled reference market, currency read
+  from A44, why Merit/Spreads/Flows stay GB-only, the IE dual-EIC
+  quirk) was the one such passage and moved to methodology.md as
+  "Zone set (Europe extension)" — plan/04 retains the fuller dated
+  record with the official ENTSO-E citation. Cross-references updated
+  (ops/README, this file's intro); the Known Limitations bullet that
+  pointed at "the roadmap" was also stale in substance and now
+  describes the shipped observed-dispatch panel correctly. AI-summary
+  disclosure now leads with the sterling figure (~£8–9/month) for the
+  UK audience, keeping the measured USD values as the metrics-log
+  source of truth.
 
 ## Skipped, with reasons
 

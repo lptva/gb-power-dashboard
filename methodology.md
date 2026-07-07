@@ -146,6 +146,26 @@ attribution of the cable's electrons). Zone history accumulates append-only
 matters); longer ranges clip to the overlap, which deepens over time. DE_LU is a reference market with no GB
 cable and is excluded.
 
+## Zone set (Europe extension)
+
+Two inclusion rules, never mixed silently. *Interconnected* zones are
+GB's physical counterparty bidding zones, one per cable landing market:
+FR (IFA, IFA2, ElecLink), NL (BritNed), BE (Nemo), NO_2 (North Sea
+Link), DK_1 (Viking Link) and IE/SEM (Moyle, EWIC, Greenlink). DE_LU has
+**no direct GB cable** and is included as a *reference market* only —
+the European price anchor — labelled "· ref" in the switcher and flagged
+on the Methodology tab so it is never read as a flow counterparty.
+Settlement currency is read from each zone's A44 response (EUR for all
+current zones, NO_2 included), never assumed. Merit order, Spreads and
+Flows remain GB-only — no per-zone SRMC assumptions, no CCGT/OCGT split
+in ENTSO-E data, cross-border flows not fetched per zone — so those tabs
+hide off-GB and the in-app Methodology tab says why. IE quirk: ENTSO-E
+publishes each document type against a specific area type — day-ahead
+prices against the SEM bidding-zone EIC, load against the Ireland
+control-area EIC (both codes current; the fetcher handles the split
+automatically — empirical probe and the official ENTSO-E citation in
+`plan/04-europe-extension.md`).
+
 ## Judgement calls a reviewer should know about
 
 1. **MID, not day-ahead.** The dashboard's "price" is the Market Index Data
