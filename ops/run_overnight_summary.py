@@ -12,8 +12,11 @@ non-fatal.
 
 This is a real LLM invocation (agent model: sonnet) and the ONLY part of
 the project that needs the claude CLI or any subscription — the dashboard
-itself runs without it. The output is an AI-generated interpretation of
-the published dataset and is badged as such in the app.
+itself runs without it. It is OPT-IN: nothing runs (and nothing is spent)
+unless ENABLE_AI_SUMMARY=true is set in the environment or the
+project-root .env, even when the claude CLI is present and signed in. The
+output is an AI-generated interpretation of the published dataset and is
+badged as such in the app.
 """
 
 import datetime
@@ -28,6 +31,7 @@ OPS = Path(__file__).resolve().parent
 ROOT = OPS.parent
 sys.path.insert(0, str(OPS))
 
+from env_flags import ai_summary_enabled  # noqa: E402
 from panel_facts import compute_facts  # noqa: E402
 import validate_overnight  # noqa: E402
 
@@ -50,6 +54,17 @@ prose before or after it."""
 
 
 def main():
+    # Consent gate FIRST, capability check second: a claude CLI that
+    # happens to be installed and signed in (for unrelated work) must
+    # never be enough to spend the machine owner's usage allowance.
+    # One-off override without editing .env:
+    #   ENABLE_AI_SUMMARY=true python3 ops/run_overnight_summary.py
+    if not ai_summary_enabled(ROOT):
+        sys.exit("overnight summary skipped: AI summary is opt-in and not "
+                 "enabled. Set ENABLE_AI_SUMMARY=true in the project-root "
+                 ".env (or the environment) to enable it — it spends your "
+                 "Claude subscription's usage allowance. See the README's "
+                 "AI summary section.")
     claude = shutil.which("claude")
     if claude is None:
         sys.exit("overnight summary skipped: claude CLI not found on PATH "

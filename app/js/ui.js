@@ -57,10 +57,11 @@ const UI = (() => {
       body.innerHTML = `<p class="overnight-empty">Optional AI feature —
         not enabled on this machine. A Claude agent can write a daily
         per-tab briefing from your local data during the scheduled
-        refresh; it needs the claude CLI with a Claude subscription and
-        uses your own usage allowance. See the README's
-        "AI summary" section to enable it (or to ignore it — everything
-        else works without it).</p>`;
+        refresh; it needs the claude CLI with a Claude subscription,
+        uses your own usage allowance, and only runs after an explicit
+        opt-in (ENABLE_AI_SUMMARY=true in the project's .env). See the
+        README's "AI summary" section to enable it (or to ignore it —
+        everything else works without it).</p>`;
       return;
     }
 

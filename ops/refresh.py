@@ -9,8 +9,9 @@ Scheduler on Windows via install_schedule.ps1) or by hand:
 Pipeline, matching the retired refresh.sh exactly: incremental dataset
 update (falls back to a full rebuild when no readable dataset exists) →
 BMU dispatch snapshot (non-fatal) → seven ENTSO-E zone refreshes
-(non-fatal per zone) → AI overnight summary (non-fatal, needs the claude
-CLI; skipped with a warning when absent). Logs to
+(non-fatal per zone) → AI overnight summary (non-fatal, and OPT-IN:
+skipped unless ENABLE_AI_SUMMARY=true, regardless of whether the claude
+CLI is installed — see ops/env_flags.py). Logs to
 ops/logs/refresh_YYYY-MM-DD.log and exits non-zero only if the core
 dataset refresh fails, so the scheduler records the run correctly.
 
@@ -29,6 +30,9 @@ from pathlib import Path
 OPS = Path(__file__).resolve().parent
 ROOT = OPS.parent
 ZONES = ["FR", "NL", "BE", "NO_2", "DK_1", "IE", "DE_LU"]
+
+sys.path.insert(0, str(OPS))
+from env_flags import ai_summary_enabled  # noqa: E402
 
 
 def resolve_child_python():
@@ -95,10 +99,19 @@ def main():
                  "--zone", zone, "--days", "7"],
                 "zone {} refresh".format(zone), fatal=False)
 
-        # AI overnight summary — optional feature; a missing claude CLI or
-        # a failed run leaves the previously published summary untouched.
-        run([python, str(OPS / "run_overnight_summary.py")],
-            "overnight summary", fatal=False)
+        # AI overnight summary — the only paid feature, gated on an
+        # explicit opt-in BEFORE the claude CLI is even considered: a
+        # working Claude subscription on the machine must never be
+        # spent without ENABLE_AI_SUMMARY=true. A failed run leaves the
+        # previously published summary untouched.
+        if ai_summary_enabled(ROOT):
+            run([python, str(OPS / "run_overnight_summary.py")],
+                "overnight summary", fatal=False)
+        else:
+            note("overnight summary skipped: not enabled (opt-in — set "
+                 "ENABLE_AI_SUMMARY=true in the project-root .env; it "
+                 "spends your Claude subscription's usage allowance. "
+                 "See the README's AI summary section)")
 
         note("=== refresh finished {}Z ===".format(
             datetime.datetime.now(datetime.timezone.utc)

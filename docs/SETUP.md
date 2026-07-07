@@ -273,5 +273,7 @@ needs reinstalling).
   markets. Viewing them needs nothing; *refreshing* them needs a free
   ENTSO-E API token — see the README's "European zones (ENTSO-E)"
   section for the three-step setup.
-- **AI overnight summary**: an optional panel, off unless you connect it —
+- **AI overnight summary**: an optional panel, off by default — enabling
+  it is an explicit opt-in (`ENABLE_AI_SUMMARY=true` in a `.env` file)
+  on top of installing the claude CLI, so it never runs by accident —
   see the README's "AI summary" section for what it needs and costs.
