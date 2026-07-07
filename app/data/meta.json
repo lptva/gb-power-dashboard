@@ -1,16 +1,16 @@
 {
-  "built_at": "2026-07-06T14:36:57+00:00",
+  "built_at": "2026-07-07T06:56:07+00:00",
   "mode": "incremental",
   "window": {
-    "start": "2025-07-06",
-    "end": "2026-07-05"
+    "start": "2025-07-07",
+    "end": "2026-07-06"
   },
   "timezone": "All timestamps UTC. Half-hourly values are interval starts (Elexon settlement periods mapped to startTime).",
   "coverage": {
     "demand": 1.0,
     "price": 1.0,
     "solar": 1.0,
-    "gas_days": 365,
+    "gas_days": 364,
     "carbon_months_observed": 11,
     "carbon_last_observed_month": "2026-05",
     "coal_months_observed": 12,

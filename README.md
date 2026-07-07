@@ -7,15 +7,21 @@ A real-data market intelligence web app for the Great Britain power market, in t
 ## Quick start
 
 ```bash
+# 0. From wherever you cloned this repository
+cd gb-power-dashboard
+
 # 1. Build the dataset (≈ 160 chunked API calls, ~3–5 min first run)
-python3 ~/Documents/energy-modelling/03_projects/gb-power-dashboard-2/etl/build_dataset.py --days 365
+python3 etl/build_dataset.py --days 365
 
 # 2. Serve the app (any static server; file:// will not work)
-cd ~/Documents/energy-modelling/03_projects/gb-power-dashboard-2
 python3 -m http.server 8872 --directory app
 
 # 3. Open http://localhost:8872
 ```
+
+Every command in this README is written to be run from the repository
+root, whatever you named it and wherever you cloned it — nothing assumes
+a particular folder layout or username.
 
 Requires Python 3.10+ and `certifi` (`pip install certifi`). No other dependencies — the ETL uses only the standard library, and the app is plain HTML/CSS/JS with a vendored copy of ECharts.
 

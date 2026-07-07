@@ -318,6 +318,23 @@ live in `plan/`.
   envelope slicing, and that the currently published summary still
   validates against the live panel recompute.
 
+### Portability pass, from an external fresh-install review (2026-07-07)
+Findings from a reviewer installing the project from scratch on his own
+machine, worked through in priority order.
+
+- **Portable paths (review item 1)**: README quick-start commands are now
+  relative to the repository root (no `~/Documents/...` or username
+  assumptions); `ops/refresh.sh` resolves Python instead of hardcoding a
+  venv two directories above the repo (repo-local `.venv` → legacy
+  workspace venv, kept so existing scheduled installs keep working →
+  `python3` on PATH with a certifi check → clear error with venv
+  instructions); the tracked launchd plist became
+  `*.plist.template` with a `__PROJECT_ROOT__` token — launchd requires
+  absolute paths, so `install_schedule.sh` now generates the
+  machine-specific plist at install time (verified with `plutil -lint`);
+  the ops README's cron example uses a placeholder path. `.venv/` added
+  to `.gitignore` for the repo-local venv the installer will create.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

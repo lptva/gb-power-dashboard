@@ -38,7 +38,7 @@ Non-zero exit if the core dataset refresh fails.
 bash ops/install_schedule.sh
 ```
 
-This copies `com.gb-power-dashboard-2.refresh.plist` into
+This generates the plist from `com.gb-power-dashboard-2.refresh.plist.template` (substituting the repository location — launchd needs absolute paths) into
 `~/Library/LaunchAgents` and loads it. The job then runs **daily at 07:00
 local time**.
 
@@ -58,10 +58,11 @@ as soon as the machine wakes. On a MacBook that is closed overnight the
 practical difference is "refresh happens when you open the lid" versus
 "refresh never happens".
 
-If you prefer cron anyway (e.g. on an always-on machine), the equivalent is:
+If you prefer cron anyway (e.g. on an always-on machine), the equivalent —
+with the path replaced by wherever you cloned the repository — is:
 
 ```cron
-0 7 * * * /bin/bash /Users/lptva/Documents/energy-modelling/03_projects/gb-power-dashboard-2/ops/refresh.sh
+0 7 * * * /bin/bash /path/to/gb-power-dashboard/ops/refresh.sh
 ```
 
 ## Honest caveats

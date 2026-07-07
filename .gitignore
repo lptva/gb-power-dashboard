@@ -7,6 +7,9 @@
 data_raw/cache/
 ops/logs/
 
+# Repo-local virtualenv (created by the installer)
+.venv/
+
 # macOS noise
 .DS_Store
 ops/__pycache__/

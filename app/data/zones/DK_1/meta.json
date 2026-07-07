@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-07-06T15:21:40+00:00",
+  "built_at": "2026-07-07T07:31:29+00:00",
   "zone": "DK_1",
   "label": "Denmark (DK1)",
   "kind": "interconnected",
@@ -16,7 +16,7 @@
   ],
   "window": {
     "start": "2026-05-31",
-    "end": "2026-07-06"
+    "end": "2026-07-07"
   },
   "timezone": "All timestamps UTC.",
   "series": {
