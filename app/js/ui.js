@@ -63,10 +63,20 @@ const UI = (() => {
     head.setAttribute("aria-expanded", String(overnightOpen));
     takeawayEl.textContent = section.takeaway;
 
+    // Staleness: a summary older than ~26 h is yesterday's (or worse) —
+    // the daily regeneration has been missed and the analysis no longer
+    // describes the data on screen. Old content must never look current.
+    const ageMs = s.generated_at
+      ? Date.now() - new Date(s.generated_at).getTime() : 0;
+    const stale = ageMs > 26 * 3600 * 1000;
+
     const win = s.window || {};
     // Collapsed: timestamp only (badge + takeaway carry the rest).
-    // Expanded: full provenance line.
-    metaLine.textContent = (overnightOpen ? [
+    // Expanded: full provenance line. Stale flag shows in BOTH.
+    metaLine.innerHTML = (overnightOpen ? [
+      stale ? `<span class="overnight-stale">⚠ stale — written for older
+        data (${esc(Math.floor(ageMs / 3600000))} h ago); the daily
+        regeneration has not run since</span>` : null,
       win.from && win.to
         ? `${Metrics.fmtDate(win.from, "datetime")} → ` +
           `${Metrics.fmtDate(win.to, "datetime")} UTC`
@@ -76,6 +86,7 @@ const UI = (() => {
         ? `generated ${Metrics.fmtDate(s.generated_at, "datetime")} UTC`
         : null,
     ] : [
+      stale ? `<span class="overnight-stale">⚠ stale</span>` : null,
       s.generated_at
         ? `generated ${Metrics.fmtDate(s.generated_at, "datetime")} UTC`
         : null,

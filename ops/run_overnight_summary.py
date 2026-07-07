@@ -16,6 +16,7 @@ itself runs without it. The output is an AI-generated interpretation of
 the published dataset and is badged as such in the app.
 """
 
+import datetime
 import json
 import os
 import shutil
@@ -66,33 +67,88 @@ def main():
 
     log_dir = OPS / "logs"
     log_dir.mkdir(exist_ok=True)
-    with open(log_dir / "overnight.err.log", "a", encoding="utf-8") as err:
+
+    def log_metrics(raw_envelope, attempt, outcome):
+        """One line per attempt into overnight.metrics.log: duration,
+        turns, tokens and API-equivalent cost from the CLI envelope —
+        cost/runtime transparency for an LLM feature should be a logged
+        fact, not an estimate."""
+        try:
+            envelope = json.loads(raw_envelope)
+        except ValueError:
+            envelope = {}
+        usage = envelope.get("usage") or {}
+        line = json.dumps({
+            "ts": datetime.datetime.now(datetime.timezone.utc)
+                  .isoformat(timespec="seconds"),
+            "attempt": attempt, "outcome": outcome,
+            "duration_ms": envelope.get("duration_ms"),
+            "num_turns": envelope.get("num_turns"),
+            "input_tokens": usage.get("input_tokens"),
+            "cache_read_tokens": usage.get("cache_read_input_tokens"),
+            "cache_creation_tokens": usage.get("cache_creation_input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "total_cost_usd": envelope.get("total_cost_usd"),
+        })
+        with open(log_dir / "overnight.metrics.log", "a",
+                  encoding="utf-8") as metrics:
+            metrics.write(line + "\n")
+
+    def one_attempt(attempt):
+        """Run the agent once; returns validated data or raises
+        ValidationError. Rejected raw replies are persisted for
+        post-mortem — the first malformed-output incident was
+        undiagnosable because only the first 200 chars survived."""
         # --output-format json wraps the agent's final text in a result
         # envelope with error metadata — plain text mode proved unreliable
-        # (empty stdout on an otherwise-successful run). A normal run takes
-        # ~8 minutes (agentic session: dataset reads + baseline maths +
-        # four sections); the timeout only exists so a hung CLI can never
-        # hang the scheduled refresh with it.
+        # (empty stdout on an otherwise-successful run). A normal run
+        # takes ~8 minutes (agentic session: dataset reads + baseline
+        # maths + four sections); the timeout only exists so a hung CLI
+        # can never hang the scheduled refresh with it.
+        with open(log_dir / "overnight.err.log", "a",
+                  encoding="utf-8") as err:
+            try:
+                result = subprocess.run(
+                    [claude, "--agent", "dashboard-watcher", "-p", prompt,
+                     "--allowedTools", "Read Grep Glob Bash",
+                     "--output-format", "json"],
+                    capture_output=True, text=True, timeout=20 * 60)
+            except subprocess.TimeoutExpired:
+                err.write("timed out after 20 minutes\n")
+                sys.exit("overnight summary timed out after 20 minutes — "
+                         "previously published summary left in place")
+            err.write(result.stderr)
+        if result.returncode != 0:
+            log_metrics(result.stdout, attempt, "cli_error")
+            sys.exit("claude CLI exited {} (stderr in ops/logs/"
+                     "overnight.err.log)".format(result.returncode))
         try:
-            result = subprocess.run(
-                [claude, "--agent", "dashboard-watcher", "-p", prompt,
-                 "--allowedTools", "Read Grep Glob Bash",
-                 "--output-format", "json"],
-                capture_output=True, text=True, timeout=20 * 60)
-        except subprocess.TimeoutExpired:
-            err.write("timed out after 20 minutes\n")
-            sys.exit("overnight summary timed out after 20 minutes — "
-                     "previously published summary left in place")
-        err.write(result.stderr)
-    if result.returncode != 0:
-        sys.exit("claude CLI exited {} (stderr in ops/logs/"
-                 "overnight.err.log)".format(result.returncode))
+            data = validate_overnight.extract_inner_json(
+                result.stdout.strip())
+            validate_overnight.validate_summary(data, reference)
+        except validate_overnight.ValidationError:
+            stamp = datetime.datetime.now(datetime.timezone.utc)\
+                .strftime("%Y%m%dT%H%M%SZ")
+            rejected = log_dir / "overnight.rejected-{}.txt".format(stamp)
+            rejected.write_text(result.stdout, encoding="utf-8")
+            log_metrics(result.stdout, attempt, "rejected")
+            print("attempt {} rejected — full reply saved to {}".format(
+                attempt, rejected), flush=True)
+            raise
+        log_metrics(result.stdout, attempt, "published")
+        return data
 
+    # Structurally invalid replies happen (observed ~1 in 5 runs), so one
+    # retry is built in; a second failure leaves the previous summary in
+    # place and exits non-zero for the orchestrator's WARNING line.
     try:
-        data = validate_overnight.extract_inner_json(result.stdout.strip())
-        validate_overnight.validate_summary(data, reference)
-    except validate_overnight.ValidationError as error:
-        sys.exit("REFUSING TO PUBLISH: {}".format(error))
+        data = one_attempt(1)
+    except validate_overnight.ValidationError:
+        print("retrying once…", flush=True)
+        try:
+            data = one_attempt(2)
+        except validate_overnight.ValidationError as error:
+            sys.exit("REFUSING TO PUBLISH (both attempts): {}".format(error))
     validate_overnight.publish(data, ROOT / "app" / "data")
 
     n_findings = sum(len(data["tabs"][t].get("findings", []))

@@ -225,6 +225,7 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
   font-size: 12px; line-height: 1; }
 .overnight-head:hover .overnight-chev { color: var(--text); }
 .overnight-head .card-meta { margin-bottom: 0; }
+.overnight-stale { color: #bd9a55; font-weight: 600; }
 .card-head p.overnight-takeaway { margin: 6px 0 0; font-size: 13px;
   color: var(--text); }
 .overnight-analysis { margin: 8px 0 10px; font-size: 13px;

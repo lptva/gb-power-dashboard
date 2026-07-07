@@ -388,6 +388,28 @@ machine, worked through in priority order.
   figures — dataset refresh and summary regeneration legitimately drift
   apart between steps, which is a UI staleness concern (review item 7),
   not a validator one.
+- **Stale overnight summary, root-caused and fixed end-to-end (review
+  item 7)**: three independent causes found. (1) Every scheduled
+  regeneration had failed since the feature shipped — 5 for 5 runs logged
+  `claude CLI not found on PATH` under launchd's minimal PATH (fixed in
+  item 4's plist PATH block). (2) `overnight_summary.json` was tracked in
+  git, so a fresh clone showed the author's machine's last summary as if
+  current — now untracked and git-ignored; fresh installs see the
+  panel's not-enabled placeholder instead. (3) The agent occasionally
+  returns structurally invalid replies (observed ~1 in 5: one prose
+  prefix, one multi-fragment "Extra data" reply); the runner now retries
+  once, persists every rejected raw reply to
+  `ops/logs/overnight.rejected-*.txt` (the first incident was
+  undiagnosable — only 200 chars survived), and logs per-attempt metrics
+  (duration, turns, tokens, API-equivalent cost) to
+  `ops/logs/overnight.metrics.log`. Measured on a real published run:
+  18 turns, 12.5 min, 40,763 output tokens + 556k cached reads,
+  **$1.20 API-equivalent per run** — the number review item 5's
+  disclosure was waiting for. In the app, a summary older than 26 h now
+  shows an amber "⚠ stale" flag in both collapsed and expanded states
+  ("written for older data … the daily regeneration has not run since")
+  — verified in-browser across fresh (no flag), 72-hour-aged (flag both
+  states) and absent (placeholder) files.
 
 ## Skipped, with reasons
 
