@@ -271,6 +271,7 @@ needs reinstalling).
   how to remove it.
 - **European zones**: the dashboard ships with data for seven European
   markets. Viewing them needs nothing; *refreshing* them needs a free
-  ENTSO-E API token — see `.env.example` in the project folder.
+  ENTSO-E API token — see the README's "European zones (ENTSO-E)"
+  section for the three-step setup.
 - **AI overnight summary**: an optional panel, off unless you connect it —
   see the README's "AI summary" section for what it needs and costs.

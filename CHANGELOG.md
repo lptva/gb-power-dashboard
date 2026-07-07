@@ -454,6 +454,18 @@ machine, worked through in priority order.
   no image dependencies), linked from index.html. Both serve 200; the
   fresh-install reviewer's `/favicon.ico` 404 is gone.
 
+### Roadmap removal follow-up: live documentation restored (2026-07-07)
+- The roadmap deletion below over-reached: three pieces of it were live
+  setup documentation, not roadmap, and are restored to permanent README
+  homes. New "European zones (ENTSO-E)" section (token registration,
+  `.env` at the project root — never under web-served `app/` — and the
+  manual zone-refresh command); "Refresh process" now leads with
+  `--incremental` (the daily command, previously only in the deleted
+  roadmap item) and carries the Mac/Windows scheduler install
+  one-liners plus what the daily job covers. API-layer deferral and
+  AuthN/AuthZ stay deleted (decision record in `plan/03` and pure
+  roadmap respectively).
+
 ### Roadmap moved out of the README (2026-07-07)
 - **"Next steps to productionise" removed from README.md** — the roadmap
   now lives in GitHub Issues/Projects, where items carry status and can

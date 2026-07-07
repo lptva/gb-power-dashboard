@@ -82,6 +82,29 @@ Coal conversion: `£/MWh th = USD/t ÷ FX(USD per GBP) ÷ 6.978 MWh th/t`(6,000 
 Full field mapping, units, timestamp handling and transformations are in [methodology.md](methodology.md) and in the app's Methodology tab (which is
 generated from the ETL's own metadata, so it cannot drift from the data).
 
+## European zones (ENTSO-E)
+
+The dashboard ships with seven European markets behind the header zone
+switcher — **viewing them needs nothing**; the zone data is part of the
+published dataset. *Refreshing* them needs a free ENTSO-E Transparency
+Platform token:
+
+1. Register at <https://transparency.entsoe.eu>, then email
+   `transparency@entsoe.eu` with the subject "RESTful API access" (they
+   reply in a few working days).
+2. `cp .env.example .env` and put the token in it. The `.env` lives at
+   the **project root — never under `app/`**, which is web-served: a
+   token placed there would be downloadable by anyone who can reach the
+   dashboard.
+3. Refresh a zone by hand with
+   `python3 etl/fetch_entsoe.py --zone FR --days 30`, or let the daily
+   scheduled refresh keep all seven topped up automatically (zone history
+   accumulates append-only from 31 May 2026).
+
+Zone-set rationale — which markets are included and why, DE_LU's
+reference-market status, the Irish EIC quirk — is in
+[methodology.md](methodology.md) under "Zone set (Europe extension)".
+
 ## Architecture
 
 ```
@@ -108,9 +131,31 @@ Design rules enforced throughout:
 
 ## Refresh process
 
-Re-run `python etl/build_dataset.py --days 365` whenever you want newer data.
-Raw responses are cached in `data_raw/cache/`, so a refresh only fetches new chunks; delete the cache or pass `--no-cache` to force a full re-fetch.
-The app reads whatever is in `app/data/` at page load — no server restart needed beyond a browser refresh.
+Day to day, use the incremental mode — it re-fetches only the last two
+stored days plus anything newer (~10 HTTP calls, seconds instead of
+minutes), merges onto the published dataset atomically behind a
+validation guard, and keeps the window rolling at 365 days:
+
+```bash
+python3 etl/build_dataset.py --incremental
+```
+
+`--days 365` forces a full rebuild (raw responses are cached in
+`data_raw/cache/`, so even that only fetches missing chunks; delete the
+cache or pass `--no-cache` to re-fetch everything). The app reads whatever
+is in `app/data/` at page load — no server restart needed beyond a
+browser refresh.
+
+To run the whole pipeline daily without thinking about it — incremental
+dataset update, the observed-dispatch snapshot, the seven European zone
+appends, and the optional AI summary — install the scheduled job
+(opt-in, one command; details and uninstall in
+[ops/README.md](ops/README.md)):
+
+```bash
+bash ops/install_schedule.sh          # Mac (launchd, daily 07:00)
+powershell -ExecutionPolicy Bypass -File ops\install_schedule.ps1   # Windows
+```
 
 ## Tests
 
