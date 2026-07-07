@@ -113,7 +113,7 @@ const Data = (() => {
       try { bmu = await fetchJson(`data/bmu_snapshot.json${v}`); }
       catch { bmu = null; }
       // AI overnight summary (optional — written by
-      // ops/run_overnight_summary.sh; tiny, so always fetched fresh)
+      // ops/run_overnight_summary.py; tiny, so always fetched fresh)
       try {
         overnight = await fetchJson("data/overnight_summary.json",
           { cache: "no-store" });

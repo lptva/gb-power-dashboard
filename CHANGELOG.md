@@ -362,6 +362,32 @@ machine, worked through in priority order.
   re-run, serve with port fallback (8872 busy → 8873, HTTP 200 on page
   and data), clean Ctrl+C. install.bat logic reviewed but not executed
   (no Windows machine here) — flagged for the next Windows tester.
+- **Ops to Python (review item 4)**: `ops/refresh.py` (stdlib-only
+  orchestrator — same pipeline, dated logs and non-fatal semantics as the
+  retired bash version) and `ops/run_overnight_summary.py` (imports
+  `validate_overnight` directly, deleting the temp-file plumbing; gains a
+  20-minute timeout so a hung CLI can never hang the scheduled refresh —
+  a normal agentic run takes ~8 minutes). `refresh.sh` reduced to a
+  back-compat shim for schedulers still pointing at it;
+  `run_overnight_summary.sh` deleted with all references updated.
+  Scheduling: launchd installer now also resolves an absolute interpreter
+  and appends the claude CLI's directory to the agent's PATH (launchd's
+  minimal PATH silently broke every scheduled summary regeneration —
+  found in this morning's log, `claude CLI not found on PATH`); new
+  `ops/install_schedule.ps1` registers the Windows Task Scheduler
+  equivalent with StartWhenAvailable. **UNTESTED ON WINDOWS**:
+  install_schedule.ps1 and install.bat are logic-reviewed only, pending
+  a real Windows machine. Verified on macOS with a full real run through
+  refresh.py (dataset v27 published, seven zones appended, BMU snapshot,
+  dated log, exit 0) — during which the publish guard correctly refused a
+  malformed agent reply (multiple JSON fragments) and left the previous
+  summary in place, demonstrating the non-fatal path. The installed
+  LaunchAgent was migrated (diff reviewed, backups kept:
+  `*.pre-migration.bak`) to invoke refresh.py directly. One test fixed:
+  the published-summary test no longer cross-checks live-recomputed
+  figures — dataset refresh and summary regeneration legitimately drift
+  apart between steps, which is a UI staleness concern (review item 7),
+  not a validator one.
 
 ## Skipped, with reasons
 

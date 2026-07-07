@@ -1,17 +1,25 @@
 # Ops — scheduled refresh
 
 Everything needed to re-run the ETL on a schedule, without manual steps.
+All the logic is in Python and runs identically on Mac and Windows; only
+the scheduler registration is platform-specific (launchd vs Task
+Scheduler, one script each).
 
 ## What runs
 
-`refresh.sh` → three steps, in order:
+`python3 ops/refresh.py` (stdlib-only orchestrator; `refresh.sh` remains
+as a thin back-compat shim for schedulers that still point at it) → steps
+in order:
 
 1. `python etl/build_dataset.py --incremental` — append new settlement
    periods (~10 HTTP calls, seconds; falls back to a full rebuild if no
    readable dataset exists).
 2. `python etl/build_bmu_snapshot.py` — the observed-dispatch panel's
    latest settlement period (non-fatal if it fails).
-3. `bash ops/run_overnight_summary.sh` — invokes the **dashboard-watcher
+2b. `python etl/fetch_entsoe.py --zone <Z> --days 7` for each of the seven
+   European zones — appends onto the accumulated zone history (non-fatal
+   per zone).
+3. `python3 ops/run_overnight_summary.py` — invokes the **dashboard-watcher
    subagent** headlessly (`claude --agent dashboard-watcher -p …`, model:
    sonnet — a real LLM call) and writes its JSON analysis to
    `app/data/overnight_summary.json` plus a human-readable
@@ -34,13 +42,18 @@ Non-zero exit if the core dataset refresh fails.
 
 ## Install the schedule (one command, opt-in)
 
+**Mac:**
+
 ```bash
 bash ops/install_schedule.sh
 ```
 
-This generates the plist from `com.gb-power-dashboard-2.refresh.plist.template` (substituting the repository location — launchd needs absolute paths) into
-`~/Library/LaunchAgents` and loads it. The job then runs **daily at 07:00
-local time**.
+This generates the plist from
+`com.gb-power-dashboard-2.refresh.plist.template` — substituting the
+repository location and an absolute Python interpreter, both of which
+launchd requires — backs up any previously installed copy to `*.bak`,
+writes it into `~/Library/LaunchAgents` and loads it. The job then runs
+**daily at 07:00 local time**.
 
 Useful commands afterwards:
 
@@ -49,6 +62,19 @@ launchctl list | grep gb-power-dashboard          # is it loaded?
 launchctl kickstart gui/$(id -u)/com.gb-power-dashboard-2.refresh   # run now
 launchctl bootout  gui/$(id -u)/com.gb-power-dashboard-2.refresh    # stop it
 ```
+
+**Windows** (untested on a real Windows machine at the time of writing —
+logic-reviewed only):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ops\install_schedule.ps1
+```
+
+This registers a Task Scheduler job, "GB power dashboard refresh", running
+`.venv\Scripts\python.exe ops\refresh.py` daily at 07:00 with
+*StartWhenAvailable* — the closest equivalent of launchd's run-on-wake. It
+needs the repo-local `.venv` (run `install.bat` first). Status / run now /
+uninstall commands print on completion.
 
 ## Why launchd and not cron
 
@@ -62,7 +88,7 @@ If you prefer cron anyway (e.g. on an always-on machine), the equivalent —
 with the path replaced by wherever you cloned the repository — is:
 
 ```cron
-0 7 * * * /bin/bash /path/to/gb-power-dashboard/ops/refresh.sh
+0 7 * * * /usr/bin/env python3 /path/to/gb-power-dashboard/ops/refresh.py
 ```
 
 ## Honest caveats

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- TEMPLATE: launchd requires absolute paths, so install_schedule.sh
-     substitutes __PROJECT_ROOT__ with this repository's real location
-     and writes the result to ~/Library/LaunchAgents. Do not load this
-     file directly. -->
+     substitutes the PROJECT_ROOT placeholder with this repository's real
+     location and writes the result to ~/Library/LaunchAgents. Do not
+     load this file directly. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -10,14 +10,27 @@
   <key>Label</key>
   <string>com.gb-power-dashboard-2.refresh</string>
 
+  <!-- The PYTHON placeholder is resolved to an absolute interpreter at
+       install time: launchd's PATH is minimal, so a bare "python3"
+       cannot be trusted. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>__PROJECT_ROOT__/ops/refresh.sh</string>
+    <string>__PYTHON__</string>
+    <string>__PROJECT_ROOT__/ops/refresh.py</string>
   </array>
 
   <!-- Daily at 07:00 local time. launchd runs a missed interval on wake,
        which is what we want on a laptop that sleeps overnight. -->
+  <!-- launchd gives agents a minimal PATH; the EXTRA_PATH placeholder is
+       resolved at install time to the directory holding the optional
+       claude CLI (empty when not installed), so the AI summary step can
+       find it. Everything else uses absolute paths and needs no PATH. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin__EXTRA_PATH__</string>
+  </dict>
+
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>

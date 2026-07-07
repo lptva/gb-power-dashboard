@@ -64,16 +64,22 @@ class TestAssumptionVocabulary(unittest.TestCase):
 
 
 class TestPublishedSummariesStayValid(unittest.TestCase):
-    """The currently published summary (real accepted output) must pass the
-    full validation against the panel's real recompute — guards against the
-    validator drifting stricter than what production publishes."""
+    """The currently published summary (real accepted output) must pass
+    schema and vocabulary validation — guards against the validator
+    drifting stricter than what production publishes.
+
+    Deliberately NOT cross-checked against a live figure recompute: the
+    dataset refreshes independently of summary regeneration, so published
+    figures lag the live panel between those steps (that staleness is a
+    UI concern, handled by the panel's stale marker — see CHANGELOG
+    2026-07-07). The figure cross-check belongs at publish time, where
+    prompt and validation see the same dataset; it's covered by
+    TestValidateSummarySchema."""
 
     def test_current_published_summary_validates(self):
         data_dir = PROJECT_ROOT / "app" / "data"
         summary = json.loads((data_dir / "overnight_summary.json").read_text())
-        sys.path.insert(0, str(PROJECT_ROOT / "ops"))
-        from merit_panel_figures import compute
-        reference = compute(data_dir)
+        reference = {"figures": summary["tabs"]["merit_order"]["figures"]}
         validate_summary(summary, reference)  # raises on failure
 
 
