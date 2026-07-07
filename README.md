@@ -1,5 +1,7 @@
 # GB Power Market Intelligence Dashboard
 
+[![tests](https://github.com/lptva/gb-power-dashboard/actions/workflows/tests.yml/badge.svg)](https://github.com/lptva/gb-power-dashboard/actions/workflows/tests.yml)
+
 A real-data market intelligence web app for the Great Britain power market, in the style of a commodity-analytics terminal. Single-page, static, no build step, driven entirely by public data fetched through a re-runnable ETL.
 
 **This is not a stylised model.** Every observed series comes from a public market data source; every estimated or assumption-based metric is labelled as such in the UI, panel by panel.
@@ -33,7 +35,9 @@ a particular folder layout or username.
 ## The AI summary — optional, and the only thing that isn't free
 
 **The core dashboard needs no subscription of any kind.** Every data
-source is free and keyless (see the table below), and every panel — the
+source is free (see the table below; everything the GB view uses is
+keyless, and the token that refreshes the European zones is free too),
+and every panel — the
 year of half-hourly data, the merit-order model, spreads, flows, the
 seven European zones, the scheduled daily refresh — works without any
 account.
@@ -79,11 +83,13 @@ Requires Python 3.10+ and `certifi` (`pip install certifi`). No other dependenci
 | Source | Data | Resolution | Auth | Licence/terms |
 |---|---|---|---|---|
 | [Elexon Insights API](https://bmrs.elexon.co.uk) | Generation by fuel incl. interconnectors (FUELHH), national demand (INDO), Market Index price (MID) | 30 min | none | free, open |
+| [Elexon Insights API](https://bmrs.elexon.co.uk) | Per-unit physical notifications (PN), balancing acceptances (BOALF) and the BM Unit registry — the observed-dispatch panel | per settlement period | none | free, open |
+| [ENTSO-E Transparency Platform](https://transparency.entsoe.eu) | Day-ahead prices (A44), generation by type (A75) and load (A65) for the seven European zones | 15–60 min, normalised to 30 min | free token (registration) | free, attribution |
 | [Sheffield Solar PV_Live](https://www.solar.sheffield.ac.uk/pvlive/) | GB solar outturn (embedded; invisible to Elexon) | 30 min | none | free, attribution |
 | [National Gas data portal](https://data.nationalgas.com) | Gas System Average Price (SAP), item PUBOB603 | daily | none | free |
 | [gov.uk UK ETS CCM table](https://www.gov.uk/government/publications/taking-part-in-the-uk-emissions-trading-scheme-markets) | Official average monthly UKA price | monthly | none | OGL |
 | [World Bank Pink Sheet](https://www.worldbank.org/en/research/commodity-markets) | Australian thermal coal, 6,000 kcal/kg FOB Newcastle futures, monthly avg (USD/t) — **proxy** for the commercial API2 benchmark | monthly | none | CC BY 4.0 |
-| [Bank of England IADB](https://www.bankofengland.co.uk/boeapps/iadb/) | USD/GBP daily spot (XUDLUSS), monthly-averaged for the coal conversion | daily | none | free |
+| [Bank of England IADB](https://www.bankofengland.co.uk/boeapps/iadb/) | USD/GBP daily spot (XUDLUSS, monthly-averaged for the coal conversion) and EUR/GBP daily spot (XUDLERS, converting counterparty day-ahead prices) | daily | none | free |
 
 Coal conversion: `£/MWh th = USD/t ÷ FX(USD per GBP) ÷ 6.978 MWh th/t`(6,000 kcal/kg = 25.12 GJ/t). The result is badged **Proxy / Derived** in the app; a manually entered coal price overrides it (relabelled Assumption).
 
@@ -122,6 +128,9 @@ app/
   data/series_hh.json    columnar half-hourly: epoch s + ~24 series (~2.4 MB/yr)
   data/series_daily.json daily aggregates + gas SAP + monthly UKA (+ ffill flags)
   data/meta.json         provenance registry: source, unit, quality, coverage
+  data/manifest.json     publication version + per-file hashes (cache busting)
+  data/bmu_snapshot.json per-unit dispatch, latest complete settlement period
+  data/zones/<ZONE>/     the seven European markets, same columnar schema
   js/data.js             load, slice, bucket-aggregate (no mutation)
   js/metrics.js          pure formulas: spreads, SRMC, merit ladder, histograms
   js/state.js            in-memory store + pub/sub (no browser storage APIs)
@@ -172,14 +181,19 @@ python3 -m unittest discover -s tests -v
 ```
 
 Stdlib `unittest`, no dependencies — consistent with the rest of the
-project. Two suites cover the places that have already caught real bugs:
-`tests/test_merit_panel_figures.py` checks `ops/merit_panel_figures.py`
-against the app's own `metrics.js` outputs (captured in a real browser)
-on three real-data fixtures — this is the guard that stops the overnight
-LLM inventing SRMC figures, so it gets its own safety net;
-`tests/test_overnight_validator.py` pins the publish gate, including the
-assumption-vocabulary regex against the verbatim sentence from the run
-that motivated it.
+project; the same suite runs on every push via GitHub Actions (the badge
+at the top of this page). Four suites, anchored on the places that have
+already caught real bugs: `tests/test_merit_panel_figures.py` checks
+`ops/merit_panel_figures.py` against the app's own `metrics.js` outputs
+(captured in a real browser) on three real-data fixtures — this is the
+guard that stops the overnight LLM inventing SRMC figures, so it gets
+its own safety net; `tests/test_overnight_validator.py` pins the publish
+gate, including the assumption-vocabulary regex against the verbatim
+sentence from the run that motivated it; `tests/test_panel_facts.py`
+verifies the precomputed summary statistics against a hand-calculated
+synthetic dataset; `tests/test_env_flags.py` pins the AI summary's
+opt-in default (absent means off) and its environment-over-`.env`
+precedence.
 
 ## Known limitations
 

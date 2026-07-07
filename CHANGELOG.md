@@ -506,6 +506,29 @@ machine, worked through in priority order.
   absent means off, environment beats `.env`, only explicit truthy
   values enable).
 
+### Public-launch polish (2026-07-07)
+
+- **Fresh-clone test failure fixed**: `test_current_published_summary_validates`
+  read the machine-generated, deliberately untracked
+  `app/data/overnight_summary.json` and errored with `FileNotFoundError`
+  on any clean checkout (it only passed on machines with a locally
+  published summary — found by running the suite in a fresh clone from
+  GitHub). It now skips with an explanatory message when the file is
+  absent, and still validates the published summary wherever one exists.
+- **CI**: GitHub Actions workflow (`.github/workflows/tests.yml`) runs
+  the full stdlib suite on every push to main and every pull request;
+  badge added to the README header.
+- **Data sources table caught up with the product**: added the Elexon
+  PN/BOALF/BM-registry row (the observed-dispatch panel's inputs), the
+  ENTSO-E Transparency Platform row (the seven European zones), and
+  XUDLERS alongside XUDLUSS in the Bank of England row (EUR/GBP for
+  counterparty price conversion). The AI-section claim "free and
+  keyless" tightened to match (ENTSO-E's free token is registration-gated).
+- **Doc accuracy sweep**: README Tests section now describes all four
+  suites (was "two"); the Architecture block lists `manifest.json`,
+  `bmu_snapshot.json` and `zones/<ZONE>/`; the case study's "seven tabs"
+  parenthetical now names all seven (overview was missing).
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

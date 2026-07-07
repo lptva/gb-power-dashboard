@@ -1,0 +1,19 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Stdlib only — the suite needs no dependencies, matching the
+      # project's zero-dependency rule. The published-summary test
+      # self-skips here (the file is machine-generated and untracked).
+      - run: python -m unittest discover -s tests -v

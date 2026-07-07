@@ -78,7 +78,14 @@ class TestPublishedSummariesStayValid(unittest.TestCase):
 
     def test_current_published_summary_validates(self):
         data_dir = PROJECT_ROOT / "app" / "data"
-        summary = json.loads((data_dir / "overnight_summary.json").read_text())
+        path = data_dir / "overnight_summary.json"
+        if not path.exists():
+            self.skipTest(
+                "no published overnight summary on this machine — the file "
+                "is machine-generated and deliberately untracked, so fresh "
+                "clones never have one (optional AI feature; see the "
+                "README's AI summary section)")
+        summary = json.loads(path.read_text())
         reference = {"figures": summary["tabs"]["merit_order"]["figures"]}
         validate_summary(summary, reference)  # raises on failure
 
