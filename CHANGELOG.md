@@ -484,6 +484,28 @@ machine, worked through in priority order.
   UK audience, keeping the measured USD values as the metrics-log
   source of truth.
 
+### AI summary made explicitly opt-in (2026-07-07)
+
+- **`ENABLE_AI_SUMMARY` flag, default off** (`ops/env_flags.py`; read from
+  the environment first, then the project-root `.env`, matching the
+  `ENTSOE_TOKEN` convention). Previously the overnight summary ran
+  whenever the claude CLI was found on PATH — so anyone who installed the
+  scheduled refresh while having claude signed in for unrelated work was
+  silently opted into daily token spend (~£8–9/month of their own
+  allowance). Now consent is checked before capability: `ops/refresh.py`
+  skips the step with an explanatory log line unless the flag is truthy,
+  and `ops/run_overnight_summary.py` enforces the same gate first thing,
+  so even a direct manual invocation refuses without the opt-in (one-off
+  override: `ENABLE_AI_SUMMARY=true python3 ops/run_overnight_summary.py`).
+  **Behaviour change for existing installs**: a machine that was relying
+  on CLI-presence alone must add `ENABLE_AI_SUMMARY=true` to its `.env`
+  or the summary stops regenerating (the panel's 26 h stale flag makes
+  that visible rather than silent). Documented in the README disclosure
+  section, `ops/README.md`, `.env.example` and the in-app placeholder;
+  precedence and default pinned by `tests/test_env_flags.py` (10 tests —
+  absent means off, environment beats `.env`, only explicit truthy
+  values enable).
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

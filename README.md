@@ -40,7 +40,13 @@ account.
 
 Exactly one feature is different. The collapsed **"Overnight summary"**
 panel is written by a Claude agent (Anthropic's `claude` CLI) reading the
-locally published dataset during the daily refresh. If you enable it:
+locally published dataset during the daily refresh. It is **off by
+default and strictly opt-in**: the refresh only attempts it when
+`ENABLE_AI_SUMMARY=true` is set in the project-root `.env` (or the
+environment). Having the claude CLI installed and signed in — perhaps
+for entirely unrelated work — does **not** enable it; without the flag
+the step is skipped before the CLI is even looked for, so nobody's
+subscription is spent without an explicit decision. If you enable it:
 
 - it requires the [claude CLI](https://claude.com/claude-code) signed in
   to a **Claude subscription**, and **consumes your own usage
@@ -57,9 +63,11 @@ locally published dataset during the daily refresh. If you enable it:
   publish gate rejects any output whose figures deviate from the panels'
   own numbers.
 
-If you do nothing, nothing happens: with the CLI absent the refresh skips
-the step with a log line, the panel shows a one-line "not enabled" note,
-and everything else is unaffected. A summary that stops being regenerated
+If you do nothing, nothing happens — whether or not the CLI is present:
+without the opt-in flag the refresh skips the step with a log line, the
+panel shows a one-line "not enabled" note, and everything else is
+unaffected. To turn it off again, set `ENABLE_AI_SUMMARY=false` (or
+delete the line) — absent means off. A summary that stops being regenerated
 is flagged **⚠ stale** in the panel rather than silently shown as
 current. The panel's output is always badged *AI-generated* — it is model
 interpretation of the published data, never a data series.

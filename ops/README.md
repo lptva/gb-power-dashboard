@@ -19,7 +19,12 @@ in order:
 2b. `python etl/fetch_entsoe.py --zone <Z> --days 7` for each of the seven
    European zones — appends onto the accumulated zone history (non-fatal
    per zone).
-3. `python3 ops/run_overnight_summary.py` — precomputes every statistic
+3. `python3 ops/run_overnight_summary.py` — **opt-in only**: skipped with
+   a log line unless `ENABLE_AI_SUMMARY=true` is set in the project-root
+   `.env` (or the environment). The flag is checked before the claude CLI
+   is even looked for, so a subscription that happens to be signed in on
+   the machine is never spent without an explicit decision (this is the
+   project's only paid feature). When enabled, it precomputes every statistic
    the summary needs (`ops/panel_facts.py`: overnight-vs-baseline stats,
    z-scores, spread percentiles and decomposition, cable facts, merit
    figures) and injects it into the **dashboard-watcher subagent**, invoked
