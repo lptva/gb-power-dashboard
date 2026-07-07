@@ -428,7 +428,30 @@ machine, worked through in priority order.
   carry (consecutive negative half-hour counts, within-window cable
   swing timelines) — recoverable by extending panel_facts if wanted.
   Model stays sonnet; a haiku-class swap is a further ~3× lever left as
-  an explicit decision, not taken by default.
+  an explicit decision, not taken by default. Follow-up closed both
+  flagged quality gaps: below-zero counters (total + longest consecutive
+  run) per metric and per-cable window min/max with timestamps — verified
+  against the tool-driven baseline's own findings (live data reproduces
+  its "eight consecutive negative half-hours" as `below_zero_n: 8,
+  longest: 8`, and INTVKL's −1,152 → +1,426 MW swing with times). The
+  haiku comparison was explicitly declined: at $0.36/run the saving
+  (~$0.25) does not justify the prose-quality risk.
+- **AI subscription disclosure (review item 5)**: README section "The AI
+  summary — optional, and the only thing that isn't free" directly after
+  Quick start — core dashboard needs no subscription; the one exception
+  is stated with **measured** figures backed by
+  `ops/logs/overnight.metrics.log` ($0.36 API-equivalent per run,
+  ~2× on the roughly 1-in-5 retry days, ~$11-equivalent ≈ £8–9/month,
+  single 5–6 minute run inside the daily refresh). Panel decision:
+  placeholder, not removal (a static site cannot detect the CLI, so
+  removal would need a build flag); the not-enabled panel now shows a
+  one-line honest note naming the CLI, the subscription and the usage
+  cost, pointing at the README section — verified in-browser.
+- **Favicon (review item 8)**: `app/favicon.svg` (the header's brand
+  mark — accent-blue chip, white GB) plus a 1,150-byte hand-packed
+  16×16 `favicon.ico` fallback (stdlib struct packing — the project has
+  no image dependencies), linked from index.html. Both serve 200; the
+  fresh-install reviewer's `/favicon.ico` 404 is gone.
 
 ## Skipped, with reasons
 

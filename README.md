@@ -30,6 +30,39 @@ Every command in this README is written to be run from the repository
 root, whatever you named it and wherever you cloned it — nothing assumes
 a particular folder layout or username.
 
+## The AI summary — optional, and the only thing that isn't free
+
+**The core dashboard needs no subscription of any kind.** Every data
+source is free and keyless (see the table below), and every panel — the
+year of half-hourly data, the merit-order model, spreads, flows, the
+seven European zones, the scheduled daily refresh — works without any
+account.
+
+Exactly one feature is different. The collapsed **"Overnight summary"**
+panel is written by a Claude agent (Anthropic's `claude` CLI) reading the
+locally published dataset during the daily refresh. If you enable it:
+
+- it requires the [claude CLI](https://claude.com/claude-code) signed in
+  to a **Claude subscription**, and **consumes your own usage
+  allowance**;
+- measured cost (not an estimate — every run's tokens are logged to
+  `ops/logs/overnight.metrics.log`): **$0.36 API-equivalent per run**,
+  one run per daily refresh, occasionally ~2× on the roughly 1-in-5 days
+  a structurally invalid reply forces a retry. Order of $11-equivalent
+  (≈ £8–9) per month at current API pricing;
+- one run is a single ~5–6 minute model call inside the scheduled
+  refresh — all statistics are precomputed deterministically
+  (`ops/panel_facts.py`) and the model only writes the narrative; a
+  publish gate rejects any output whose figures deviate from the panels'
+  own numbers.
+
+If you do nothing, nothing happens: with the CLI absent the refresh skips
+the step with a log line, the panel shows a one-line "not enabled" note,
+and everything else is unaffected. A summary that stops being regenerated
+is flagged **⚠ stale** in the panel rather than silently shown as
+current. The panel's output is always badged *AI-generated* — it is model
+interpretation of the published data, never a data series.
+
 Requires Python 3.10+ and `certifi` (`pip install certifi`). No other dependencies — the ETL uses only the standard library, and the app is plain HTML/CSS/JS with a vendored copy of ECharts.
 
 ## Data sources
