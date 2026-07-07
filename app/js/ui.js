@@ -690,13 +690,16 @@ const UI = (() => {
          It produces <b>one section per tab</b>, and each tab shows only its
          own: Overview, Prices and Generation share the general overnight
          narrative; Merit order analyses the gap between the panel's implied
-         clearing price and the observed price — those figures are computed
-         deterministically by the pipeline with the panel's exact model
-         (<code>ops/merit_panel_figures.py</code>) and the publisher rejects
-         a summary whose figures deviate, so the LLM explains the gap but
-         never computes it; Spreads places spark/dark against their own
-         history; Flows covers cable direction changes and import
-         dependency. The agent is instructed to
+         clearing price and the observed price; Spreads places spark/dark
+         against their own history; Flows covers cable direction changes
+         and import dependency. Every statistic the agent uses — baselines,
+         z-scores, spread percentiles, cable facts and the merit figures —
+         is precomputed deterministically with the dashboard's exact
+         formulas (<code>ops/panel_facts.py</code>,
+         <code>ops/merit_panel_figures.py</code>) and injected into the
+         prompt; the publisher rejects a summary whose figures or window
+         deviate, so the LLM writes the narrative but never computes a
+         number. The agent is instructed to
          synthesise — at most two causally-explained findings per tab, with
          correlated hours collapsed into one finding — rather than enumerate
          threshold crossings. It compares the last 48 hours against a

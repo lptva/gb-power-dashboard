@@ -19,9 +19,13 @@ in order:
 2b. `python etl/fetch_entsoe.py --zone <Z> --days 7` for each of the seven
    European zones — appends onto the accumulated zone history (non-fatal
    per zone).
-3. `python3 ops/run_overnight_summary.py` — invokes the **dashboard-watcher
-   subagent** headlessly (`claude --agent dashboard-watcher -p …`, model:
-   sonnet — a real LLM call) and writes its JSON analysis to
+3. `python3 ops/run_overnight_summary.py` — precomputes every statistic
+   the summary needs (`ops/panel_facts.py`: overnight-vs-baseline stats,
+   z-scores, spread percentiles and decomposition, cable facts, merit
+   figures) and injects it into the **dashboard-watcher subagent**, invoked
+   headlessly (`claude --agent dashboard-watcher -p …`, model: sonnet — a
+   real LLM call, single-turn by design: measured $0.36 API-equivalent vs
+   $1.20 for the earlier tool-driven design). Writes the JSON analysis to
    `app/data/overnight_summary.json` plus a human-readable
    `overnight_summary.md`. The JSON carries one analysis section per
    dashboard tab (`tabs.overview` / `merit_order` / `spreads` / `flows`);

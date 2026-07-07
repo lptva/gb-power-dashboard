@@ -410,6 +410,25 @@ machine, worked through in priority order.
   ("written for older data … the daily regeneration has not run since")
   — verified in-browser across fresh (no flag), 72-hour-aged (flag both
   states) and absent (placeholder) files.
+- **Watcher re-architected: precompute, then write (review item 6)**:
+  `ops/panel_facts.py` computes everything the summary needs outside the
+  LLM — overnight-vs-baseline stats with z-scores and extreme timestamps,
+  spark/dark levels + history percentiles + cost decomposition, per-cable
+  means and direction flips, import dependency, merit figures (via
+  merit_panel_figures, unchanged) and data-quality facts — with the
+  dashboard's exact formulas, pinned by nine hand-calculated unit tests
+  (suite now 26). The agent prompt injects the ~5.6 kB facts block; the
+  agent doc now forbids recomputation and dataset reads; the validator
+  additionally requires the window be copied verbatim from the facts.
+  Measured same-day, same-model comparison: **18 turns → 1 turn, 12.5 →
+  5.6 min, $1.20 → $0.36 API-equivalent (−70%)**. Quality held on
+  causal-chain analysis (both designs independently converged on the same
+  key values — dark spread p18, 13.5 GW solar peak, ~17% import
+  dependency); the known loss is intra-window colour the facts don't
+  carry (consecutive negative half-hour counts, within-window cable
+  swing timelines) — recoverable by extending panel_facts if wanted.
+  Model stays sonnet; a haiku-class swap is a further ~3× lever left as
+  an explicit decision, not taken by default.
 
 ## Skipped, with reasons
 

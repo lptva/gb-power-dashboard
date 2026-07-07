@@ -28,22 +28,22 @@ OPS = Path(__file__).resolve().parent
 ROOT = OPS.parent
 sys.path.insert(0, str(OPS))
 
-from merit_panel_figures import compute  # noqa: E402
+from panel_facts import compute_facts  # noqa: E402
 import validate_overnight  # noqa: E402
 
-PROMPT_TEMPLATE = """Run your overnight analysis on the dashboard dataset in this
-directory (app/data/series_hh.json, series_daily.json, meta.json) exactly
-per your procedure: one section per tab (overview, merit_order, spreads,
-flows), analysis-first. The Merit order panel's own headline figures,
-computed with the panel's exact model, are below — copy the 'figures'
-object VERBATIM into tabs.merit_order.figures and base the merit_order
-analysis on these numbers and the inputs shown (your job is the causal
-explanation of the gap, not the arithmetic). The 'reference_assumptions'
-block gives the dashboard's documented efficiency and carbon-intensity
-values: anywhere your prose (any tab) quotes an efficiency or a carbon
-intensity, use ONLY these values on their stated basis — the publisher
-rejects any other efficiency or tCO2/MWh figure:
-{merit_figures}
+PROMPT_TEMPLATE = """Write the overnight analysis exactly per your procedure: one section
+per tab (overview, merit_order, spreads, flows), analysis-first. Every
+statistic you need is PRECOMPUTED below with the dashboard's exact
+formulas (ops/panel_facts.py) — overnight-vs-baseline stats with
+z-scores, spread levels/percentiles/decomposition, per-cable facts, the
+merit panel's figures and data-quality facts. Do NOT recompute anything
+and do NOT read the dataset files; use a tool only if a specific
+qualitative check is truly essential (it rarely is). Copy 'window'
+VERBATIM into your window field and merit.figures VERBATIM into
+tabs.merit_order.figures — the publisher rejects deviations. The
+reference_assumptions inside 'merit' are the only efficiency and
+carbon-intensity values your prose may quote:
+{facts}
 JSON output mode: respond with ONLY the raw JSON object per your schema —
 the first character of your reply must be '{{', no Markdown fences, no
 prose before or after it."""
@@ -57,13 +57,14 @@ def main():
 
     os.chdir(ROOT)
 
-    # The Merit order panel's own figures, computed deterministically
-    # (merit_panel_figures.py mirrors metrics.js). Injected into the prompt
-    # so the agent analyses the panel's numbers instead of inventing its
-    # own SRMC arithmetic; validate_overnight refuses figures that deviate.
-    reference = compute(ROOT / "app" / "data")
-    prompt = PROMPT_TEMPLATE.format(merit_figures=json.dumps(reference,
-                                                             indent=1))
+    # Everything the agent needs, computed deterministically outside the
+    # LLM (panel_facts.py; merit figures inside it still mirror
+    # metrics.js). Injected so the agent writes analysis instead of
+    # re-deriving statistics through tool calls — the tool-driven design
+    # measured $1.20/run over 18 turns, dominated by that re-derivation.
+    facts = compute_facts(ROOT / "app" / "data")
+    reference = facts["merit"]
+    prompt = PROMPT_TEMPLATE.format(facts=json.dumps(facts, indent=1))
 
     log_dir = OPS / "logs"
     log_dir.mkdir(exist_ok=True)
@@ -125,7 +126,8 @@ def main():
         try:
             data = validate_overnight.extract_inner_json(
                 result.stdout.strip())
-            validate_overnight.validate_summary(data, reference)
+            validate_overnight.validate_summary(
+                data, reference, expected_window=facts["window"])
         except validate_overnight.ValidationError:
             stamp = datetime.datetime.now(datetime.timezone.utc)\
                 .strftime("%Y%m%dT%H%M%SZ")

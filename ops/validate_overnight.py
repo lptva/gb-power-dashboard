@@ -100,9 +100,12 @@ def prose_strings(data):
             yield tab, f"{finding.get('title', '')} {finding.get('detail', '')}"
 
 
-def validate_summary(data, reference):
+def validate_summary(data, reference, expected_window=None):
     """Schema + merit-figure + vocabulary checks. `reference` is the parsed
-    output of merit_panel_figures.py. Raises ValidationError."""
+    output of merit_panel_figures.py (or the `merit` block of
+    panel_facts.py, same shape). When `expected_window` is given (the
+    facts window injected into the prompt), the summary's window must
+    match it verbatim. Raises ValidationError."""
     if "error" in data:
         raise ValidationError(f"agent reported an error: {data['error']}")
     for key in ("window", "tabs", "data_quality"):
@@ -113,6 +116,10 @@ def validate_summary(data, reference):
                        for k in ("from", "to")):
         raise ValidationError("window must be an object with 'from'/'to' "
                               f"strings, got {data['window']!r}")
+    if expected_window is not None and data["window"] != expected_window:
+        raise ValidationError(
+            f"window {data['window']!r} does not match the supplied facts "
+            f"window {expected_window!r} — it must be copied verbatim")
     if not isinstance(data["data_quality"], list):
         raise ValidationError("data_quality is not a list")
     for tab in TABS:
