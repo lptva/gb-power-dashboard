@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-07-07T11:25:20+00:00",
+  "built_at": "2026-07-08T06:13:31+00:00",
   "zone": "BE",
   "label": "Belgium",
   "kind": "interconnected",
@@ -10,7 +10,7 @@
   ],
   "window": {
     "start": "2026-05-31",
-    "end": "2026-07-07"
+    "end": "2026-07-08"
   },
   "timezone": "All timestamps UTC.",
   "series": {

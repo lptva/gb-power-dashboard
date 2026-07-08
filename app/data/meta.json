@@ -1,9 +1,9 @@
 {
-  "built_at": "2026-07-07T11:25:17+00:00",
+  "built_at": "2026-07-08T06:13:12+00:00",
   "mode": "incremental",
   "window": {
-    "start": "2025-07-07",
-    "end": "2026-07-06"
+    "start": "2025-07-08",
+    "end": "2026-07-07"
   },
   "timezone": "All timestamps UTC. Half-hourly values are interval starts (Elexon settlement periods mapped to startTime).",
   "coverage": {

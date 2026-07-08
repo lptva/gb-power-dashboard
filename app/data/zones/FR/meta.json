@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-07-07T11:25:19+00:00",
+  "built_at": "2026-07-08T06:13:18+00:00",
   "zone": "FR",
   "label": "France",
   "kind": "interconnected",
@@ -7,7 +7,7 @@
   "data_quality": [],
   "window": {
     "start": "2026-05-31",
-    "end": "2026-07-07"
+    "end": "2026-07-08"
   },
   "timezone": "All timestamps UTC.",
   "series": {
