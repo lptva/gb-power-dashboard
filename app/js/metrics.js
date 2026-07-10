@@ -227,6 +227,90 @@ const Metrics = (() => {
     return num / Math.sqrt(dx * dy);
   }
 
+  /* Interconnector utilisation against an OBSERVED operational ceiling.
+     GB publishes no per-cable technical limits (its cables sit outside any
+     flow-based capacity-calculation region), so the working ceiling per
+     direction is the highest flow SUSTAINED for at least `sustainHh`
+     half-hours (not necessarily consecutive) inside [ceilFromTs,
+     ceilToTs) — the sustainHh-th largest reading. A plain max is not
+     robust: the FUELHH interconnector columns carry isolated
+     single-period spike artefacts well above anything the cable
+     sustains, yet a nameplate-based plausibility cap misfires the other
+     way — cables can genuinely sustain flows somewhat above their
+     published rating (both failure modes observed on real data in the
+     Jul 2026 window: one cable spiked 38% over its rating for single
+     half-hours; another's true plateau sat 7% over nameplate for
+     hundreds). The kth-largest rule drops isolated artefacts and keeps
+     genuine plateaus without consulting nameplate. A direction whose
+     ceiling is below `floorMw` (cable offline) returns a null ceiling
+     rather than flagging noise as utilisation. Near-capacity = |flow| ≥
+     threshold × ceiling, tested per half-hour over [fromTs, toTs); spike
+     periods excluded from the ceiling still count there, where they are
+     trivially at-limit. Returns half-hour INDICES so callers can join
+     other series (e.g. prices) at exactly those periods. */
+  function cableUtilisation(ts, flow,
+      { fromTs, toTs, ceilFromTs, ceilToTs, threshold = 0.9, floorMw = 0,
+        sustainHh = 4 }) {
+    const imps = [], exps = [];
+    for (let i = 0; i < ts.length; i++) {
+      if (ts[i] < ceilFromTs || ts[i] >= ceilToTs) continue;
+      const v = flow[i];
+      if (v == null) continue;
+      if (v > 0) imps.push(v);
+      else if (v < 0) exps.push(-v);
+    }
+    const kthLargest = (arr) => {
+      if (!arr.length) return 0;
+      arr.sort((a, b) => b - a);
+      return arr[Math.min(sustainHh - 1, arr.length - 1)];
+    };
+    let impCeil = kthLargest(imps), expCeil = kthLargest(exps);
+    if (impCeil < floorMw) impCeil = null;
+    if (expCeil < floorMw) expCeil = null;
+    const nearImp = [], nearExp = [];
+    let n = 0;
+    for (let i = 0; i < ts.length; i++) {
+      if (ts[i] < fromTs || ts[i] >= toTs) continue;
+      const v = flow[i];
+      if (v == null) continue;
+      n++;
+      if (impCeil != null && v >= threshold * impCeil) nearImp.push(i);
+      else if (expCeil != null && -v >= threshold * expCeil) nearExp.push(i);
+    }
+    return { impCeil, expCeil, n, nearImp, nearExp };
+  }
+
+  /* p-quantile (0–1) of a plain array, nulls ignored; null when empty. */
+  function quantile(values, p) {
+    const arr = values.filter((v) => v != null).sort((a, b) => a - b);
+    if (!arr.length) return null;
+    return arr[Math.min(arr.length - 1, Math.floor(p * arr.length))];
+  }
+
+  /* Congestion PROXY — approximation, NOT a shadow price (GB's cables
+     allocate capacity per cable via explicit auctions; no flow-based
+     congestion rent is published, so none can be observed). A half-hour
+     is flagged only when BOTH hold: the cable is near-capacity (indices
+     from cableUtilisation) AND the GB−zone spread is wide in the
+     DIRECTION the flow earns — importing at ceiling with GB at a premium
+     (Δ ≥ thrHi) or exporting at ceiling with GB at a discount
+     (Δ ≤ thrLo). Deliberately NOT flagged: wide spread with slack flow
+     (outage / ramp-limit shaped — never reaches this test because inputs
+     are near-capacity indices only), and at-ceiling flow AGAINST the
+     price signal (emergency-action shaped): at-limit, but not a
+     congestion-rent picture. */
+  function congestionFlags({ nearImp, nearExp }, deltaAt, thrHi, thrLo) {
+    const imp = thrHi == null ? [] : nearImp.filter((i) => {
+      const d = deltaAt(i);
+      return d != null && d >= thrHi;
+    });
+    const exp = thrLo == null ? [] : nearExp.filter((i) => {
+      const d = deltaAt(i);
+      return d != null && d <= thrLo;
+    });
+    return { imp, exp };
+  }
+
   /* Build a CSV string from {header: array} columns. */
   function toCsv(columns) {
     const keys = Object.keys(columns);
@@ -243,6 +327,7 @@ const Metrics = (() => {
 
   return { cleanSparkSpread, cleanDarkSpread, ccgtSrmc, meritLadder,
            meritCurveSteps, curveClearing, binnedMedian,
-           histogram, intradayShape, pearson, toCsv,
+           histogram, intradayShape, pearson, cableUtilisation,
+           quantile, congestionFlags, toCsv,
            fmtDate, fmtAxisTick };
 })();

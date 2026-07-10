@@ -17,6 +17,10 @@
     `${Metrics.fmtDate(Data.meta.window.end, "day")} · UTC`;
   document.getElementById("foot-built").textContent =
     `Dataset built ${Metrics.fmtDate(Data.meta.built_at, "datetime")} UTC`;
+  UI.renderDataAge();
+  // Keep the header age honest while a tab stays open (in-memory timer
+  // only — no browser storage).
+  setInterval(UI.renderDataAge, 60 * 1000);
 
   /* ---- tabs ---- */
   document.getElementById("tabs").addEventListener("click", (event) => {
@@ -99,6 +103,7 @@
       : "Data: ENTSO-E Transparency Platform";
     document.getElementById("foot-built").textContent =
       `Dataset built ${Metrics.fmtDate(Data.meta.built_at, "datetime")} UTC`;
+    UI.renderDataAge(); // zone meta carries its own built_at
     State.set({ zone: nextZone }); // triggers KPI + chart re-render
     UI.renderMethodology();        // methodology is zone-aware
   });

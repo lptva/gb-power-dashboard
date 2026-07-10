@@ -533,6 +533,78 @@ machine, worked through in priority order.
   Screenshots section — real captures of live data (full-resolution
   2860 px exports, ~4.1 MB total, the repo's only binary docs).
 
+### Dataset staleness indicator (2026-07-10)
+
+- Header now shows "updated Xh ago" next to the data window, computed from
+  `meta.built_at` at render time (`UI.renderDataAge`); turns amber with a
+  "⚠ stale" prefix past 26 h — one missed daily 07:00 refresh — reusing the
+  overnight card's threshold and colour. Deliberately a *freshness* signal,
+  separate from the Observed/Estimated/Proxy/Assumption *provenance*
+  badges. Re-rendered on zone switch (zone meta carries its own
+  `built_at`) and on a one-minute in-memory timer so a long-open tab
+  cannot keep claiming fresh data. No browser storage; no new data
+  sources. Methodology refresh-process text updated to name both
+  staleness signals.
+
+### Interconnector utilisation ranking (#17, 2026-07-10)
+
+- New Flows-tab panel ranking the ten cables by how often flow ran near a
+  practical limit over the selected range, with the mean GB-vs-counterparty
+  price differential over exactly those half-hours. GB publishes no
+  per-cable limits and no flow-based shadow prices, so the working ceiling
+  per direction is the highest flow sustained ≥2 h over the trailing 90
+  days (Proxy — self-adjusts to de-ratings; a direction under 5% of
+  nameplate reads as offline). The sustained rule replaced both simpler
+  candidates after they failed on real data: a raw max is broken by
+  isolated metering spikes (NSL prints 1,942 MW half-hours against a
+  1,400 MW rating and a 1,398 MW p95 plateau — the spike zeroed NSL's
+  utilisation count at 0.2% when the cable is in fact pegged ~55% of the
+  time), and a 105%-of-nameplate cap clips genuine operation (BritNed
+  sustains ~1,070 MW, 7% above its published rating, for hundreds of
+  half-hours). Operator nameplate is kept as a cited reference column only
+  (sources in methodology.md; constants in data.js). Near-capacity = |flow| ≥ 90% of
+  the operational ceiling. Differential = GB MID − counterparty day-ahead
+  £ at the daily BoE EUR/GBP rate, labelled indicative (different market
+  segments) and bounded by the accumulated zone history (from 31 May 2026,
+  stated in the caption). All ten cables carry a Δ: Moyle (landing in
+  Northern Ireland), East-West and Greenlink share the all-island SEM
+  day-ahead series, with each Δ averaged over that cable's own
+  near-capacity half-hours — an earlier draft excluded Moyle's Δ on a
+  "no counterparty price" premise that did not survive review (the SEM
+  bidding zone covers NI). Pure
+  client-side over existing JSON: `Metrics.cableUtilisation` (pure,
+  returns near-capacity half-hour indices) + a `flowsUtilisation` table
+  renderer; in-app methodology section (`m-utilisation`) + methodology.md
+  formulas block + judgement call 10.
+- View toggle: "Ranked" (near-capacity share, default) | "By market" —
+  cables clustered per counterparty market with labelled group rows,
+  groups ordered by each market's best near-capacity share, within-group
+  order keeping the ranking. Presentation only (identical metrics); the
+  `.seg` segmented control reused in-card per the "one component, two
+  homes" convention; in-memory state per the no-browser-storage rule.
+
+### Congestion-proxy flagging (#18, 2026-07-10)
+
+- New "Congestion proxy %" column on the utilisation ranking: a half-hour
+  counts only when BOTH conditions hold — flow at ≥90% of the cable's
+  operational ceiling AND the GB−zone spread wide in the direction the
+  flow earns (beyond the market's p75/p25 over the full accumulated zone
+  window, minimum £5/MWh; thresholds fixed w.r.t. the view range and
+  shared by cables landing in the same zone). Labelled "approximation —
+  not a shadow price" in the column tooltip, per-row tooltip, caption,
+  card blurb and methodology: GB has been outside SDAC since end-2020 and
+  its cables allocate capacity via explicit day-ahead capacity auctions
+  (the TCA's multi-region loose volume coupling unimplemented, verified
+  2026-07-10), so no flow-based congestion rent exists to observe.
+  Deliberately NOT flagged: wide spread with slack flow (outage /
+  ramp-limit shaped) and at-ceiling flow against the price signal
+  (emergency-action shaped, e.g. 23 Jun 2026). `Metrics.quantile` and
+  `Metrics.congestionFlags` are pure and will be reused by the per-cable
+  chart shading (#19). RAM decomposition (IVA/FRM/AAC/Fnrao) recorded as
+  a permanent Known Limitation in the in-app methodology and
+  methodology.md, per the milestone scope. Docs: m-utilisation bullet +
+  methodology.md congestion block + judgement call 11.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

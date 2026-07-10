@@ -2,6 +2,36 @@
 
 const UI = (() => {
 
+  /* ---------------- dataset freshness ----------------
+     Age, not provenance: deliberately separate from the four quality
+     badges (those say how a series is derived; this says how old the
+     whole dataset is). Same 26 h rule and amber treatment as the
+     overnight card — past one missed daily 07:00 refresh, fresh-looking
+     numbers are the lie this element exists to prevent. Re-run on a
+     timer so a tab left open overnight cannot keep claiming "2h ago". */
+
+  function renderDataAge() {
+    const el = document.getElementById("data-age");
+    const builtAt = Data.meta?.built_at;
+    if (!el) return;
+    if (!builtAt) { el.textContent = ""; el.removeAttribute("title"); return; }
+    const ageMs = Math.max(0, Date.now() - new Date(builtAt).getTime());
+    const hours = ageMs / 3600000;
+    const label = hours < 1 ? `${Math.floor(ageMs / 60000)}m`
+      : hours < 48 ? `${Math.floor(hours)}h`
+      : `${Math.floor(hours / 24)}d`;
+    const stale = hours > 26;
+    el.classList.toggle("stale", stale);
+    el.textContent = stale
+      ? `· ⚠ stale — updated ${label} ago`
+      : `· updated ${label} ago`;
+    el.title = `Dataset built ${Metrics.fmtDate(builtAt, "datetime")} UTC. ` +
+      (stale
+        ? "More than 26 h old — the scheduled daily refresh has not run " +
+          "since; run: python etl/build_dataset.py --incremental"
+        : "Refreshed daily at 07:00 local by the scheduled ETL run.");
+  }
+
   /* ---------------- AI overnight summary ----------------
      Renders the ACTIVE TAB's section of data/overnight_summary.json
      (written by ops/run_overnight_summary.py via the dashboard-watcher
@@ -688,6 +718,90 @@ const UI = (() => {
             daily refresh — so longer ranges are clipped to the overlap
             (stated in the panel's meta line). TSO reporting gaps appear as
             gaps.</li>
+        <li><b>The overlays share the Utilisation ranking's definitions.</b>
+            Dashed lines mark the cable's per-direction operational
+            ceilings (highest flow sustained ≥2 h over the trailing
+            90 days), dotted lines the cited nameplate — the flow axis is
+            fixed to the design envelope so the design-vs-practice gap
+            stays visible — and amber shading marks congestion-proxy
+            half-hours (at ceiling AND wide direction-consistent spread;
+            an approximation, not a shadow price). Definitions, thresholds
+            and caveats: the Utilisation ranking section above.</li>
+      </ul>
+
+      <h3 id="m-utilisation">Utilisation ranking (Flows tab)</h3>
+      <p>Ranks the ten cables by how often flow ran near a practical limit
+         over the selected range, and what the GB–counterparty price gap
+         averaged in exactly those half-hours. GB interconnectors sit
+         outside any flow-based capacity-calculation region (capacity is
+         allocated per cable), so neither a published network limit nor a
+         shadow price exists — both are approximated and badged
+         Proxy / Derived. A view toggle switches between the flat ranking
+         (default) and grouping by counterparty market, ordered by each
+         market's best near-capacity share — presentation only, the
+         metrics are identical in both views:</p>
+      <ul>
+        <li><b>Operational ceiling (Proxy):</b> per direction, the highest
+            flow sustained for at least 2 hours (4 half-hours, not
+            necessarily consecutive) over the trailing 90 days — a
+            <b>rolling window</b> that moves forward daily. A plain max is
+            not robust — the FUELHH columns carry occasional
+            single-half-hour spike artefacts well above anything the cable
+            sustains — while a nameplate-based cap misfires the other way,
+            because cables can genuinely sustain flows somewhat above
+            their published rating: the sustained rule drops isolated
+            artefacts and keeps genuine plateaus. Chosen over nameplate
+            because it self-adjusts to de-ratings and phased ramp-ups; a
+            direction whose ceiling is under 5% of nameplate is treated as
+            offline (—) rather than flagging noise as utilisation.
+            Symmetrically, a rarely-used direction's ceiling reflects use,
+            not capability — read it against the nameplate column.</li>
+        <li><b>Nameplate (Reference):</b> operator-published design
+            capacity, shown for context and never used in the near-capacity
+            test — sources cited in <code>methodology.md</code>. Values:
+            ${Object.values(Data.INTERCONNECTORS).map((ic) =>
+              `${ic.label} ${ic.nameplate_mw.toLocaleString("en-GB")}`)
+              .join(" · ")} (MW).</li>
+        <li><b>Near-capacity:</b> |flow| ≥ 90% of the operational ceiling,
+            tested per half-hour over the selected range.</li>
+        <li><b>Δ (Derived, indicative only):</b> mean of GB MID minus the
+            counterparty day-ahead price (converted at the daily BoE
+            EUR/GBP rate) over near-capacity half-hours; positive = GB
+            premium. Day-ahead auction vs within-day MID are different
+            market segments, so the gap is context, not a tradable spread.
+            Zone prices exist only over the accumulated zone history:
+            collection began 31 May 2026 and is append-only with no
+            backfill, so that date is a <b>fixed accumulation start</b> —
+            unlike the rolling ceiling window, it never moves — and it
+            bounds the join; the row tooltip counts the half-hours
+            actually used.</li>
+        <li><b>Congestion proxy (approximation — not a shadow price):</b>
+            a half-hour is flagged only when BOTH conditions hold — the
+            cable at ≥90% of its operational ceiling AND the GB−zone
+            spread wide in the direction the flow earns: importing with
+            Δ = GB − zone at or beyond the market's p75 (≥ £5/MWh), or
+            exporting with Δ at or beyond the p25 (≤ −£5/MWh). The spread
+            population is the market's full accumulated zone window, so
+            the thresholds do not move when the view range changes, and
+            cables landing in the same zone share them. Why a proxy: GB
+            left the EU's single day-ahead coupling at the end of 2020 —
+            capacity on GB–EU cables is allocated through explicit
+            day-ahead capacity auctions that close before the energy
+            auctions (the TCA's proposed multi-region loose volume
+            coupling is unimplemented as of mid-2026) — so no flow-based
+            shadow price exists to observe. Two deliberate exclusions:
+            wide spread with <i>slack</i> flow is not flagged (consistent
+            with an outage or ramp limit, not scarce capacity), and
+            at-ceiling flow <i>against</i> the price signal (e.g.
+            exporting while GB is the premium market) is not flagged —
+            at-limit, but not a congestion-rent picture.</li>
+        <li><b>Three cables share the SEM counterparty price.</b> Moyle
+            lands in Northern Ireland and East-West/Greenlink in the
+            Republic of Ireland, but all three connect GB to the same
+            all-island SEM bidding zone, so their Δs use the same
+            day-ahead series. The rows remain distinct: each Δ is
+            averaged over that cable's own near-capacity half-hours, so
+            the three can — and do — differ.</li>
       </ul>
 
       <h3 id="m-overnight">Overnight summary (AI-generated)</h3>
@@ -728,8 +842,10 @@ const UI = (() => {
          <code>manifest.json</code> cache-busts the data files. A launchd job
          (installed via <code>ops/install_schedule.sh</code>) runs this daily
          at 07:00 local time; missed runs fire on wake — see
-         <code>ops/README.md</code>. The footer's "Dataset built" timestamp
-         is the staleness signal; a full rebuild is
+         <code>ops/README.md</code>. The header's "updated … ago" element
+         and the footer's "Dataset built" timestamp are the staleness
+         signals — the header turns amber past 26 h (one missed daily
+         refresh; freshness, not a data-quality badge); a full rebuild is
          <code>--days 365</code>.</p>
 
       <h3 id="m-limits">Known limitations</h3>
@@ -740,6 +856,13 @@ const UI = (() => {
         <li>No unit commitment, network constraints or balancing actions are
             modelled anywhere in this app.</li>
         <li>Embedded wind is invisible to all sources used.</li>
+        <li>A flow-based RAM decomposition (IVA / FRM / AAC / Fnrao /
+            F0−Fnrao, as shown on Nordic/Core CCR dashboards) cannot be
+            built for GB: it requires TSO-level flow-based allocation
+            data that does not exist for per-cable, explicitly allocated
+            interconnectors. Simulating the components would fabricate
+            data — permanently out of scope; the congestion proxy above
+            is the honest substitute.</li>
       </ul>`;
   }
 
@@ -813,6 +936,6 @@ const UI = (() => {
     URL.revokeObjectURL(a.href);
   }
 
-  return { renderGlance, renderOvernight, renderKpis, renderAssumptions,
-           renderMethodology, exportCsv };
+  return { renderDataAge, renderGlance, renderOvernight, renderKpis,
+           renderAssumptions, renderMethodology, exportCsv };
 })();
