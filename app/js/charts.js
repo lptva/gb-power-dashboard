@@ -1099,6 +1099,38 @@ const Charts = (() => {
     return fx;
   }
 
+  /* Zone day-ahead price in £ at epoch-s ts (EUR ÷ daily BoE EUR/GBP).
+     Shared by the utilisation table and the counterparty chart overlays
+     so the two can never disagree. */
+  function zonePriceGbpAt(ctx, fx, ts) {
+    const j = ctx.index.get(ts);
+    const eur = j == null ? null : ctx.hh.price[j];
+    if (eur == null || !fx.size) return null;
+    const rate = fx.get(new Date(ts * 1000).toISOString().slice(0, 10));
+    return rate ? eur / rate : null;
+  }
+
+  /* Congestion-proxy spread thresholds for a market: the wide tail of
+     Δ = GB − zone over the FULL accumulated zone overlap, floored at
+     ±£CONG_FLOOR — a fixed population, so the flag definition doesn't
+     move when the selected range changes. */
+  function zoneSpreadThr(ctx, fx) {
+    const deltas = [];
+    const zFirst = ctx.hh.t[0];
+    for (let i = 0; i < Data.hh.t.length; i++) {
+      const ts = Data.hh.t[i];
+      if (ts < zFirst) continue;
+      const gb = Data.hh.price[i];
+      const zp = zonePriceGbpAt(ctx, fx, ts);
+      if (gb != null && zp != null) deltas.push(gb - zp);
+    }
+    const hi = Metrics.quantile(deltas, CONG_TAIL);
+    return hi == null ? null
+      : { hi: Math.max(hi, CONG_FLOOR),
+          lo: Math.min(Metrics.quantile(deltas, 1 - CONG_TAIL),
+                       -CONG_FLOOR) };
+  }
+
   function flowsUtilisation() {
     const body = document.getElementById("util-table");
     const metaLine = document.getElementById("util-meta");
@@ -1144,13 +1176,7 @@ const Charts = (() => {
 
   function renderUtilisation(cables, stats, zoneCtx, body, metaLine, win) {
     const fx = fxDayMap();
-    const priceAt = (ctx, ts) => {
-      const j = ctx.index.get(ts);
-      const eur = j == null ? null : ctx.hh.price[j];
-      if (eur == null || !fx.size) return null;
-      const rate = fx.get(new Date(ts * 1000).toISOString().slice(0, 10));
-      return rate ? eur / rate : null;
-    };
+    const priceAt = (ctx, ts) => zonePriceGbpAt(ctx, fx, ts);
     // Mean (GB MID − zone day-ahead £) over the given half-hour indices —
     // only where both prices exist (zone history bounds the join).
     const avgDiff = (ctx, indices) => {
@@ -1164,28 +1190,12 @@ const Charts = (() => {
       return { avg: m ? sum / m : null, m };
     };
 
-    // Congestion-proxy spread thresholds, one pair per MARKET (cables
-    // landing in the same zone share them): the wide tail of Δ = GB −
-    // zone over the FULL accumulated zone overlap, floored at ±£5 — a
-    // fixed population, so the flag definition doesn't move when the
-    // selected range changes.
+    // Congestion-proxy spread thresholds, one pair per MARKET — cables
+    // landing in the same zone share them (helper shared with the
+    // counterparty chart overlays).
     const zoneThr = new Map();
-    zoneCtx.forEach((ctx, z) => {
-      if (!ctx) { zoneThr.set(z, null); return; }
-      const deltas = [];
-      const zFirst = ctx.hh.t[0];
-      for (let i = 0; i < Data.hh.t.length; i++) {
-        const ts = Data.hh.t[i];
-        if (ts < zFirst) continue;
-        const gb = Data.hh.price[i];
-        const zp = priceAt(ctx, ts);
-        if (gb != null && zp != null) deltas.push(gb - zp);
-      }
-      const hi = Metrics.quantile(deltas, CONG_TAIL);
-      const lo = Metrics.quantile(deltas, 1 - CONG_TAIL);
-      zoneThr.set(z, hi == null ? null
-        : { hi: Math.max(hi, CONG_FLOOR), lo: Math.min(lo, -CONG_FLOOR) });
-    });
+    zoneCtx.forEach((ctx, z) =>
+      zoneThr.set(z, ctx ? zoneSpreadThr(ctx, fx) : null));
 
     const rows = cables.map((k) => {
       const ic = Data.INTERCONNECTORS[k];
@@ -1384,14 +1394,7 @@ const Charts = (() => {
     const sec = Math.max(State.bucketSeconds(), 3600);
     const info = Data.ZONE_INFO[zone] || { label: zone };
 
-    // Daily EUR/GBP lookup (observed, weekend-ffilled in the ETL)
-    const fx = new Map();
-    if (Data.daily.fx_eur_per_gbp) {
-      Data.daily.d.forEach((day, i) => {
-        if (Data.daily.fx_eur_per_gbp[i] != null)
-          fx.set(day, Data.daily.fx_eur_per_gbp[i]);
-      });
-    }
+    const fx = fxDayMap();
 
     const flow = Data.aggregate(cable, from, to, sec);
     const gbPrice = Data.aggregate("price", from, to, sec);
@@ -1403,6 +1406,68 @@ const Charts = (() => {
         .slice(0, 10));
       return rate ? +(v / rate).toFixed(2) : null;
     });
+
+    // #19 overlays — same definitions as the utilisation panel (see
+    // methodology, m-utilisation): per-direction sustained ceilings,
+    // cited nameplate, and congestion-proxy half-hours (at ceiling AND
+    // wide direction-consistent spread; approximation, NOT a shadow
+    // price). Computed at half-hourly resolution regardless of the
+    // chart's display buckets.
+    const ic = Data.INTERCONNECTORS[cable];
+    const endTs = Data.hh.t[Data.hh.t.length - 1] + 1800;
+    const stats = Metrics.cableUtilisation(Data.hh.t, Data.hh[cable], {
+      fromTs: from, toTs: to,
+      ceilFromTs: endTs - UTIL_CEIL_DAYS * 86400, ceilToTs: endTs,
+      threshold: UTIL_THRESHOLD, floorMw: UTIL_FLOOR * ic.nameplate_mw,
+      sustainHh: UTIL_SUSTAIN_HH,
+    });
+    const thr = zoneSpreadThr(ctx, fx);
+    const flags = thr ? Metrics.congestionFlags(
+      { nearImp: stats.nearImp, nearExp: stats.nearExp },
+      (i) => {
+        const gb = Data.hh.price[i];
+        const zp = zonePriceGbpAt(ctx, fx, Data.hh.t[i]);
+        return gb != null && zp != null ? gb - zp : null;
+      }, thr.hi, thr.lo) : { imp: [], exp: [] };
+    // contiguous flagged half-hours → [startMs, endMs) shading runs
+    const flagged = [...flags.imp, ...flags.exp].sort((a, b) => a - b);
+    const runs = [];
+    flagged.forEach((i) => {
+      const s = Data.hh.t[i] * 1000, e = (Data.hh.t[i] + 1800) * 1000;
+      const last = runs[runs.length - 1];
+      if (last && s <= last[1]) last[1] = e; else runs.push([s, e]);
+    });
+    // Flow axis spans the design envelope so the design-vs-practice gap
+    // stays visible instead of being autoscaled away.
+    const envGw = +(1.05 * Math.max(ic.nameplate_mw, stats.impCeil ?? 0,
+      stats.expCeil ?? 0) / 1000).toFixed(2);
+    const dimC = css("--text-dim");
+    // All four reference lines are labelled per direction — an
+    // unlabelled mirror line under the area fill reads as absent, and
+    // the ceilings are genuinely asymmetric (separate imp/exp values
+    // from cableUtilisation, same as the table's imp / exp column).
+    const mlData = [
+      { yAxis: GW(ic.nameplate_mw),
+        lineStyle: { color: dimC, type: "dotted", width: 1 },
+        label: { show: true, formatter: "nameplate", fontSize: 9,
+                 color: dimC, position: "insideEndBottom" } },
+      { yAxis: -GW(ic.nameplate_mw),
+        lineStyle: { color: dimC, type: "dotted", width: 1 },
+        label: { show: true, formatter: "nameplate", fontSize: 9,
+                 color: dimC, position: "insideEndTop" } },
+    ];
+    // Ceiling labels anchor LEFT, nameplate labels RIGHT — horizontal
+    // separation, so nearly-coincident lines (ceiling ≈ nameplate) can
+    // never overlay each other's labels at any zoom level.
+    if (stats.impCeil != null) mlData.push({ yAxis: GW(stats.impCeil),
+      lineStyle: { color: ic.colour, type: "dashed", width: 1 },
+      label: { show: true, formatter: "op. ceiling (import)",
+               fontSize: 9, color: dimC, position: "insideStartTop" } });
+    if (stats.expCeil != null) mlData.push({ yAxis: -GW(stats.expCeil),
+      lineStyle: { color: ic.colour, type: "dashed", width: 1 },
+      label: { show: true, formatter: "op. ceiling (export)",
+               fontSize: 9, color: dimC,
+               position: "insideStartBottom" } });
 
     // Zone generation mix shares on the same buckets
     const mixKeys = Data.STACK_ORDER.filter((k) => ctx.hh[k]
@@ -1418,7 +1483,7 @@ const Charts = (() => {
     const bucketIdx = new Map(mixT.map((ms, k) => [ms, k]));
 
     const clipped = from > fromTs;
-    metaLine.textContent =
+    const captionBase =
       `${info.label} (${zone}) · showing ` +
       `${Metrics.fmtDate(from * 1000, "day")} → ` +
       `${Metrics.fmtDate((to - 1800) * 1000, "day")}` +
@@ -1426,11 +1491,23 @@ const Charts = (() => {
                  + "(append-only; deepens daily)" : "") +
       (fx.size ? " · remote price converted at daily BoE EUR/GBP (Derived)"
                : " · EUR/GBP unavailable — remote price hidden");
+    // The congestion count follows the ZOOMED window (datazoom handler
+    // below), so "in view" stays literally true.
+    const setCaption = (visFromS, visToS) => {
+      const nVis = flagged.filter((i) =>
+        Data.hh.t[i] >= visFromS && Data.hh.t[i] < visToS).length;
+      metaLine.textContent = captionBase +
+        (thr ? ` · ${nVis} congestion-proxy half-hours in view`
+               + " (approximation — not a shadow price)"
+             : " · congestion proxy unavailable (no zone price overlap)");
+    };
+    setCaption(from, to);
 
     const top = chart("ch-flows-context");
     top.setOption(base({
       legend: { textStyle: { color: css("--text-dim") }, top: 0 },
-      grid: { left: 52, right: 56, top: 30, bottom: 42 },
+      grid: { left: 52, right: 56, top: 30, bottom: 56 },
+      dataZoom: zoom(),
       tooltip: { trigger: "axis", backgroundColor: css("--bg-raised"),
         borderColor: css("--border"), confine: true,
         textStyle: { color: css("--text"), fontSize: 12 },
@@ -1454,12 +1531,19 @@ const Charts = (() => {
             fuels = `<div style="margin-top:3px;opacity:.75">${info.label} `
               + `mix: ${ranked}</div>`;
           }
+          const congested = runs.some(([s, e]) =>
+            s < ms + sec * 1000 && e > ms);
+          const note = congested
+            ? `<div style="margin-top:3px;color:#bd9a55">⚠ congestion`
+              + ` proxy — approximation, not a shadow price (see`
+              + ` methodology)</div>`
+            : "";
           return `<div style="margin-bottom:3px">`
             + `${Metrics.fmtDate(ms, "datetime")}</div>`
-            + rows.join("<br>") + fuels;
+            + rows.join("<br>") + fuels + note;
         } },
       xAxis: timeAxis(),
-      yAxis: [valueAxis("GW"),
+      yAxis: [valueAxis("GW", { min: -envGw, max: envGw }),
         valueAxis(`${CUR()}/MWh`, { position: "right",
           splitLine: { show: false } })],
       series: [
@@ -1470,7 +1554,11 @@ const Charts = (() => {
             color: Data.INTERCONNECTORS[cable].colour },
           itemStyle: { color: Data.INTERCONNECTORS[cable].colour },
           areaStyle: { opacity: 0.25 }, yAxisIndex: 0,
-          connectNulls: false },
+          connectNulls: false,
+          markLine: { symbol: "none", silent: true, data: mlData },
+          markArea: { silent: true,
+            itemStyle: { color: "rgba(189, 154, 85, 0.14)" },
+            data: runs.map(([s, e]) => [{ xAxis: s }, { xAxis: e }]) } },
         line("GB price (MID)", gbPrice.t, gbPrice.v, css("--accent"),
           { yAxisIndex: 1 }),
         ...(fx.size ? [line(`${zone} day-ahead £ (Derived)`,
@@ -1485,6 +1573,9 @@ const Charts = (() => {
       legend: { type: "scroll",
         textStyle: { color: css("--text-dim") }, top: 0 },
       grid: { left: 52, right: 56, top: 30, bottom: 42 },
+      // Inside zoom only (no second slider in the card); the group
+      // connection keeps it in step with the flow chart's zoom.
+      dataZoom: [{ type: "inside", start: 0, end: 100 }],
       xAxis: timeAxis(),
       yAxis: valueAxis("% of zone generation", { min: 0, max: 100 }),
       series: mixKeys.map((k, j) => ({
@@ -1500,6 +1591,24 @@ const Charts = (() => {
     top.group = "flows-context";
     bottom.group = "flows-context";
     echarts.connect("flows-context");
+
+    // Keep the congestion count honest under zoom. Chart instances are
+    // cached in the registry, so drop any previous render's handler
+    // before attaching this one (its closure holds this render's
+    // flagged set).
+    const dataMinMs = from * 1000, dataMaxMs = to * 1000;
+    top.off("datazoom");
+    top.on("datazoom", (e) => {
+      const p = (e.batch ? e.batch[0] : e) || {};
+      const dz = top.getOption().dataZoom[0] || {};
+      const pctS = p.start ?? dz.start ?? 0;
+      const pctE = p.end ?? dz.end ?? 100;
+      const sMs = dz.startValue
+        ?? dataMinMs + (pctS / 100) * (dataMaxMs - dataMinMs);
+      const eMs = dz.endValue
+        ?? dataMinMs + (pctE / 100) * (dataMaxMs - dataMinMs);
+      setCaption(sMs / 1000, eMs / 1000);
+    });
   }
 
   const PANELS = {

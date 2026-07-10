@@ -144,7 +144,15 @@ auction vs within-day MID) and the zone's generation mix (context, not
 attribution of the cable's electrons). Zone history accumulates append-only
 (~6 kB/day/zone; `--retain-days` trims as a fallback if size ever
 matters); longer ranges clip to the overlap, which deepens over time. DE_LU is a reference market with no GB
-cable and is excluded.
+cable and is excluded. The flow chart overlays the cable's per-direction
+operational ceilings (dashed) and cited nameplate (dotted), with the flow
+axis fixed to the design envelope (±1.05 × max(nameplate, ceilings)) so
+the design-vs-practice gap stays visible instead of being autoscaled
+away, and shades congestion-proxy half-hours in amber — definitions
+identical to the Utilisation ranking and Congestion proxy entries above
+(shared code paths); approximation, not a shadow price. The axis tooltip
+repeats that label over shaded periods, and the caption counts the shaded
+half-hours in view.
 
 **Utilisation ranking** (Flows tab; flows Observed, ceilings and
 differential Proxy / Derived): per cable and direction, the operational

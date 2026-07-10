@@ -718,6 +718,15 @@ const UI = (() => {
             daily refresh — so longer ranges are clipped to the overlap
             (stated in the panel's meta line). TSO reporting gaps appear as
             gaps.</li>
+        <li><b>The overlays share the Utilisation ranking's definitions.</b>
+            Dashed lines mark the cable's per-direction operational
+            ceilings (highest flow sustained ≥2 h over the trailing
+            90 days), dotted lines the cited nameplate — the flow axis is
+            fixed to the design envelope so the design-vs-practice gap
+            stays visible — and amber shading marks congestion-proxy
+            half-hours (at ceiling AND wide direction-consistent spread;
+            an approximation, not a shadow price). Definitions, thresholds
+            and caveats: the Utilisation ranking section above.</li>
       </ul>
 
       <h3 id="m-utilisation">Utilisation ranking (Flows tab)</h3>
