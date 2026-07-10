@@ -24,3 +24,4 @@ ops/__pycache__/
 # ops/run_overnight_summary.py when the optional claude CLI is present
 app/data/overnight_summary.json
 app/data/overnight_summary.md
+app/data/
