@@ -2,6 +2,36 @@
 
 const UI = (() => {
 
+  /* ---------------- dataset freshness ----------------
+     Age, not provenance: deliberately separate from the four quality
+     badges (those say how a series is derived; this says how old the
+     whole dataset is). Same 26 h rule and amber treatment as the
+     overnight card — past one missed daily 07:00 refresh, fresh-looking
+     numbers are the lie this element exists to prevent. Re-run on a
+     timer so a tab left open overnight cannot keep claiming "2h ago". */
+
+  function renderDataAge() {
+    const el = document.getElementById("data-age");
+    const builtAt = Data.meta?.built_at;
+    if (!el) return;
+    if (!builtAt) { el.textContent = ""; el.removeAttribute("title"); return; }
+    const ageMs = Math.max(0, Date.now() - new Date(builtAt).getTime());
+    const hours = ageMs / 3600000;
+    const label = hours < 1 ? `${Math.floor(ageMs / 60000)}m`
+      : hours < 48 ? `${Math.floor(hours)}h`
+      : `${Math.floor(hours / 24)}d`;
+    const stale = hours > 26;
+    el.classList.toggle("stale", stale);
+    el.textContent = stale
+      ? `· ⚠ stale — updated ${label} ago`
+      : `· updated ${label} ago`;
+    el.title = `Dataset built ${Metrics.fmtDate(builtAt, "datetime")} UTC. ` +
+      (stale
+        ? "More than 26 h old — the scheduled daily refresh has not run " +
+          "since; run: python etl/build_dataset.py --incremental"
+        : "Refreshed daily at 07:00 local by the scheduled ETL run.");
+  }
+
   /* ---------------- AI overnight summary ----------------
      Renders the ACTIVE TAB's section of data/overnight_summary.json
      (written by ops/run_overnight_summary.py via the dashboard-watcher
@@ -728,8 +758,10 @@ const UI = (() => {
          <code>manifest.json</code> cache-busts the data files. A launchd job
          (installed via <code>ops/install_schedule.sh</code>) runs this daily
          at 07:00 local time; missed runs fire on wake — see
-         <code>ops/README.md</code>. The footer's "Dataset built" timestamp
-         is the staleness signal; a full rebuild is
+         <code>ops/README.md</code>. The header's "updated … ago" element
+         and the footer's "Dataset built" timestamp are the staleness
+         signals — the header turns amber past 26 h (one missed daily
+         refresh; freshness, not a data-quality badge); a full rebuild is
          <code>--days 365</code>.</p>
 
       <h3 id="m-limits">Known limitations</h3>
@@ -813,6 +845,6 @@ const UI = (() => {
     URL.revokeObjectURL(a.href);
   }
 
-  return { renderGlance, renderOvernight, renderKpis, renderAssumptions,
-           renderMethodology, exportCsv };
+  return { renderDataAge, renderGlance, renderOvernight, renderKpis,
+           renderAssumptions, renderMethodology, exportCsv };
 })();

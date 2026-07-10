@@ -533,6 +533,19 @@ machine, worked through in priority order.
   Screenshots section — real captures of live data (full-resolution
   2860 px exports, ~4.1 MB total, the repo's only binary docs).
 
+### Dataset staleness indicator (2026-07-10)
+
+- Header now shows "updated Xh ago" next to the data window, computed from
+  `meta.built_at` at render time (`UI.renderDataAge`); turns amber with a
+  "⚠ stale" prefix past 26 h — one missed daily 07:00 refresh — reusing the
+  overnight card's threshold and colour. Deliberately a *freshness* signal,
+  separate from the Observed/Estimated/Proxy/Assumption *provenance*
+  badges. Re-rendered on zone switch (zone meta carries its own
+  `built_at`) and on a one-minute in-memory timer so a long-open tab
+  cannot keep claiming fresh data. No browser storage; no new data
+  sources. Methodology refresh-process text updated to name both
+  staleness signals.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one
