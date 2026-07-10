@@ -6,17 +6,22 @@ const Data = (() => {
   let daily = null;   // daily columnar: d (ISO dates) + series arrays
   let meta = null;
 
+  /* nameplate_mw is the operator-published design capacity — a cited
+     REFERENCE value only (sources: methodology.md, "Interconnector
+     utilisation ranking"). Real limits sit lower whenever a cable is
+     de-rated or in phased ramp-up, so the utilisation panel derives its
+     working ceiling from observed flows and shows nameplate as context. */
   const INTERCONNECTORS = {
-    INTFR:   { label: "IFA (FR)",       colour: "#9575cd" },
-    INTIFA2: { label: "IFA2 (FR)",      colour: "#7e57c2" },
-    INTELEC: { label: "ElecLink (FR)",  colour: "#b39ddb" },
-    INTNED:  { label: "BritNed (NL)",   colour: "#5c6bc0" },
-    INTNEM:  { label: "Nemo (BE)",      colour: "#7986cb" },
-    INTNSL:  { label: "NSL (NO)",       colour: "#4db6ac" },
-    INTVKL:  { label: "Viking (DK)",    colour: "#81d4fa" },
-    INTIRL:  { label: "Moyle (NI)",     colour: "#aed581" },
-    INTEW:   { label: "East-West (IE)", colour: "#9ccc65" },
-    INTGRNL: { label: "Greenlink (IE)", colour: "#c5e1a5" },
+    INTFR:   { label: "IFA (FR)",       colour: "#9575cd", nameplate_mw: 2000 },
+    INTIFA2: { label: "IFA2 (FR)",      colour: "#7e57c2", nameplate_mw: 1000 },
+    INTELEC: { label: "ElecLink (FR)",  colour: "#b39ddb", nameplate_mw: 1000 },
+    INTNED:  { label: "BritNed (NL)",   colour: "#5c6bc0", nameplate_mw: 1000 },
+    INTNEM:  { label: "Nemo (BE)",      colour: "#7986cb", nameplate_mw: 1000 },
+    INTNSL:  { label: "NSL (NO)",       colour: "#4db6ac", nameplate_mw: 1400 },
+    INTVKL:  { label: "Viking (DK)",    colour: "#81d4fa", nameplate_mw: 1400 },
+    INTIRL:  { label: "Moyle (NI)",     colour: "#aed581", nameplate_mw: 500 },
+    INTEW:   { label: "East-West (IE)", colour: "#9ccc65", nameplate_mw: 500 },
+    INTGRNL: { label: "Greenlink (IE)", colour: "#c5e1a5", nameplate_mw: 500 },
   };
 
   /* Fixed palette — one colour per fuel type, used by EVERY chart (never

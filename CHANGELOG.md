@@ -605,6 +605,37 @@ machine, worked through in priority order.
   methodology.md, per the milestone scope. Docs: m-utilisation bullet +
   methodology.md congestion block + judgement call 11.
 
+### Per-cable chart overlays: ceilings, nameplate, congestion shading (#19, 2026-07-10)
+
+- The Counterparty context flow chart now marks the selected cable's
+  per-direction operational ceilings (dashed, cable colour, labelled
+  "op. ceiling (import)" / "op. ceiling (export)" — the values are
+  genuinely asymmetric per direction) and cited nameplate (dotted, dim,
+  labelled on both sides), with the flow axis fixed to the design
+  envelope (±1.05 × max(nameplate, ceilings)) so the design-vs-practice
+  gap stays visible instead of being autoscaled away. Congestion-proxy
+  half-hours — definitions identical to #18: at ceiling AND wide
+  direction-consistent spread — are shaded amber via markArea, computed
+  at half-hourly resolution regardless of display buckets; the axis
+  tooltip appends "congestion proxy — approximation, not a shadow price"
+  over shaded buckets and the caption counts shaded half-hours in view
+  (or states that the proxy is unavailable when there is no zone price
+  overlap). No new data sources. The zone-price-£ and spread-threshold
+  logic was extracted into shared helpers (`zonePriceGbpAt`,
+  `zoneSpreadThr`) used by both the utilisation table and this chart, so
+  the two cannot diverge. Docs: counterparty card blurb, m-counterparty
+  bullet, methodology.md counterparty block.
+- Standard zoom added to the context pair: the flow chart carries the
+  shared inside+slider `zoom()` config every other zoomable panel uses
+  (grid deepened to fit the slider), the mix chart an inside zoom, kept
+  in step through the existing "flows-context" chart group. The
+  caption's congestion count recomputes from a `datazoom` listener so
+  "in view" follows the zoomed window — a mechanism no other panel
+  needed (their captions are static). Ceiling labels anchor at the
+  chart's left end and nameplate labels at the right, so
+  near-coincident lines can no longer overlay each other's labels at
+  any zoom level.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one
