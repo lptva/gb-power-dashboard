@@ -146,6 +146,53 @@ attribution of the cable's electrons). Zone history accumulates append-only
 matters); longer ranges clip to the overlap, which deepens over time. DE_LU is a reference market with no GB
 cable and is excluded.
 
+**Utilisation ranking** (Flows tab; flows Observed, ceilings and
+differential Proxy / Derived): per cable and direction, the operational
+ceiling is the highest flow sustained for at least 2 hours (4 half-hours,
+not necessarily consecutive — the 4th-largest reading) over the trailing
+90 days, a rolling window that moves forward with each refresh. A plain
+max is not robust: the FUELHH interconnector columns carry occasional
+isolated single-half-hour spike artefacts well above anything the cable
+sustains (an unfiltered max would lift a pegged cable's ceiling above its
+true plateau and zero its utilisation count), while a nameplate-based
+plausibility cap misfires the other way, because cables can genuinely
+sustain flows somewhat above their published rating. The sustained rule
+drops isolated artefacts and keeps genuine plateaus without consulting
+nameplate; dated examples of both failure modes are recorded in the
+CHANGELOG entry for this panel. GB interconnectors sit outside any
+flow-based capacity-calculation region (capacity is allocated per cable),
+so no technical limit or shadow price is published — the observed ceiling
+self-adjusts to de-ratings and phased ramp-ups, and a direction whose
+ceiling falls below 5% of nameplate is treated as offline rather than
+flagging noise as utilisation. Near-capacity = |flow| ≥ 90% of
+that ceiling, tested per half-hour over the selected range. The table ranks
+cables by near-capacity share and shows the mean GB MID − counterparty
+day-ahead differential (daily BoE EUR/GBP conversion; indicative only —
+different market segments) over exactly those half-hours. The two dates in
+the panel caption differ in kind, not by typo: the ceiling window is
+rolling (trailing 90 days, shifts daily), while 31 May 2026 is a fixed
+accumulation start — the date zone price collection began (append-only, no
+backfill) — which never moves and bounds the price join. Three cables share one
+counterparty price series: Moyle lands in Northern Ireland and
+East-West/Greenlink in the Republic of Ireland, but all three connect GB
+to the same all-island SEM bidding zone, so their differentials use the
+same SEM day-ahead series. The rows stay distinct because each Δ is
+averaged over that cable's own near-capacity half-hours. A view toggle
+offers the flat ranking (default) or grouping by counterparty market
+(groups ordered by each market's best near-capacity share; within-group
+order keeps the ranking) — presentation only, the metrics are identical
+in both views.
+
+Nameplate reference capacities (shown for context, never used in the
+near-capacity test). Operator-published design ratings, cross-checked
+2026-07-10 against DESNZ, "Electricity interconnectors' contribution to
+security of supply" (October 2025, capacity-market derating annex,
+assets.publishing.service.gov.uk) and Elexon's interconnector register
+(elexon.co.uk/bsc/about/interconnectors/): IFA 2,000 MW · IFA2 1,000 MW ·
+ElecLink 1,000 MW · BritNed 1,000 MW · Nemo Link 1,000 MW · NSL 1,400 MW ·
+Viking Link 1,400 MW · Moyle 500 MW · East-West 500 MW · Greenlink 500 MW.
+Constants live in `app/js/data.js` (`INTERCONNECTORS.nameplate_mw`).
+
 ## Zone set (Europe extension)
 
 Two inclusion rules, never mixed silently. *Interconnected* zones are
@@ -219,3 +266,25 @@ automatically — empirical probe and the official ENTSO-E citation in
    percentage points below the published one — a failed refresh leaves the
    live files untouched. If nothing changed upstream, nothing is written and
    the manifest version does not move, so browsers keep their cached copy.
+10. **Interconnector ceilings are observed, not published.** The utilisation
+    panel's per-direction ceiling is the highest flow sustained ≥2 h over
+    the trailing 90 days, deliberately preferred to nameplate: nameplate
+    overstates cables in de-rating or phased ramp-up (Moyle chronically;
+    Viking Link at launch), while an observed ceiling mislabels nothing
+    that actually flowed. The sustained-2h rule (4th-largest reading)
+    exists because both simpler candidates fail on real data: a raw max is
+    broken by isolated single-period metering spikes (which would lift a
+    pegged cable's ceiling above its true plateau and zero its utilisation
+    count), and a nameplate plausibility cap clips genuine operation,
+    because cables can sustain flows somewhat above their published
+    rating. Dated examples of both failure modes are recorded in the
+    CHANGELOG entry for this panel. Known costs, accepted and stated: a
+    persistent de-rating reads as "capacity"; a 90-day window lags a
+    recovery; a rarely-used direction's ceiling reflects use, not
+    capability (a cable that mostly flows one way has an unrevealing
+    ceiling in the other direction); ≥4
+    isolated spikes at the same level within a window would still set a
+    false ceiling. Nameplate is retained as a cited reference column so
+    the gap between design and practice stays visible. The near-capacity
+    threshold (90%), ceiling window (90 days) and sustain length (2 h) are
+    presentation choices, stated in the UI.

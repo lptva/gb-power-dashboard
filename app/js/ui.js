@@ -720,6 +720,61 @@ const UI = (() => {
             gaps.</li>
       </ul>
 
+      <h3 id="m-utilisation">Utilisation ranking (Flows tab)</h3>
+      <p>Ranks the ten cables by how often flow ran near a practical limit
+         over the selected range, and what the GB–counterparty price gap
+         averaged in exactly those half-hours. GB interconnectors sit
+         outside any flow-based capacity-calculation region (capacity is
+         allocated per cable), so neither a published network limit nor a
+         shadow price exists — both are approximated and badged
+         Proxy / Derived. A view toggle switches between the flat ranking
+         (default) and grouping by counterparty market, ordered by each
+         market's best near-capacity share — presentation only, the
+         metrics are identical in both views:</p>
+      <ul>
+        <li><b>Operational ceiling (Proxy):</b> per direction, the highest
+            flow sustained for at least 2 hours (4 half-hours, not
+            necessarily consecutive) over the trailing 90 days — a
+            <b>rolling window</b> that moves forward daily. A plain max is
+            not robust — the FUELHH columns carry occasional
+            single-half-hour spike artefacts well above anything the cable
+            sustains — while a nameplate-based cap misfires the other way,
+            because cables can genuinely sustain flows somewhat above
+            their published rating: the sustained rule drops isolated
+            artefacts and keeps genuine plateaus. Chosen over nameplate
+            because it self-adjusts to de-ratings and phased ramp-ups; a
+            direction whose ceiling is under 5% of nameplate is treated as
+            offline (—) rather than flagging noise as utilisation.
+            Symmetrically, a rarely-used direction's ceiling reflects use,
+            not capability — read it against the nameplate column.</li>
+        <li><b>Nameplate (Reference):</b> operator-published design
+            capacity, shown for context and never used in the near-capacity
+            test — sources cited in <code>methodology.md</code>. Values:
+            ${Object.values(Data.INTERCONNECTORS).map((ic) =>
+              `${ic.label} ${ic.nameplate_mw.toLocaleString("en-GB")}`)
+              .join(" · ")} (MW).</li>
+        <li><b>Near-capacity:</b> |flow| ≥ 90% of the operational ceiling,
+            tested per half-hour over the selected range.</li>
+        <li><b>Δ (Derived, indicative only):</b> mean of GB MID minus the
+            counterparty day-ahead price (converted at the daily BoE
+            EUR/GBP rate) over near-capacity half-hours; positive = GB
+            premium. Day-ahead auction vs within-day MID are different
+            market segments, so the gap is context, not a tradable spread.
+            Zone prices exist only over the accumulated zone history:
+            collection began 31 May 2026 and is append-only with no
+            backfill, so that date is a <b>fixed accumulation start</b> —
+            unlike the rolling ceiling window, it never moves — and it
+            bounds the join; the row tooltip counts the half-hours
+            actually used.</li>
+        <li><b>Three cables share the SEM counterparty price.</b> Moyle
+            lands in Northern Ireland and East-West/Greenlink in the
+            Republic of Ireland, but all three connect GB to the same
+            all-island SEM bidding zone, so their Δs use the same
+            day-ahead series. The rows remain distinct: each Δ is
+            averaged over that cable's own near-capacity half-hours, so
+            the three can — and do — differ.</li>
+      </ul>
+
       <h3 id="m-overnight">Overnight summary (AI-generated)</h3>
       <p>The collapsible panel below the KPI strip is written by an LLM (the
          <code>dashboard-watcher</code> agent, invoked headlessly by

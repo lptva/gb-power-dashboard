@@ -546,6 +546,43 @@ machine, worked through in priority order.
   sources. Methodology refresh-process text updated to name both
   staleness signals.
 
+### Interconnector utilisation ranking (#17, 2026-07-10)
+
+- New Flows-tab panel ranking the ten cables by how often flow ran near a
+  practical limit over the selected range, with the mean GB-vs-counterparty
+  price differential over exactly those half-hours. GB publishes no
+  per-cable limits and no flow-based shadow prices, so the working ceiling
+  per direction is the highest flow sustained ≥2 h over the trailing 90
+  days (Proxy — self-adjusts to de-ratings; a direction under 5% of
+  nameplate reads as offline). The sustained rule replaced both simpler
+  candidates after they failed on real data: a raw max is broken by
+  isolated metering spikes (NSL prints 1,942 MW half-hours against a
+  1,400 MW rating and a 1,398 MW p95 plateau — the spike zeroed NSL's
+  utilisation count at 0.2% when the cable is in fact pegged ~55% of the
+  time), and a 105%-of-nameplate cap clips genuine operation (BritNed
+  sustains ~1,070 MW, 7% above its published rating, for hundreds of
+  half-hours). Operator nameplate is kept as a cited reference column only
+  (sources in methodology.md; constants in data.js). Near-capacity = |flow| ≥ 90% of
+  the operational ceiling. Differential = GB MID − counterparty day-ahead
+  £ at the daily BoE EUR/GBP rate, labelled indicative (different market
+  segments) and bounded by the accumulated zone history (from 31 May 2026,
+  stated in the caption). All ten cables carry a Δ: Moyle (landing in
+  Northern Ireland), East-West and Greenlink share the all-island SEM
+  day-ahead series, with each Δ averaged over that cable's own
+  near-capacity half-hours — an earlier draft excluded Moyle's Δ on a
+  "no counterparty price" premise that did not survive review (the SEM
+  bidding zone covers NI). Pure
+  client-side over existing JSON: `Metrics.cableUtilisation` (pure,
+  returns near-capacity half-hour indices) + a `flowsUtilisation` table
+  renderer; in-app methodology section (`m-utilisation`) + methodology.md
+  formulas block + judgement call 10.
+- View toggle: "Ranked" (near-capacity share, default) | "By market" —
+  cables clustered per counterparty market with labelled group rows,
+  groups ordered by each market's best near-capacity share, within-group
+  order keeping the ranking. Presentation only (identical metrics); the
+  `.seg` segmented control reused in-card per the "one component, two
+  homes" convention; in-memory state per the no-browser-storage rule.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one
