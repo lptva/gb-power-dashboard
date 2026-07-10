@@ -1067,12 +1067,20 @@ const Charts = (() => {
      near-capacity half-hours. The three Irish Sea cables (Moyle to
      Northern Ireland, East-West and Greenlink to the Republic) share the
      all-island SEM day-ahead series; their rows stay distinct because
-     each Δ is averaged over that cable's OWN near-capacity periods. */
+     each Δ is averaged over that cable's OWN near-capacity periods.
+     Congestion proxy: the near-capacity subset whose spread is also wide
+     in the direction the flow earns (market p75/p25 tails, ±£5 floor) —
+     an approximation, NOT a shadow price: GB's explicitly allocated
+     cables publish no congestion rent (see methodology). */
   const UTIL_THRESHOLD = 0.9;  // near-capacity: ≥90% of operational ceiling
   const UTIL_CEIL_DAYS = 90;   // trailing observed-ceiling window
   const UTIL_FLOOR = 0.05;     // ceiling < 5% of nameplate → direction offline
   const UTIL_SUSTAIN_HH = 4;   // ceiling = level held ≥4 half-hours (2 h) in
                                // the window — isolated spikes don't set it
+  const CONG_TAIL = 0.75;      // congestion proxy: spread beyond the
+                               // market's p75 (imports) / p25 (exports)…
+  const CONG_FLOOR = 5;        // …and at least £5/MWh. Approximation — NOT
+                               // a shadow price (see methodology).
   let utilRenderSeq = 0;
   // View only — metrics identical in both modes. In-memory per the
   // no-browser-storage rule: resets to the flat ranking on reload.
@@ -1156,17 +1164,52 @@ const Charts = (() => {
       return { avg: m ? sum / m : null, m };
     };
 
+    // Congestion-proxy spread thresholds, one pair per MARKET (cables
+    // landing in the same zone share them): the wide tail of Δ = GB −
+    // zone over the FULL accumulated zone overlap, floored at ±£5 — a
+    // fixed population, so the flag definition doesn't move when the
+    // selected range changes.
+    const zoneThr = new Map();
+    zoneCtx.forEach((ctx, z) => {
+      if (!ctx) { zoneThr.set(z, null); return; }
+      const deltas = [];
+      const zFirst = ctx.hh.t[0];
+      for (let i = 0; i < Data.hh.t.length; i++) {
+        const ts = Data.hh.t[i];
+        if (ts < zFirst) continue;
+        const gb = Data.hh.price[i];
+        const zp = priceAt(ctx, ts);
+        if (gb != null && zp != null) deltas.push(gb - zp);
+      }
+      const hi = Metrics.quantile(deltas, CONG_TAIL);
+      const lo = Metrics.quantile(deltas, 1 - CONG_TAIL);
+      zoneThr.set(z, hi == null ? null
+        : { hi: Math.max(hi, CONG_FLOOR), lo: Math.min(lo, -CONG_FLOOR) });
+    });
+
     const rows = cables.map((k) => {
       const ic = Data.INTERCONNECTORS[k];
       const s = stats.get(k);
       const ctx = zoneCtx.get(Data.CABLE_ZONE[k]);
       const imp = avgDiff(ctx, s.nearImp);
       const exp = avgDiff(ctx, s.nearExp);
-      return { k, ic, s, imp, exp,
+      const thr = ctx ? zoneThr.get(Data.CABLE_ZONE[k]) : null;
+      const flags = thr ? Metrics.congestionFlags(
+        { nearImp: s.nearImp, nearExp: s.nearExp },
+        (i) => {
+          const gb = Data.hh.price[i];
+          const zp = priceAt(ctx, Data.hh.t[i]);
+          return gb != null && zp != null ? gb - zp : null;
+        }, thr.hi, thr.lo) : null;
+      return { k, ic, s, imp, exp, flags,
         pctImp: s.n && s.impCeil != null
           ? 100 * s.nearImp.length / s.n : null,
         pctExp: s.n && s.expCeil != null
           ? 100 * s.nearExp.length / s.n : null,
+        congImp: s.n && flags && s.impCeil != null
+          ? 100 * flags.imp.length / s.n : null,
+        congExp: s.n && flags && s.expCeil != null
+          ? 100 * flags.exp.length / s.n : null,
         rank: (s.nearImp.length + s.nearExp.length) / (s.n || 1) };
     }).sort((a, b) => b.rank - a.rank);
 
@@ -1179,6 +1222,12 @@ const Charts = (() => {
     const rowHtml = (r) => {
       const dTitle = `over ${r.imp.m} import / ${r.exp.m} export`
         + " near-capacity half-hours with a zone price";
+      const cTitle = `${r.flags ? r.flags.imp.length : 0} of `
+        + `${r.s.nearImp.length} import / `
+        + `${r.flags ? r.flags.exp.length : 0} of ${r.s.nearExp.length}`
+        + " export near-capacity half-hours also had a wide"
+        + " direction-consistent spread. Approximation — not a shadow"
+        + " price.";
       return `<tr>
           <td><span class="util-dot" style="background:${r.ic.colour}">`
         + `</span>${r.ic.label}</td>
@@ -1187,6 +1236,8 @@ const Charts = (() => {
           <td class="num">${pct(r.pctImp)} / ${pct(r.pctExp)}</td>
           <td class="num" title="${dTitle}">${sgn(r.imp.avg)} / `
         + `${sgn(r.exp.avg)}</td>
+          <td class="num" title="${cTitle}">${pct(r.congImp)} / `
+        + `${pct(r.congExp)}</td>
         </tr>`;
     };
 
@@ -1205,7 +1256,7 @@ const Charts = (() => {
         .sort((a, b) => b[1][0].rank - a[1][0].rank)
         .map(([z, list]) => {
           const info = Data.ZONE_INFO[z] || { label: z };
-          return `<tr class="util-group"><td colspan="5">${info.label}`
+          return `<tr class="util-group"><td colspan="6">${info.label}`
             + ` · ${list.length} cable${list.length > 1 ? "s" : ""}`
             + `</td></tr>` + list.map(rowHtml).join("");
         }).join("");
@@ -1229,6 +1280,13 @@ const Charts = (() => {
       + ` £ (Derived) over near-capacity half-hours; positive = GB premium.`
       + ` Indicative only — different market segments.">Avg Δ £/MWh`
       + ` imp / exp</th>
+        <th class="num" title="Share of half-hours in the selected range`
+      + ` where the cable sat at ≥${UTIL_THRESHOLD * 100}% of its`
+      + ` operational ceiling AND the GB−zone spread was wide in the`
+      + ` direction the flow earns (beyond the market's p75/p25 over the`
+      + ` accumulated zone window, minimum £${CONG_FLOOR}/MWh).`
+      + ` Approximation — not a shadow price.">Congestion proxy %`
+      + ` imp / exp</th>
       </tr></thead>
       <tbody>${bodyHtml}</tbody></table>`;
 
@@ -1251,6 +1309,9 @@ const Charts = (() => {
       + " day-ahead prices collected since "
       + (zFrom ? Metrics.fmtDate(zFrom * 1000, "day") : "31 May 2026")
       + " (fixed accumulation start, no backfill)"
+      + " · congestion proxy = at-ceiling + wide direction-consistent"
+      + ` spread (market p75/p25 over the zone window, ≥£${CONG_FLOOR})`
+      + " — approximation, not a shadow price"
       + (missing.length
         ? ` · zone data unavailable: ${missing.join(", ")}` : "");
   }

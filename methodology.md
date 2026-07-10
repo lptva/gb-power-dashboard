@@ -193,6 +193,30 @@ ElecLink 1,000 MW · BritNed 1,000 MW · Nemo Link 1,000 MW · NSL 1,400 MW ·
 Viking Link 1,400 MW · Moyle 500 MW · East-West 500 MW · Greenlink 500 MW.
 Constants live in `app/js/data.js` (`INTERCONNECTORS.nameplate_mw`).
 
+**Congestion proxy** (Utilisation ranking column; approximation — NOT a
+shadow price): a half-hour is flagged only when BOTH conditions hold —
+|flow| ≥ 90% of the cable's operational ceiling AND the GB−zone spread
+wide in the direction the flow earns: importing with Δ = GB − zone at or
+beyond the market's p75 (and ≥ £5/MWh), or exporting with Δ at or beyond
+the p25 (and ≤ −£5/MWh). The spread population is every overlap half-hour
+for that market over the full accumulated zone window — fixed thresholds
+that do not move when the view range changes; cables landing in the same
+zone share them. Why a proxy rather than an observation: GB left the EU
+single day-ahead coupling (SDAC) at the end of 2020, and capacity on
+GB–EU interconnectors is allocated through explicit day-ahead capacity
+auctions that close before the energy auctions — the TCA's proposed
+replacement (multi-region loose volume coupling) remains unimplemented
+(checked 2026-07-10) — so no flow-based shadow price exists to observe.
+Two deliberate exclusions: wide spread with slack flow is not flagged
+(consistent with an outage or ramp limit, not scarce capacity), and
+at-ceiling flow against the price signal is not flagged (emergency-action
+shaped: at-limit, but not congestion rent). Known limitation, recorded so
+it is never re-investigated: a full RAM decomposition (IVA / FRM / AAC /
+Fnrao / F0−Fnrao, as shown on flow-based CCR dashboards) cannot be built
+for GB — it requires TSO-level flow-based allocation data that does not
+exist for per-cable explicitly allocated interconnectors, and simulating
+the components would fabricate data.
+
 ## Zone set (Europe extension)
 
 Two inclusion rules, never mixed silently. *Interconnected* zones are
@@ -288,3 +312,15 @@ automatically — empirical probe and the official ENTSO-E citation in
     the gap between design and practice stays visible. The near-capacity
     threshold (90%), ceiling window (90 days) and sustain length (2 h) are
     presentation choices, stated in the UI.
+11. **The congestion flag is a two-condition proxy, conservative by
+    design.** Requiring BOTH at-ceiling flow AND a direction-consistent
+    wide spread means the flag under-counts congestion when thresholds
+    miss borderline periods, and it deliberately refuses two tempting
+    over-counts: wide spreads with slack flow (outages and ramp limits
+    look like that) and counter-price at-limit flows (emergency actions
+    look like that — 23 Jun 2026 being the canonical example). The tail
+    (p75/p25), the floor (£5/MWh) and the fixed spread population (the
+    full accumulated zone window) are presentation choices, stated in the
+    UI. None of it is a shadow price: GB's explicitly allocated cables
+    publish nothing of the kind, which is also why the flag is named a
+    proxy everywhere it appears.

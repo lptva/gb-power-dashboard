@@ -583,6 +583,28 @@ machine, worked through in priority order.
   `.seg` segmented control reused in-card per the "one component, two
   homes" convention; in-memory state per the no-browser-storage rule.
 
+### Congestion-proxy flagging (#18, 2026-07-10)
+
+- New "Congestion proxy %" column on the utilisation ranking: a half-hour
+  counts only when BOTH conditions hold — flow at ≥90% of the cable's
+  operational ceiling AND the GB−zone spread wide in the direction the
+  flow earns (beyond the market's p75/p25 over the full accumulated zone
+  window, minimum £5/MWh; thresholds fixed w.r.t. the view range and
+  shared by cables landing in the same zone). Labelled "approximation —
+  not a shadow price" in the column tooltip, per-row tooltip, caption,
+  card blurb and methodology: GB has been outside SDAC since end-2020 and
+  its cables allocate capacity via explicit day-ahead capacity auctions
+  (the TCA's multi-region loose volume coupling unimplemented, verified
+  2026-07-10), so no flow-based congestion rent exists to observe.
+  Deliberately NOT flagged: wide spread with slack flow (outage /
+  ramp-limit shaped) and at-ceiling flow against the price signal
+  (emergency-action shaped, e.g. 23 Jun 2026). `Metrics.quantile` and
+  `Metrics.congestionFlags` are pure and will be reused by the per-cable
+  chart shading (#19). RAM decomposition (IVA/FRM/AAC/Fnrao) recorded as
+  a permanent Known Limitation in the in-app methodology and
+  methodology.md, per the milestone scope. Docs: m-utilisation bullet +
+  methodology.md congestion block + judgement call 11.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

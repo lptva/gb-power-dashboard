@@ -766,6 +766,26 @@ const UI = (() => {
             unlike the rolling ceiling window, it never moves — and it
             bounds the join; the row tooltip counts the half-hours
             actually used.</li>
+        <li><b>Congestion proxy (approximation — not a shadow price):</b>
+            a half-hour is flagged only when BOTH conditions hold — the
+            cable at ≥90% of its operational ceiling AND the GB−zone
+            spread wide in the direction the flow earns: importing with
+            Δ = GB − zone at or beyond the market's p75 (≥ £5/MWh), or
+            exporting with Δ at or beyond the p25 (≤ −£5/MWh). The spread
+            population is the market's full accumulated zone window, so
+            the thresholds do not move when the view range changes, and
+            cables landing in the same zone share them. Why a proxy: GB
+            left the EU's single day-ahead coupling at the end of 2020 —
+            capacity on GB–EU cables is allocated through explicit
+            day-ahead capacity auctions that close before the energy
+            auctions (the TCA's proposed multi-region loose volume
+            coupling is unimplemented as of mid-2026) — so no flow-based
+            shadow price exists to observe. Two deliberate exclusions:
+            wide spread with <i>slack</i> flow is not flagged (consistent
+            with an outage or ramp limit, not scarce capacity), and
+            at-ceiling flow <i>against</i> the price signal (e.g.
+            exporting while GB is the premium market) is not flagged —
+            at-limit, but not a congestion-rent picture.</li>
         <li><b>Three cables share the SEM counterparty price.</b> Moyle
             lands in Northern Ireland and East-West/Greenlink in the
             Republic of Ireland, but all three connect GB to the same
@@ -827,6 +847,13 @@ const UI = (() => {
         <li>No unit commitment, network constraints or balancing actions are
             modelled anywhere in this app.</li>
         <li>Embedded wind is invisible to all sources used.</li>
+        <li>A flow-based RAM decomposition (IVA / FRM / AAC / Fnrao /
+            F0−Fnrao, as shown on Nordic/Core CCR dashboards) cannot be
+            built for GB: it requires TSO-level flow-based allocation
+            data that does not exist for per-cable, explicitly allocated
+            interconnectors. Simulating the components would fabricate
+            data — permanently out of scope; the congestion proxy above
+            is the honest substitute.</li>
       </ul>`;
   }
 
