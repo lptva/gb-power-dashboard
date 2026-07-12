@@ -1611,6 +1611,344 @@ const Charts = (() => {
     });
   }
 
+  /* -------------------- System stress (plan/06 workstream B) ----------
+     Data.stress is written by etl/fetch_stress.py: observed daily metrics
+     plus flags[] computed at build time against point-in-time trailing
+     baselines. The renderers only display what the ETL shipped — no
+     statistics are computed in the browser. Amber = the flag convention
+     shared with the header staleness element. */
+
+  const FLAG_AMBER = "#bd9a55";
+
+  function stressDaily() {
+    const el = document.getElementById("ch-stress-daily");
+    if (!el) return;
+    const empty = document.getElementById("stress-empty");
+    const metaEl = document.getElementById("stress-meta");
+    const s = Data.stress;
+    const ok = State.get().zone === "GB" && s && s.days
+      && Object.keys(s.days).length;
+    const latestEl = document.getElementById("stress-latest");
+    empty.classList.toggle("hidden", !!ok);
+    el.classList.toggle("hidden", !ok);
+    if (!ok) {
+      metaEl.textContent = "";
+      if (latestEl) latestEl.textContent = "";
+      return;
+    }
+
+    // Short percentile-context suffix, e.g. " (p98.6, very high)" —
+    // shared by the latest-day digest below; the tooltip grid renders
+    // its own dim-styled variant.
+    const pctlSuffix = (entry, key) => {
+      const c = entry.pctl && entry.pctl[key];
+      if (!c || c.p == null) return "";
+      return ` (p${c.p % 1 ? c.p.toFixed(1) : c.p.toFixed(0)}, ${c.band})`;
+    };
+
+    const allKeys = Object.keys(s.days).sort();
+
+    // Latest-day digest — deterministic state-of-play line for the most
+    // recent stored day. Deliberately range-independent, like the header
+    // chip (the daily chart and event viewer follow the presets; this
+    // line always answers "what does the newest data say?"). Wording is
+    // operational, never a verdict: "no flags fired" = no threshold
+    // crossed, and a thin baseline is said out loud rather than letting
+    // silence imply confidence.
+    if (latestEl) {
+      const lk = allKeys[allKeys.length - 1];
+      const le = s.days[lk];
+      const lolpL = Math.max(...[1, 8, 12].map((h) =>
+        le[`lolp_max_${h}h`] ?? 0));
+      const drmL = Math.min(...[1, 8, 12].map((h) =>
+        le[`drm_min_${h}h`] ?? Infinity));
+      const flagsL = (le.flags || []).map((f) => f.type).join(" + ");
+      const thin = le.pctl
+        && Object.values(le.pctl).some((c) => c.p == null);
+      const bits = [
+        flagsL ? `<span style="color:${FLAG_AMBER};font-weight:600">` +
+          `⚑ flagged: ${flagsL}</span>` : "no flags fired",
+        thin ? "baseline building (&lt;90 d history — percentile flags " +
+          "inactive; only EMN and the adequacy floor can fire)" : null,
+        le.secs_below_49p8 != null
+          ? `${fmtVal(le.secs_below_49p8)} s below 49.8 Hz` : null,
+        le.ssp_max != null
+          ? `max SSP ${CUR()}${fmtVal(le.ssp_max)}${pctlSuffix(le, "ssp_max")}`
+          : null,
+        `max LoLP ${(lolpL * 100).toFixed(2)}%${pctlSuffix(le, "lolp_max")}`,
+        Number.isFinite(drmL)
+          ? `min DRM ${fmtVal(drmL)} MW${pctlSuffix(le, "drm_min")}` : null,
+      ].filter(Boolean);
+      latestEl.innerHTML = `Latest day ${lk}: ${bits.join(" · ")}`;
+      latestEl.title = "Always the most recent stored day — deliberately " +
+        "independent of the 7D–1Y range presets, like the header chip " +
+        "(the chart below does follow them). Flags are fixed threshold " +
+        "rules on observed metrics, not a security assessment.";
+    }
+
+    // Honour the global range presets like every other time-series panel;
+    // the in-chart zoom then works within the selected range.
+    const { fromIso, toIso } = State.window();
+    const keys = allKeys.filter((k) => k >= fromIso && k <= toIso);
+    if (!keys.length) {
+      chart("ch-stress-daily").clear();
+      metaEl.textContent =
+        "no stress data in the selected range — pick a longer preset";
+      return;
+    }
+    const dayMs = keys.map((k) => Date.parse(k + "T00:00:00Z"));
+    const mins = keys.map((k) => {
+      const v = s.days[k].secs_below_49p8;
+      return v == null ? null : +(v / 60).toFixed(1);
+    });
+    const ssp = keys.map((k) => s.days[k].ssp_max ?? null);
+    const flaggedPts = [];
+    const counts = {};
+    keys.forEach((k, i) => {
+      const flags = s.days[k].flags || [];
+      if (flags.length) flaggedPts.push([dayMs[i], 1]);
+      flags.forEach((f) => { counts[f.type] = (counts[f.type] || 0) + 1; });
+    });
+
+    const opt = baseDay({
+      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
+      grid: { left: 52, right: 56, top: 30, bottom: 56 },
+      xAxis: timeAxis(),
+      yAxis: [
+        // The name is longer than the 52px left gutter, and ECharts
+        // centres axis names on the axis line — half of it would clip
+        // off the pane ("...in below 49.8 Hz"). Anchor it left, starting
+        // 8px from the pane edge, so the full label reads over the
+        // chart's top band instead.
+        valueAxis("min below 49.8 Hz", { min: 0,
+          nameTextStyle: { color: css("--text-dim"), align: "left",
+            padding: [0, 0, 0, -44] } }),
+        valueAxis(`${CUR()}/MWh SSP`, { position: "right",
+          splitLine: { show: false } }),
+        { type: "value", min: 0, max: 1.08, show: false },
+      ],
+      dataZoom: zoom(),
+      series: [
+        { name: "Excursion below 49.8 Hz", type: "bar",
+          data: dayMs.map((x, i) => [x, mins[i]]),
+          itemStyle: { color: "#7d8ea3" }, barMaxWidth: 6, yAxisIndex: 0 },
+        line("Max SSP", dayMs, ssp, css("--accent"), { yAxisIndex: 1 }),
+        { name: "Flagged day", type: "scatter", yAxisIndex: 2,
+          data: flaggedPts, symbol: "diamond", symbolSize: 9,
+          itemStyle: { color: FLAG_AMBER } },
+      ],
+    });
+    // Tooltip: the day's full stored metrics + each flag's value vs the
+    // exact threshold that fired (thresholds ship in the JSON).
+    // Tooltip: fixed three-column grid (metric | value | percentile
+    // context), monospace throughout, so the box keeps one width while
+    // hovering across days instead of reflowing per row content. The
+    // context column is the ETL-computed rank against the same
+    // point-in-time trailing window the flags use ("insufficient
+    // history" under 90 days — never a made-up rank; DRM inverted so a
+    // big p always means a more stressed day).
+    const monoCss = MONO.replace(/"/g, "'");
+    const RIGHT = 'style="text-align:right"';
+    const dimRight = `style="text-align:right;color:${css("--text-dim")}"`;
+    const ctxCell = (e, key) => {
+      const c = e.pctl && e.pctl[key];
+      if (!c) return "";
+      return c.p == null ? `— ${c.band}`
+        : `— p${c.p % 1 ? c.p.toFixed(1) : c.p.toFixed(0)}, ${c.band}`;
+    };
+    const grid = (cells) => `<div style="display:grid;` +
+      `grid-template-columns:auto 104px 164px;column-gap:10px;` +
+      `row-gap:1px">${cells.join("")}</div>`;
+    opt.tooltip.formatter = (params) => {
+      const list = Array.isArray(params) ? params : [params];
+      if (!list.length) return "";
+      const key = new Date(list[0].axisValue).toISOString().slice(0, 10);
+      const e = s.days[key];
+      if (!e) return Metrics.fmtDate(list[0].axisValue, "day");
+      const lolp = Math.max(...[1, 8, 12].map((h) =>
+        e[`lolp_max_${h}h`] ?? 0));
+      const drm = Math.min(...[1, 8, 12].map((h) =>
+        e[`drm_min_${h}h`] ?? Infinity));
+      const cells = [];
+      const row = (label, value, ctxKey) => cells.push(
+        `<span>${label}</span>`,
+        `<span ${RIGHT}>${value}</span>`,
+        `<span ${dimRight}>${ctxKey ? ctxCell(e, ctxKey) : ""}</span>`);
+      if (e.secs_below_49p8 != null) {
+        row("below 49.8 Hz", `<b>${fmtVal(e.secs_below_49p8)} s</b>`);
+      }
+      if (e.freq_min != null) {
+        row("min frequency", `${e.freq_min.toFixed(3)} Hz`);
+      }
+      if (e.ssp_max != null) {
+        row("max SSP", `${CUR()}${fmtVal(e.ssp_max)} (SP${e.ssp_max_sp})`,
+          "ssp_max");
+      }
+      row("max LoLP", `${(lolp * 100).toFixed(2)}%`, "lolp_max");
+      if (Number.isFinite(drm)) {
+        row("min DRM", `${fmtVal(drm)} MW`, "drm_min");
+      }
+      if (e.emn_count) row("EMN issued", String(e.emn_count));
+      const flagCells = (e.flags || []).flatMap((f) => {
+        const money = f.type === "price";
+        const unit = f.type === "frequency" ? " s" : "";
+        return [
+          `<span style="color:${FLAG_AMBER};font-weight:600">` +
+            `⚑ ${f.type}</span>`,
+          `<span ${RIGHT}>${money ? CUR() + fmtVal(f.value)
+            : fmtVal(f.value) + unit}</span>`,
+          `<span ${dimRight}>≥ ${money ? CUR() + fmtVal(f.threshold)
+            : fmtVal(f.threshold) + unit}</span>`,
+        ];
+      });
+      return `<div style="font-family:${monoCss}">` +
+        `<div style="margin-bottom:3px">` +
+        `${Metrics.fmtDate(list[0].axisValue, "day")}</div>` +
+        grid(cells) +
+        (flagCells.length ? `<hr style="border:none;border-top:1px solid ` +
+          `${css("--border")};margin:4px 0">` + grid(flagCells) : "") +
+        `</div>`;
+    };
+    chart("ch-stress-daily").setOption(opt, true);
+
+    const flaggedTotal = flaggedPts.length;
+    const windowFlagged = allKeys
+      .filter((k) => (s.days[k].flags || []).length).length;
+    const byType = Object.entries(counts)
+      .map(([t, n]) => `${n} ${t}`).join(" · ");
+    metaEl.textContent =
+      `${keys.length} days in view (${keys[0]} → ${keys[keys.length - 1]})` +
+      ` · ${flaggedTotal} flagged in view` +
+      (byType ? ` (${byType})` : "") +
+      ` — ${windowFlagged} in the full ${allKeys.length}-day window` +
+      ` · flags computed at build against point-in-time trailing baselines`;
+  }
+
+  let stressEventWired = false;
+  let stressEventDay = null; // in-memory selection (no browser storage)
+
+  function stressEvent() {
+    const el = document.getElementById("ch-stress-event");
+    if (!el) return;
+    const select = document.getElementById("stress-event");
+    const empty = document.getElementById("stress-event-empty");
+    const metaEl = document.getElementById("stress-event-meta");
+    if (!stressEventWired) {
+      select.addEventListener("change", () => {
+        stressEventDay = select.value;
+        stressEvent();
+      });
+      stressEventWired = true;
+    }
+    const s = Data.stress;
+    const all = (State.get().zone === "GB" && s && s.meta
+      && s.meta.event_days) ? s.meta.event_days : [];
+    if (!all.length) {
+      select.innerHTML = "";
+      el.classList.add("hidden");
+      empty.textContent = "No event slices available — every flagged day " +
+        "gets one once etl/fetch_stress.py has run.";
+      empty.classList.remove("hidden");
+      metaEl.textContent = "";
+      return;
+    }
+    // The day list follows the global range presets (slice generation in
+    // the ETL does not — every flagged day has a slice on disk; this is
+    // presentation only). Selection survives range changes while it stays
+    // in view; otherwise fall back to the newest flagged day in range.
+    const { fromIso, toIso } = State.window();
+    const days = all.filter((d) => d >= fromIso && d <= toIso);
+    if (!days.length) {
+      select.innerHTML = "";
+      el.classList.add("hidden");
+      empty.textContent = `No flagged days in the selected range — ` +
+        `${all.length} in the full window; pick a longer preset.`;
+      empty.classList.remove("hidden");
+      metaEl.textContent = "";
+      return;
+    }
+    const options = [...days].reverse(); // newest first
+    if (!options.includes(stressEventDay)) stressEventDay = options[0];
+    const html = options.map((d) =>
+      `<option value="${d}"${d === stressEventDay ? " selected" : ""}>` +
+      `${d}</option>`).join("");
+    if (select.innerHTML !== html) select.innerHTML = html;
+
+    const requested = stressEventDay;
+    Data.loadEventSlice(requested).then((slice) => {
+      if (requested !== stressEventDay) return; // selection moved on
+      el.classList.remove("hidden");
+      empty.classList.add("hidden");
+      const t0 = Date.parse(slice.start_utc);
+      const step = (slice.step_seconds || 15) * 1000;
+      const data = slice.hz.map((v, i) => [t0 + i * step, v]);
+      const entry = (s.days || {})[requested] || {};
+      const opt = base({
+        grid: { left: 52, right: 24, top: 30, bottom: 56 },
+        xAxis: { ...timeAxis(), axisLabel: { color: css("--text-dim"),
+          fontFamily: MONO, hideOverlap: true,
+          formatter: (val) => new Date(val).toISOString().slice(11, 16) } },
+        yAxis: [valueAxis("Hz", { axisLabel: { color: css("--text-dim"),
+          fontFamily: MONO, formatter: (v) => v.toFixed(1) } })],
+        dataZoom: zoom(),
+        series: [{
+          name: "Frequency", type: "line", showSymbol: false,
+          sampling: "lttb", data,
+          lineStyle: { width: 1.1, color: css("--accent") },
+          itemStyle: { color: css("--accent") },
+          connectNulls: false,
+          markLine: { silent: true, symbol: "none",
+            label: { fontFamily: MONO, color: css("--text-dim"),
+              position: "insideEndTop",
+              formatter: (p) => p.data.name },
+            data: [
+              { yAxis: 49.8, name: "49.8 operational",
+                lineStyle: { color: FLAG_AMBER, type: "dashed" } },
+              { yAxis: 50.2, name: "50.2 operational",
+                lineStyle: { color: FLAG_AMBER, type: "dashed" } },
+              { yAxis: 49.5, name: "49.5 statutory",
+                lineStyle: { color: "#e4573d", type: "dashed" } },
+            ] },
+        }],
+      });
+      opt.tooltip.formatter = (params) => {
+        const list = Array.isArray(params) ? params : [params];
+        const p = list.find((x) => x.value && x.value[1] != null);
+        if (!p) return "";
+        return `${new Date(p.value[0]).toISOString()
+          .slice(0, 16).replace("T", " ")}Z<br>` +
+          `<b>${(+p.value[1]).toFixed(3)} Hz</b>`;
+      };
+      chart("ch-stress-event").setOption(opt, true);
+
+      const flags = (entry.flags || []).map((f) => f.type).join(" + ");
+      // Same ETL-computed percentile context as the daily tooltip —
+      // day-level framing while reading the intraday trace.
+      const cx = entry.pctl || {};
+      const context = [["ssp_max", "SSP"], ["lolp_max", "LoLP"],
+                       ["drm_min", "DRM"]]
+        .filter(([k]) => cx[k] && cx[k].p != null)
+        .map(([k, label]) => `${label} p${cx[k].p % 1
+          ? cx[k].p.toFixed(1) : cx[k].p.toFixed(0)} ${cx[k].band}`)
+        .join(", ");
+      metaEl.textContent = `${requested}` +
+        (entry.freq_min != null ? ` · min ${entry.freq_min.toFixed(3)} Hz`
+          : "") +
+        (entry.secs_below_49p8 != null
+          ? ` · ${fmtVal(entry.secs_below_49p8)} s below 49.8 Hz` : "") +
+        (flags ? ` · flags: ${flags}` : "") +
+        (context ? ` · ${context}` : "") +
+        ` · 15 s samples, gaps are feed gaps`;
+    }).catch((error) => {
+      if (requested !== stressEventDay) return;
+      el.classList.add("hidden");
+      empty.textContent =
+        `Event slice for ${requested} unavailable (${error.message}).`;
+      empty.classList.remove("hidden");
+      metaEl.textContent = "";
+    });
+  }
+
   const PANELS = {
     overview: [overviewMain, overviewDonut, overviewResidual],
     prices: [priceMain, priceHist, priceShape, priceNetLoad],
@@ -1619,6 +1957,7 @@ const Charts = (() => {
     spreads: [spreadSpark, spreadDecomp, spreadDark],
     flows: [flowsStack, flowsScatter, flowsShare, flowsUtilisation,
             flowsContext],
+    stress: [stressDaily, stressEvent],
     methodology: [],
   };
 

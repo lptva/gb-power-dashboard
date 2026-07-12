@@ -32,6 +32,313 @@ const UI = (() => {
         : "Refreshed daily at 07:00 local by the scheduled ETL run.");
   }
 
+  /* ---------------- system-stress header chip ----------------
+     Amber chip next to the freshness element when the MOST RECENT day in
+     stress_daily.json is flagged (plan/06 D7), naming the flag type(s).
+     Same amber convention as staleness; hidden off-GB, hidden when the
+     latest day is quiet, hidden when the stress dataset is absent. */
+
+  function renderStressChip() {
+    const el = document.getElementById("stress-chip");
+    if (!el) return;
+    const s = Data.stress;
+    const days = State.get().zone === "GB" && s && s.days
+      ? Object.keys(s.days) : [];
+    const latestDay = days.length ? days.reduce((a, b) => (a > b ? a : b))
+      : null;
+    const flags = latestDay ? (s.days[latestDay].flags || []) : [];
+    el.classList.toggle("hidden", !flags.length);
+    if (!flags.length) { el.textContent = ""; el.removeAttribute("title");
+      return; }
+    const types = flags.map((f) => f.type).join(" + ");
+    el.textContent = `· ⚑ system stress: ${types}`;
+    el.title = `${latestDay} is flagged (${types}) — deterministic ` +
+      "threshold rules on observed metrics, not a security assessment. " +
+      "Click for the System stress tab.";
+  }
+
+  /* ---------------- system warnings list ----------------
+     Verbatim NESO notices (EMNs + emergency instructions) from
+     data/warnings.json, newest first, collapsed to one line each. Bodies
+     are escaped and rendered as preformatted text — their timestamps are
+     UK local and are deliberately never parsed or converted. */
+
+  // In-memory only (no browser storage): collapsed to the newest 5 on
+  // every load; expansion persists across tab switches for the session.
+  let warningsExpanded = false;
+  const WARNINGS_COLLAPSED_COUNT = 5;
+
+  function renderWarnings() {
+    const list = document.getElementById("warnings-list");
+    if (!list) return;
+    const w = State.get().zone === "GB" ? Data.warnings : null;
+    if (!w || !Array.isArray(w.notices)) {
+      list.innerHTML = `<p class="warnings-empty">No warnings dataset —
+        run <code>python etl/fetch_stress.py --backfill 365</code>.</p>`;
+      return;
+    }
+    const items = [...w.notices].reverse().map((n) => {
+      const emn = n.warningType === "ELECTRICITY MARGIN NOTICE";
+      const cls = emn && n.kind === "issue" ? "warning-type emn"
+        : "warning-type";
+      const label = emn
+        ? `EMN ${n.kind === "cancellation" ? "cancellation" : "issue"}`
+        : "emergency / other";
+      const stamp = n.publishTime
+        ? Metrics.fmtDate(n.publishTime, "datetime") + " UTC" : "";
+      // NESO's template ships literal "\n" two-character sequences inside
+      // bodies; turning them into line breaks is layout normalisation
+      // only — the text (and its UK-local timestamps) stays verbatim.
+      const body = (n.warningText || "").replace(/\r/g, "")
+        .replace(/\\n/g, "\n");
+      return `<details class="warning">
+        <summary><span class="warning-time">${esc(stamp)}</span>
+          <span class="${cls}">${esc(label)}</span></summary>
+        <pre class="warning-text">${esc(body)}</pre>
+      </details>`;
+    });
+    if (!items.length) {
+      list.innerHTML = `<p class="warnings-empty">
+        No EMNs or emergency instructions in the stored window.</p>`;
+      return;
+    }
+    const hidden = Math.max(0, items.length - WARNINGS_COLLAPSED_COUNT);
+    const shown = warningsExpanded ? items
+      : items.slice(0, WARNINGS_COLLAPSED_COUNT);
+    list.innerHTML = shown.join("") + (hidden ? `
+      <button type="button" class="warnings-toggle" id="warnings-toggle">
+        ${warningsExpanded ? "▴ Show newest 5 only"
+          : `▾ Show all ${items.length} notices (${hidden} more)`}
+      </button>` : "");
+    const toggle = document.getElementById("warnings-toggle");
+    if (toggle) {
+      toggle.addEventListener("click", () => {
+        warningsExpanded = !warningsExpanded;
+        renderWarnings();
+      });
+    }
+  }
+
+  /* ---------------- glossary ----------------
+     Renders the Terms map (js/terms.js — the single source of truth
+     shared with metric tooltips) as a flat alphabetical lookup. Static
+     content: rendered once at boot, zone-neutral by design — the terms
+     document the app, and GB-specific ones carry a visible tag. */
+
+  function renderGlossary() {
+    const body = document.getElementById("glossary-body");
+    if (!body || typeof Terms === "undefined") return;
+    const entries = Object.entries(Terms)
+      .sort((a, b) => a[1].label.localeCompare(b[1].label));
+    let letter = "";
+    const letters = [];
+    body.innerHTML = entries.map(([key, t]) => {
+      const first = t.label[0].toUpperCase();
+      let divider = "";
+      if (first !== letter) {
+        divider = `<div class="gloss-letter" id="gl-${first}"` +
+          ` data-letter="${first}">${first}</div>`;
+        letters.push(first);
+      }
+      letter = first;
+      // Lowercased title + definition + extra, for substring search.
+      const hay = esc((t.label + " " + t.short + " " + (t.extra || ""))
+        .toLowerCase());
+      const pills = [
+        t.elexon ? `<a class="gloss-pill" href="${t.elexon}"
+          target="_blank" rel="noopener">Elexon BSC definition ↗</a>` : null,
+        t.method ? `<a class="gloss-pill gloss-mlink"
+          data-method="${t.method}" href="#m-${t.method}">Methodology
+          →</a>` : null,
+      ].filter(Boolean).join("");
+      return `${divider}
+      <div class="gloss-entry" id="g-${key}" data-letter="${first}"
+        data-search="${hay}">
+        <div class="gloss-term"><span
+          class="gloss-term-name">${esc(t.label)}</span>${t.gb
+          ? '<span class="gloss-gb">GB market term</span>' : ""}</div>
+        <p class="gloss-def">${esc(t.short)}${t.extra
+          ? " " + esc(t.extra) : ""}</p>
+        ${pills ? `<div class="gloss-links">${pills}</div>` : ""}
+      </div>`;
+    }).join("");
+    // A–Z rail, mirroring the methodology contents rail: only letters
+    // with entries, instant jumps (smooth reads as broken over long
+    // pages — same call as the methodology rail).
+    const nav = document.getElementById("gloss-nav");
+    if (nav) {
+      nav.innerHTML = letters.map((L) =>
+        `<a href="#gl-${L}" data-letter="${L}">${L}</a>`).join("");
+      if (!nav.dataset.wired) {
+        nav.addEventListener("click", (event) => {
+          const link = event.target.closest("a[data-letter]");
+          if (!link) return;
+          event.preventDefault();
+          document.getElementById("gl-" + link.dataset.letter)
+            ?.scrollIntoView({ behavior: "auto" });
+        });
+        nav.dataset.wired = "true";
+      }
+    }
+    // Same deep-link behaviour as the panels' ⓘ marks, delegated so it
+    // survives this innerHTML render.
+    body.addEventListener("click", (event) => {
+      const link = event.target.closest(".gloss-mlink");
+      if (!link) return;
+      event.preventDefault();
+      document.querySelector('#tabs button[data-tab="methodology"]').click();
+      jumpToMethodology("m-" + link.dataset.method, "smooth");
+    });
+    wireTabSearch("gloss-search", "gloss-search-clear", filterGlossary);
+    filterGlossary(""); // start unfiltered (clears any prior state)
+  }
+
+  /* ---------------- tab search (Glossary + Methodology) ----------------
+     Shared substring filter: case-insensitive, partial match, instant
+     (34 terms / ~18 sections — no debounce, matching is nanoseconds).
+     Content lives in fixed DOM; the filter only toggles `.hidden`. */
+
+  function wireTabSearch(inputId, clearId, apply) {
+    const input = document.getElementById(inputId);
+    const clear = document.getElementById(clearId);
+    if (!input || input.dataset.wired) return;
+    const run = () => {
+      clear.classList.toggle("hidden", !input.value);
+      apply(input.value.trim().toLowerCase());
+    };
+    input.addEventListener("input", run);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { input.value = ""; run(); }
+    });
+    clear.addEventListener("click", () => {
+      input.value = ""; run(); input.focus();
+    });
+    input.dataset.wired = "true";
+  }
+
+  /* Hiding entries shrinks the page. The browser clamps scrollTop so you
+     never scroll into empty space, but a deep-scrolled search could still
+     strand the viewport past the new (shorter) content. Measure AFTER the
+     hide-reflow (rAF), and if the search box has been left above the
+     viewport, bring it back into view. No-op in the normal case of
+     searching from the top of the tab, so it never yanks mid-typing. */
+  function guardScroll(anchorEl) {
+    if (!anchorEl) return;
+    // Flush the pending hide-reflow synchronously (the browser also clamps
+    // scrollTop here), so the measurement is current without relying on
+    // requestAnimationFrame — rAF is tied to the paint loop and is not
+    // dependable in headless/degraded renderers.
+    void document.body.offsetHeight;
+    if (anchorEl.getBoundingClientRect().bottom < 8) {
+      anchorEl.scrollIntoView({ block: "start", behavior: "auto" });
+    }
+  }
+
+  /* Wrap every case-insensitive occurrence of `q` inside `root` in
+     <mark class="search-hl">, keeping the text's original case. Walks
+     text nodes so existing markup (tables, formulas, links) is never
+     corrupted; the chrome pills are skipped. clearHighlights() reverses
+     it and re-merges the split text nodes so a re-filter starts clean. */
+  function clearHighlights(root) {
+    root.querySelectorAll("mark.search-hl").forEach((m) => {
+      const parent = m.parentNode;
+      parent.replaceChild(document.createTextNode(m.textContent), m);
+      parent.normalize();
+    });
+  }
+
+  function highlightMatches(root, q) {
+    clearHighlights(root);
+    if (!q) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue || !node.nodeValue.toLowerCase().includes(q)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (node.parentNode && node.parentNode.closest(
+          ".gloss-links, .gloss-gb, script, style")) {
+          return NodeFilter.FILTER_REJECT; // don't mark link/label chrome
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const nodes = [];
+    let n;
+    while ((n = walker.nextNode())) nodes.push(n);
+    nodes.forEach((node) => {
+      const text = node.nodeValue;
+      const lower = text.toLowerCase();
+      const frag = document.createDocumentFragment();
+      let i = 0, idx;
+      while ((idx = lower.indexOf(q, i)) !== -1) {
+        if (idx > i) frag.appendChild(
+          document.createTextNode(text.slice(i, idx)));
+        const mark = document.createElement("mark");
+        mark.className = "search-hl";
+        mark.textContent = text.slice(idx, idx + q.length); // original case
+        frag.appendChild(mark);
+        i = idx + q.length;
+      }
+      if (i < text.length) frag.appendChild(
+        document.createTextNode(text.slice(i)));
+      node.parentNode.replaceChild(frag, node);
+    });
+  }
+
+  function filterGlossary(q) {
+    const body = document.getElementById("glossary-body");
+    const nav = document.getElementById("gloss-nav");
+    const empty = document.getElementById("gloss-empty");
+    if (!body) return;
+    const shown = new Set();
+    body.querySelectorAll(".gloss-entry").forEach((el) => {
+      const match = !q || (el.dataset.search || "").includes(q);
+      el.classList.toggle("hidden", !match);
+      if (match) { shown.add(el.dataset.letter); highlightMatches(el, q); }
+      else clearHighlights(el);
+    });
+    // Drop a letter divider when nothing under it survives the filter.
+    body.querySelectorAll(".gloss-letter").forEach((div) => {
+      div.classList.toggle("hidden", !shown.has(div.dataset.letter));
+    });
+    // Rail: grey (and disable) letters with no matches while filtering.
+    if (nav) nav.querySelectorAll("a").forEach((a) => {
+      a.classList.toggle("disabled", !!q && !shown.has(a.dataset.letter));
+    });
+    if (empty) {
+      const none = !!q && shown.size === 0;
+      empty.classList.toggle("hidden", !none);
+      if (none) empty.textContent = `Nothing found for "${q}"`;
+    }
+    guardScroll(document.getElementById("gloss-search"));
+  }
+
+  function filterMethodology(q) {
+    const body = document.getElementById("methodology-body");
+    const toc = document.getElementById("method-toc");
+    const empty = document.getElementById("method-empty");
+    if (!body) return;
+    // Match the whole section (heading + body), so "carbon" surfaces the
+    // spark-spread section even though no heading carries the word.
+    const visible = new Set();
+    body.querySelectorAll(".method-section").forEach((s) => {
+      const h = s.querySelector("h3");
+      const match = !q || s.textContent.toLowerCase().includes(q);
+      s.classList.toggle("hidden", !match);
+      if (match) { if (h) visible.add(h.id); highlightMatches(s, q); }
+      else clearHighlights(s);
+    });
+    if (toc) toc.querySelectorAll("a[data-anchor]").forEach((a) => {
+      a.classList.toggle("disabled", !!q && !visible.has(a.dataset.anchor));
+    });
+    if (empty) {
+      const none = !!q && visible.size === 0;
+      empty.classList.toggle("hidden", !none);
+      if (none) empty.textContent = `Nothing found for "${q}"`;
+    }
+    guardScroll(document.getElementById("method-search"));
+  }
+
   /* ---------------- AI overnight summary ----------------
      Renders the ACTIVE TAB's section of data/overnight_summary.json
      (written by ops/run_overnight_summary.py via the dashboard-watcher
@@ -455,12 +762,18 @@ const UI = (() => {
       .join("");
 
     document.getElementById("methodology-body").innerHTML = `
+      <p><i>Looking for what a term or abbreviation means? The
+         <b>Glossary</b> tab is the plain-language lookup; this page
+         explains how this zone's data is sourced and mapped.</i></p>
+
       <h3 id="m-window">Zone: ${info.label} (${zone})</h3>
       <p>${info.kind === "reference"
-        ? "<b>Reference market — not physically interconnected with GB.</b> "
-          + "Included as the European price anchor for context; do not read "
-          + "GB flow implications into it."
-        : "One of GB's physical counterparty bidding zones (direct "
+        ? "<b>Reference market. Not physically interconnected with "
+          + "GB.</b> Included as the European price anchor for context. "
+          + "Do not read GB flow implications into it."
+        : "One of GB's physical counterparty "
+          + "<a class=\"term-link\" data-term=\"bidding_zone\" "
+          + "href=\"#g-bidding_zone\">bidding zones</a> (direct "
           + "interconnection)."}
          Window: <code>${meta.window.start}</code> →
          <code>${meta.window.end}</code>, built
@@ -469,14 +782,25 @@ const UI = (() => {
          <code>${meta.currency}</code>.</p>
 
       <h3 id="m-sources">Data sources (this zone)</h3>
-      <p>Everything below comes from the <b>ENTSO-E Transparency
-         Platform</b> (free, token-gated API) — unlike GB, which uses
-         Elexon, PV_Live, National Gas and gov.uk. All series are
-         <b>Observed</b>: TSO-published outturns and the day-ahead auction
-         price (a true auction price, unlike GB's MID proxy).</p>
+      <p>Everything below comes from the <b><a class="term-link"
+         data-term="entsoe" href="#g-entsoe">ENTSO-E</a> Transparency
+         Platform</b> (free, token-gated API). GB instead uses Elexon,
+         PV_Live, National Gas and gov.uk. All series here are
+         <b>Observed</b>: TSO-published outturns and the
+         <a class="term-link" data-term="day_ahead" href="#g-day_ahead">
+         day-ahead auction</a> price, a true auction price, unlike GB's
+         <a class="term-link" data-term="mid" href="#g-mid">MID</a>
+         proxy.</p>
       <table><tr><th>Series</th><th>Source / document</th><th>Unit</th>
         <th>Resolution</th><th>Quality</th><th>Notes</th></tr>
         ${sourceRows}</table>
+      ${zone === "IE" ? `<p><b>IE quirk:</b> ENTSO-E publishes each
+         document type against a specific area type. Day-ahead prices sit
+         under the SEM bidding-zone EIC, and load sits under the Ireland
+         control-area EIC. Both codes are current, and the fetcher
+         handles the split automatically, confirmed by probing the API
+         directly and against ENTSO-E's published area-code
+         documentation.</p>` : ""}
 
       <h3 id="m-fuelmap">Fuel-type mapping (ENTSO-E → dashboard columns)</h3>
       <p>ENTSO-E production types do not map 1:1 onto Elexon fuel codes.
@@ -486,24 +810,24 @@ const UI = (() => {
 
       <h3 id="m-dq">Data quality (this zone)</h3>
       ${(meta.data_quality || []).length
-        ? `<p>Gaps and absences below are the TSO's submission as published
-             — verified against the raw ENTSO-E XML (variable-block periods
-             are expanded per the spec before counting). Nothing is
-             interpolated or hidden:</p>
+        ? `<p>Gaps and absences below are the TSO's submission as
+             published, verified against the raw ENTSO-E XML
+             (variable-block periods are expanded per the spec before
+             counting). Nothing is interpolated or hidden:</p>
            <ul>${meta.data_quality.map((n) => `<li>${n}</li>`).join("")}</ul>`
         : `<p>No reporting gaps detected in this window: every series the
              TSO publishes is complete.</p>`}
 
       <h3 id="m-gbonly">What stays GB-only for this zone, and why</h3>
       <ul>
-        <li><b>Merit order</b> and <b>Spreads</b> — the SRMC cost model is
+        <li><b>Merit order</b> and <b>Spreads</b>. The SRMC cost model is
             GB-parameterised: gas SAP, UKA carbon and the efficiency
             assumptions are GB inputs, and ENTSO-E's unsplit "Fossil Gas"
             means no defensible CCGT/OCGT split exists. No per-zone SRMC
             assumptions have been defined yet, so these tabs are hidden
             rather than showing GB-costed panels for a non-GB market.</li>
-        <li><b>Flows</b> — interconnector flows are a separate ENTSO-E
-            document type not yet fetched; the zone schema has no
+        <li><b>Flows</b>. Interconnector flows are a separate ENTSO-E
+            document type not yet fetched. The zone schema has no
             interconnector columns, so the tab is hidden rather than
             rendering empty charts.</li>
         <li>The <b>overnight AI summary</b> and <b>observed dispatch</b>
@@ -512,8 +836,97 @@ const UI = (() => {
       <p>Select GB in the zone switcher to see the full GB methodology.</p>`;
   }
 
+  /* Jump to a methodology section by its heading id. Scrolls the section
+     CARD, not the bare <h3>: the h3 sits 15px inside the card (its
+     padding + border), so landing the h3 at the topbar offset would put
+     the card's own border behind the topbar. Scrolling the card makes
+     its top border land at the same gap the Glossary letter dividers do
+     (both use scroll-margin-top: var(--topbar-h) + 12px). */
+  function jumpToMethodology(id, behavior) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    (el.closest(".method-section") || el)
+      .scrollIntoView({ block: "start", behavior: behavior || "auto" });
+  }
+
+  /* Post-render layout pass for the Methodology tab — layout only, the
+     text templates below are untouched. Wraps each <h3>-headed run of
+     nodes into a card-styled <section> (so topics separate visually
+     instead of reading as one wall of text) and rebuilds the sticky
+     mini-contents rail from the section headings. Runs after every
+     render, so the GB and zone variants get the same structure. */
+  function finalizeMethodologyLayout() {
+    const body = document.getElementById("methodology-body");
+    const toc = document.getElementById("method-toc");
+    if (!body) return;
+    // Inline glossary links (.term-link) inside the prose jump to the
+    // Glossary tab and land on that term's entry. Delegated on the body
+    // so it survives every re-render; wired once via the dataset guard.
+    if (!body.dataset.termWired) {
+      body.addEventListener("click", (event) => {
+        const link = event.target.closest(".term-link");
+        if (!link) return;
+        event.preventDefault();
+        document.querySelector('#tabs button[data-tab="glossary"]').click();
+        // Instant, not smooth — same reasoning as the TOC and mini-rail
+        // jumps above: long-page smooth scroll reads as broken.
+        document.getElementById("g-" + link.dataset.term)
+          ?.scrollIntoView({ behavior: "auto" });
+      });
+      body.dataset.termWired = "true";
+    }
+    const nodes = [...body.childNodes];
+    const sections = [];
+    let current = null;
+    nodes.forEach((node) => {
+      if (node.nodeType === 1 && node.tagName === "H3") {
+        current = document.createElement("section");
+        current.className = "method-section";
+        sections.push(current);
+      }
+      if (current) current.appendChild(node);
+      else if (node.nodeType === 1) node.classList.add("method-intro");
+    });
+    sections.forEach((s) => body.appendChild(s));
+    if (!toc) return;
+    toc.innerHTML = '<div class="method-toc-head">On this page</div>' +
+      sections.map((s) => {
+        const h = s.querySelector("h3");
+        const label = h.textContent.replace(/\(.*?\)/g, "")
+          .replace(/\s+/g, " ").trim();
+        return `<a href="#${h.id}" data-anchor="${h.id}">${esc(label)}</a>`;
+      }).join("");
+    if (!toc.dataset.wired) {
+      toc.addEventListener("click", (event) => {
+        const link = event.target.closest("a[data-anchor]");
+        if (!link) return;
+        event.preventDefault();
+        // Instant, not smooth: contents jumps can span thousands of
+        // pixels, and Chrome's smooth scroll takes seconds over that
+        // distance — it reads as broken. Lands the section card below
+        // the sticky topbar.
+        jumpToMethodology(link.dataset.anchor, "auto");
+      });
+      toc.dataset.wired = "true";
+    }
+    // The body was just rebuilt (boot or zone switch): start unfiltered,
+    // and reset the search box so switching zones never lands on a stale
+    // "no sections match" from the previous zone's content.
+    const search = document.getElementById("method-search");
+    if (search) {
+      search.value = "";
+      document.getElementById("method-search-clear")?.classList.add("hidden");
+    }
+    wireTabSearch("method-search", "method-search-clear", filterMethodology);
+    filterMethodology("");
+  }
+
   function renderMethodology() {
-    if (State.get().zone !== "GB") { renderZoneMethodology(); return; }
+    if (State.get().zone !== "GB") {
+      renderZoneMethodology();
+      finalizeMethodologyLayout();
+      return;
+    }
     const meta = Data.meta;
     const cov = meta.coverage;
     const sourceRows = Object.values(meta.series).map((s) => `
@@ -523,17 +936,35 @@ const UI = (() => {
       <td>${s.transformations}${s.notes ? "<br><i>" + s.notes + "</i>" : ""}</td>
       </tr>`).join("");
 
+    // Feed-composition context lives here rather than on the warnings
+    // panel (not user-verifiable there, and noise for a panel reader);
+    // rendered from the warnings meta so it cannot drift from the data.
+    const counts = Data.warnings && Data.warnings.meta
+      && Data.warnings.meta.syswarn_counts;
+    const stressFeedNote = counts ? `
+      <p>Warnings-feed composition — the full SYSWARN feed over
+         <code>${counts.window.from}</code> →
+         <code>${counts.window.to}</code> carried
+         ${Object.entries(counts.by_type)
+        .map(([t, n]) => `${n} ${t.toLowerCase()}`).join(", ")};
+         the panel stores and shows only the EMN +
+         emergency-instruction subset.</p>` : "";
+
     document.getElementById("methodology-body").innerHTML = `
+      <p><i>Looking for what a term or abbreviation means? The
+         <b>Glossary</b> tab is the plain-language lookup; this page
+         explains how things are computed and why.</i></p>
+
       <h3 id="m-window">Data window and coverage</h3>
       <p>Window: <code>${meta.window.start}</code> →
          <code>${meta.window.end}</code>, built
          <code>${meta.built_at}</code>. ${meta.timezone}</p>
-      <p>Half-hourly coverage — demand ${(cov.demand * 100).toFixed(1)}%,
+      <p>Half-hourly coverage: demand ${(cov.demand * 100).toFixed(1)}%,
          price ${(cov.price * 100).toFixed(1)}%,
          solar ${(cov.solar * 100).toFixed(1)}%.
          Gas: ${cov.gas_days} days. UKA observed for
-         ${cov.carbon_months_observed} months of the window; last published
-         month <code>${cov.carbon_last_observed_month}</code> — later dates
+         ${cov.carbon_months_observed} months of the window. Last published
+         month <code>${cov.carbon_last_observed_month}</code>. Later dates
          carry that value forward and are flagged as estimates.</p>
 
       <h3 id="m-sources">Sources, field mapping, transformations</h3>
@@ -542,223 +973,294 @@ const UI = (() => {
         <th>Transformations &amp; notes</th></tr>${sourceRows}</table>
 
       <h3 id="m-price">Wholesale price (MID)</h3>
-      <p>The Market Index Data price is the volume-weighted average of
-         short-term trades reported by the appointed market index data
-         providers (APX, N2EX). It is the public proxy for the GB spot price
-         and feeds the imbalance price calculation. Day-ahead auction prices
-         are commercial and not redistributed here.</p>
+      <p>The dashboard's "price" is the
+         <a class="term-link" data-term="mid" href="#g-mid">Market Index
+         Data</a> price: the volume-weighted average of short-term trades
+         reported by the appointed market index data providers (APX, N2EX).
+         It is the public proxy for the GB spot price and feeds the
+         imbalance price calculation. It tracks the
+         <a class="term-link" data-term="day_ahead" href="#g-day_ahead">
+         day-ahead auction</a> closely in normal conditions but diverges in
+         stressed periods. It is used because it is the only free,
+         half-hourly, officially published GB price series. Day-ahead
+         auction prices are commercial and not redistributed here.</p>
+      <p>One deliberate exception: the System stress tab uses SSP instead,
+         the settlement price of the balancing actions NESO actually took,
+         where MID measures traded wholesale sessions. The reasoning is
+         spelled out with the stress flag rules below.</p>
 
       <h3 id="m-residual">Residual load (estimated)</h3>
-      <div class="formula">residual = demand(INDO) − wind(transmission)</div>
-      <p>INDO is transmission-level demand, which is <b>already net of all
-         embedded generation</b> — both solar and embedded wind suppress it in
-         real time. Subtracting PV_Live solar on top would double-count it
-         (an earlier version of this dashboard did exactly that, which is why
-         residual load could go negative on sunny middays). The identity that
-         makes this the correct national net load: underlying demand −
-         all wind − all solar = (INDO + embedded gen) − all wind − all solar
-         = INDO − transmission wind. Remaining limitation: embedded wind
-         (~6 GW capacity) nets out <i>silently</i> inside INDO, so it is
-         correctly absorbed here but invisible in gross wind output and
-         share metrics — hence Estimated.</p>
+      <div class="formula">residual = INDO − WIND(transmission)</div>
+      <p>Solar is deliberately not subtracted.
+         <a class="term-link" data-term="indo" href="#g-indo">INDO</a> is
+         transmission-level demand, so it is already net of all embedded
+         generation. Embedded solar and embedded wind suppress it in real
+         time. Subtracting PV_Live solar on top would count it twice. An
+         earlier version of this dashboard did exactly that, which is why
+         residual load could go negative on sunny middays.</p>
+      <p>The identity that makes this the national net load: underlying
+         demand − all wind − all solar = (INDO + embedded gen) − all wind
+         − all solar = INDO − transmission wind.</p>
+      <p>Remaining limitation: roughly 6 GW of GB wind capacity is
+         distribution-connected and invisible to every source used here.
+         Because <a class="term-link" data-term="residual_load"
+         href="#g-residual_load">residual load</a> is computed as INDO
+         minus transmission wind, embedded wind is correctly, if silently,
+         absorbed on the demand side. The bias is confined to gross
+         metrics: wind output, renewables output and low-carbon share all
+         understate GB wind. Hence Estimated.</p>
 
       <h3 id="m-spark">Clean spark spread (estimated)</h3>
+      <p>The <a class="term-link" data-term="spark_spread"
+         href="#g-spark_spread">clean spark spread</a> estimates a gas
+         (CCGT) plant's margin per MWh: power price minus gas fuel cost
+         minus the carbon cost of burning it.</p>
       <div class="formula">spark = price − gas_SAP / η − (EF_gas / η) · UKA − VOM</div>
-      <p>Defaults: η = 50% (HHV), EF = 0.184 tCO2/MWh th, VOM = £3/MWh.
-         Gas SAP is a within-day average, not the day-ahead curve a trader
-         would hedge against; UKA is a monthly average forward-filled within
-         the month. The result is a credible indicator of CCGT economics, not
-         a tradable margin. All parameters adjustable on the Merit order tab;
-         adjustments never modify stored historical data.</p>
+      <p>Defaults: η = 0.50 (HHV), EF_gas = 0.184 tCO2/MWh th,
+         VOM = £3/MWh.</p>
+      <p><a class="term-link" data-term="gas_sap" href="#g-gas_sap">Gas
+         SAP</a> is a within-day average, not the day-ahead curve a trader
+         would hedge against. <a class="term-link" data-term="uka"
+         href="#g-uka">UKA</a> is a monthly average, forward-filled within
+         the month. The result is a credible indicator of CCGT economics,
+         not a tradable margin. All parameters are adjustable on the Merit
+         order tab. Adjustments never modify stored historical data.</p>
 
       <h3 id="m-dark">Clean dark spread (proxy / derived)</h3>
-      <div class="formula">dark = price − coal / η_coal − (EF_coal / η_coal) · UKA − VOM</div>
-      <p>The GB-relevant coal benchmark (ICE API2, CIF ARA) is commercial
-         data. The dashboard instead derives a transparent <b>futures-based
-         proxy</b>, labelled Proxy / Derived:</p>
-      <div class="formula">coal £/MWh th = (USD/t) ÷ FX(USD per GBP) ÷ 6.978 MWh th/t</div>
+      <p>The <a class="term-link" data-term="dark_spread"
+         href="#g-dark_spread">clean dark spread</a> estimates a coal
+         plant's margin per MWh. The GB-relevant coal benchmark, ICE API2
+         CIF ARA, is commercial data, so the dashboard instead derives a
+         transparent futures-based proxy, labelled Proxy / Derived:</p>
+      <div class="formula">dark = price − coal / η_coal − (EF_coal / η_coal) · UKA − VOM_coal</div>
+      <p>Defaults: η_coal = 0.36, EF_coal = 0.34 tCO2/MWh th,
+         VOM = £5/MWh.</p>
+      <div class="formula">coal £/MWh th = (USD per tonne) ÷ FX(USD per GBP, monthly mean) ÷ 6.978</div>
       <ul>
         <li><b>Coal price</b>: World Bank "Pink Sheet" monthly average of the
             Australian 6,000 kcal/kg FOB Newcastle <i>futures</i> price
-            (USD/t) — public, monthly, ~2 working days after month end.</li>
-        <li><b>FX</b>: Bank of England daily USD/GBP spot (XUDLUSS), averaged
-            over each calendar month.</li>
+            (USD/t). Public, monthly, about 2 working days after month
+            end.</li>
+        <li><b>FX</b>: Bank of England daily USD/GBP spot rate (XUDLUSS),
+            averaged over each calendar month.</li>
         <li><b>Energy content</b>: 6,000 kcal/kg = 25.12 GJ/t = 6.978 MWh
             thermal per tonne.</li>
       </ul>
-      <p>Caveats: Newcastle FOB is a different basis from API2 CIF ARA
-         (freight and quality differ), so levels track but do not equal the
-         European benchmark; the monthly value is forward-filled within and
-         beyond the month (flagged <code>coal_ffill</code>). A manually
-         entered coal price overrides the proxy and relabels the panel
-         Assumption. EF_coal default 0.34 tCO2/MWh th.</p>
+      <p>Newcastle FOB is a different basis from API2 CIF ARA, the
+         commercial European benchmark. Levels track, they do not equal.
+         The monthly value is forward-filled within and beyond the month,
+         flagged <code>coal_ffill</code>. A manually entered coal price
+         overrides the proxy and relabels the panel Assumption.</p>
 
       <h3 id="m-merit">SRMC cost model (estimated)</h3>
-      <p>Technology SRMC ranges are computed from the latest observed gas SAP
-         and UKA price with stated efficiency spans — they are cost estimates,
-         not observed bids. This model drives the merit-order curve and the
-         cost attribution in the observed-dispatch tooltips. Biomass fuel
-         costs are commercial; a broad published range is shown and marked as
-         assumed. (An earlier per-technology bar view of these ranges was
-         removed as redundant — the merit-order curve shows the same
-         information at tranche granularity plus the demand and clearing
-         lines.)</p>
+      <p><a class="term-link" data-term="srmc" href="#g-srmc">SRMC</a>
+         ranges per technology cluster are computed at the latest observed
+         gas SAP and UKA prices, with stated efficiency spans. They are
+         cost estimates, not observed bids. The wind, solar, nuclear and
+         hydro ranges are VOM-style estimates. Biomass fuel costs are
+         commercial: a broad published range is shown and marked as
+         containing assumptions.</p>
+      <p>The CCGT cluster, used for the merit band and its decomposition,
+         follows the same shape as the clean spark spread:</p>
+      <div class="formula">SRMC(η) = gas_SAP / η + (EF_gas / η) · UKA + VOM</div>
+      <p>The fleet band uses η ∈ [0.45, 0.57] by default.</p>
+      <p>This model drives the merit-order curve and the cost attribution
+         in the observed-dispatch tooltips. An earlier per-technology bar
+         view of these ranges was removed as redundant. The curve presents
+         the same ranges at tranche granularity, plus the demand and
+         clearing lines.</p>
 
       <h3 id="m-meritcurve">Merit order curve (estimated)</h3>
-      <p>The curve uses the SRMC cost model above. Each
-         technology's SRMC range is split into 0.5 GW capacity tranches with
-         cost rising linearly across the technology (efficient units first);
-         all tranches are then sorted by SRMC, so the stack is contiguous and
-         monotonically non-decreasing — the conventional merit-order
-         geometry. Technologies interleave where their cost ranges overlap.
+      <p>The curve uses the SRMC model above, laid out against cumulative
+         available capacity. Each technology's SRMC range is split into
+         0.5 GW tranches, with cost rising linearly across the technology,
+         efficient units first. All tranches are then sorted globally by
+         SRMC. The result is a contiguous stack that never decreases, in
+         which technologies interleave where their cost ranges overlap.
          Capacity is a stated proxy, not registered capacity:</p>
       <ul>
         <li><b>Dispatchables</b> (nuclear, biomass, hydro, CCGT, OCGT, coal):
-            98th percentile of observed half-hourly output over the dataset
-            window — what the fleet has actually delivered.</li>
+            the 98th percentile of observed half-hourly output over the
+            dataset window, what the fleet has actually delivered.</li>
         <li><b>Wind and solar</b>: latest observed output, since they are
             must-run price-takers whose available capacity at any moment is
             their output.</li>
       </ul>
-      <p>The vertical line is the latest demand minus net imports — what GB
-         plant must serve now. The implied clearing price interpolates the
-         curve at that point; comparing it with the observed price tests the
-         cost model against the market. Pumped storage, oil and "other" are
-         excluded (no defensible SRMC benchmark); interconnectors are netted
-         off the demand line rather than stacked.</p>
+      <p>The demand line is the latest INDO minus net imports, what GB
+         plant must serve now. The implied clearing price is the SRMC of
+         the tranche that serves that level. Comparing it with the
+         observed price tests the cost model against the market. Pumped
+         storage, oil and "other" are excluded because no defensible SRMC
+         benchmark exists for them. Interconnectors are netted off the
+         demand line rather than stacked.</p>
 
       <h3 id="m-bmu">Observed dispatch by unit (observed volumes, estimated
-         costs; beta)</h3>
-      <p>A dispatch curve built from physical notifications (PN) per BM Unit
+         costs, beta)</h3>
+      <p>A dispatch curve built from physical notifications
+         (<a class="term-link" data-term="pn" href="#g-pn">PN</a>) per
+         <a class="term-link" data-term="bmu" href="#g-bmu">BM Unit</a>
          for the most recent complete settlement period, from the Elexon
          Insights PN dataset joined to the BM Unit registry, refreshed by
-         <code>etl/build_bmu_snapshot.py</code>. Each block is one unit:
-         width is its notified MW (time-weighted mean of the level profile
-         across the half-hour — <b>Observed</b>); height is its technology
-         cluster's SRMC <em>midpoint</em> from the cost model above
-         (<b>Estimated</b>). Units are sorted cheapest-first on the same axes
-         as the modelled merit-order curve, so modelled and observed dispatch
-         can be compared directly. Read the caveats before leaning on it:</p>
+         <code>etl/build_bmu_snapshot.py</code>. Per unit it stores the
+         time-weighted mean physical-notification MW (Observed), the fuel
+         type and registered capacity from the BM Unit registry, and
+         per-fuel counts of <a class="term-link" data-term="boalf"
+         href="#g-boalf">BOALF</a> acceptances. A coverage block states
+         what share of MW was classified to a fuel. Units notifying zero
+         and interconnector units are omitted. Units with no registry fuel
+         type are kept with <code>fuel: null</code>.</p>
+      <p>The chart draws the snapshot as a dispatch curve: cumulative
+         notified GW against each cluster's SRMC midpoint, cheapest first,
+         on the same axes as the modelled merit-order curve, so modelled
+         and observed dispatch can be compared directly. Each block is one
+         unit. Width is its notified MW, the time-weighted mean of the
+         level profile across the half-hour, Observed. Height is its
+         technology cluster's SRMC midpoint from the cost model above,
+         Estimated. Read the caveats before leaning on it:</p>
       <ul>
-        <li><b>PN is notified intent, not metered output</b> — units can and
-            do deviate from their final physical notifications, and the data
-            carries no prices, so this is not a bid stack and cannot replace
-            the modelled merit curve.</li>
+        <li><b>PN is notified intent, not metered output, and not a bid
+            stack.</b> Units can and do deviate from their final physical
+            notifications. It is not what meters recorded, and it carries
+            no prices, since bid prices are not in free data. It is an
+            observation of dispatch behaviour that complements the SRMC
+            model.</li>
         <li><b>The price axis is a cluster attribution, not unit data.</b>
-            Every unit of a technology sits at the same midpoint; within a
+            Every unit of a technology sits at the same midpoint. Within a
             cluster, larger units are drawn first as a display convention
             only. No unit-level costs exist in free data.</li>
-        <li><b>Units without an SRMC benchmark are not plotted</b> —
-            unclassified units (no registry fuel type: mostly batteries, DSR
-            and small aggregations) plus pumped storage, oil and "other"
-            (no defensible cost benchmark). Their count and GW are stated
-            under the caption rather than silently dropped, alongside the
-            classified share of notified MW.</li>
-        <li><b>Also excluded</b>: interconnector units (flows, not dispatch —
-            see the Flows tab), units notifying zero, and charging/pumping
-            units (negative levels).</li>
+        <li><b>Units without an SRMC benchmark are not plotted.</b>
+            Unclassified units (no registry fuel type: mostly batteries,
+            DSR and small aggregations) plus pumped storage, oil and
+            "other" have no defensible cost benchmark, so their vertical
+            position would be invented. Their count and GW are stated
+            under the caption instead, alongside the classified share of
+            notified MW.</li>
+        <li><b>Also excluded</b>: interconnector units (flows, not
+            dispatch, see the Flows tab) and charging/pumping units
+            (negative levels).</li>
       </ul>
 
       <h3 id="m-netload">Price vs net load (estimated)</h3>
-      <div class="formula">net load = demand(INDO) − wind(transmission)</div>
-      <p>Each scatter point is one observed half-hourly price against derived
-         net load — the demand left for dispatchable plant, the standard
-         system-tightness variable. Solar is <b>not</b> subtracted: INDO is
-         already net of embedded solar (see residual load above); PV_Live
-         solar is shown in the tooltip for context only. The optional overlay
-         shows the median price per 2 GW bin (bins with under 12 half-hours
-         are dropped).</p>
+      <div class="formula">net load = INDO − WIND(transmission)</div>
+      <p>Each scatter point is one observed half-hourly price against
+         derived net load, the demand left for dispatchable plant, the
+         standard system-tightness variable. Solar is <b>not</b>
+         subtracted. INDO is already net of embedded solar, see residual
+         load above, so PV_Live solar is shown in the tooltip for context
+         only, not in the formula. The optional overlay shows the median
+         price per 2 GW bin. Bins with fewer than 12 half-hours are
+         dropped.</p>
 
       <h3 id="m-generation">Generation and flows</h3>
-      <p>Elexon FUELHH covers transmission-connected plant; embedded solar
-         comes from PV_Live (model-estimated from a metered sample — the GB
-         standard). Embedded wind is not included anywhere: published GB
-         "wind" here means transmission-metered wind. Interconnector flows are
-         metered (positive = import). Greenlink/Viking appear from their
-         respective commissioning dates.</p>
+      <p>Elexon <a class="term-link" data-term="fuelhh" href="#g-fuelhh">
+         FUELHH</a> covers transmission-connected plant. Embedded solar
+         comes from PV_Live, model-estimated from a metered sample, the
+         GB standard. Embedded wind is not included anywhere. Published
+         GB "wind" here means transmission-metered wind. Interconnector
+         flows are metered, positive means import. Greenlink and Viking
+         Link appear from their respective commissioning dates.</p>
 
       <h3 id="m-lowcarbon">Low-carbon share (estimated)</h3>
       <div class="formula">low_carbon = (nuclear + biomass + hydro + pumped storage + wind + solar) / total supply</div>
-      <p>Biomass is included per GB grid-intensity convention; in the
-         headline metric imports are counted in the denominator but excluded
-         from the numerator because their origin mix is not observed at the
-         cable. Both choices are debatable — hence Estimated. This headline
-         series keeps one unbroken definition across the full 365-day
-         history.</p>
+      <p>Total supply includes positive net imports. Biomass is included
+         per GB grid-intensity convention. Imports sit in the denominator
+         only, because their origin mix is not observed at the cable. Both
+         choices are debatable, hence Estimated. This headline series
+         keeps one unbroken definition across the full 365-day history.</p>
       <div class="formula">import_aware = (GB low-carbon + Σ import_flow × zone_low_carbon_fraction) / (GB generation + Σ import_flow)</div>
-      <p>The dashed <b>import-aware</b> line attributes each cable's imports
-         at the exporting zone's own low-carbon generation fraction at that
-         half-hour (ENTSO-E counterparty mix). Honesty limits, stated
-         plainly: this is <b>first-order counterparty-mix attribution, not
-         flow tracing</b> — the exporting zone's own imports are not
-         re-attributed; it exists only over the accumulated zone-context history
-         (append-only from 31 May 2026, deepening daily — no backfill:
-         the line simply starts where zone history does); where a zone's data is missing at a timestamp, that cable's
-         import falls back to the headline treatment (denominator only);
-         exports are excluded from both metrics. It is a second metric
-         beside the headline, not a splice into it.</p>
+      <p>The dashed <b>import-aware</b> line attributes each importing
+         cable at its counterparty zone's own low-carbon generation
+         fraction at that half-hour, from the ENTSO-E zone datasets.
+         Honesty limits, stated plainly: this is first-order
+         counterparty-mix attribution only, not flow tracing. The zone's
+         own imports are not re-attributed. It exists only over the
+         accumulated zone history, append-only from 31 May 2026, extended
+         by the daily refresh, no backfill, so the line simply starts
+         where zone history does. Where zone data is missing at a
+         timestamp, that cable's import falls back to the headline
+         treatment, denominator only. Exports are excluded from both
+         metrics. It is a second metric beside the headline, never
+         spliced into it.</p>
 
       <h3 id="m-counterparty">Counterparty context (Flows tab)</h3>
       <p>For a selected GB cable, the panel shows the cable's observed flow
-         alongside the counterparty zone's day-ahead price and generation
-         mix (loaded lazily from the per-zone ENTSO-E datasets; DE_LU is a
-         reference market with no GB cable and is never offered here).
-         Read the caveats:</p>
+         alongside the counterparty
+         <a class="term-link" data-term="bidding_zone" href="#g-bidding_zone">
+         zone</a>'s day-ahead price and generation mix, loaded lazily from
+         the per-zone ENTSO-E datasets. DE_LU is a reference market with no
+         GB cable and is never offered here. Read the caveats:</p>
       <ul>
         <li><b>The remote price is Derived and indicative only.</b> It is a
-            day-ahead auction price in EUR converted at the daily Bank of
-            England EUR/GBP rate (weekends carry the last business day),
-            compared against GB's within-day MID index — different market
+            day-ahead auction price in EUR, converted at the daily Bank of
+            England EUR/GBP rate (<code>fx_eur_per_gbp</code>, series
+            XUDLERS). Weekends carry the last business day. It is compared
+            against GB's within-day MID index. These are different market
             segments, so the gap is context, not a tradable spread.</li>
         <li><b>The mix is zone-wide context, not attribution.</b> It shows
             what the exporting zone was running, not which plants supplied
             the cable's electrons.</li>
-        <li><b>Zone history is shorter than GB's 365 days</b> — it
-            accumulates append-only from 31 May 2026 and deepens with the
-            daily refresh — so longer ranges are clipped to the overlap
-            (stated in the panel's meta line). TSO reporting gaps appear as
-            gaps.</li>
+        <li><b>Zone history is shorter than GB's 365 days.</b> It
+            accumulates append-only at ~6 kB/day/zone from 31 May 2026
+            (<code>--retain-days</code> can trim it if size ever matters),
+            and deepens with the daily refresh, so longer ranges clip to
+            the overlap (stated in the panel's meta line). TSO reporting
+            gaps appear as gaps.</li>
         <li><b>The overlays share the Utilisation ranking's definitions.</b>
             Dashed lines mark the cable's per-direction operational
-            ceilings (highest flow sustained ≥2 h over the trailing
-            90 days), dotted lines the cited nameplate — the flow axis is
-            fixed to the design envelope so the design-vs-practice gap
-            stays visible — and amber shading marks congestion-proxy
-            half-hours (at ceiling AND wide direction-consistent spread;
-            an approximation, not a shadow price). Definitions, thresholds
-            and caveats: the Utilisation ranking section above.</li>
+            ceilings, the highest flow sustained for at least 2 hours over
+            the trailing 90 days. Dotted lines mark the cited nameplate.
+            The flow axis is fixed to the design envelope,
+            ±1.05 × max(nameplate, ceilings), so the gap between design
+            and practice stays visible instead of being autoscaled away.
+            Amber shading marks congestion-proxy half-hours: at ceiling,
+            and a wide direction-consistent spread. It is an
+            approximation, not a shadow price. The axis tooltip repeats
+            that label over shaded periods, and the caption counts the
+            shaded half-hours in view. Definitions, thresholds and
+            caveats are in the Utilisation ranking section above.</li>
       </ul>
 
       <h3 id="m-utilisation">Utilisation ranking (Flows tab)</h3>
       <p>Ranks the ten cables by how often flow ran near a practical limit
          over the selected range, and what the GB–counterparty price gap
-         averaged in exactly those half-hours. GB interconnectors sit
-         outside any flow-based capacity-calculation region (capacity is
-         allocated per cable), so neither a published network limit nor a
-         shadow price exists — both are approximated and badged
-         Proxy / Derived. A view toggle switches between the flat ranking
-         (default) and grouping by counterparty market, ordered by each
-         market's best near-capacity share — presentation only, the
-         metrics are identical in both views:</p>
+         averaged in exactly those half-hours. GB
+         <a class="term-link" data-term="interconnector" href="#g-interconnector">
+         interconnectors</a> sit outside any flow-based capacity-calculation
+         region, since capacity is allocated per cable, so neither a
+         published network limit nor a shadow price exists. Both are
+         approximated and badged Proxy / Derived. A view toggle switches
+         between the flat ranking (default) and grouping by counterparty
+         market, ordered by each market's best near-capacity share. This
+         is presentation only: the metrics are identical in both views.</p>
       <ul>
         <li><b>Operational ceiling (Proxy):</b> per direction, the highest
             flow sustained for at least 2 hours (4 half-hours, not
-            necessarily consecutive) over the trailing 90 days — a
-            <b>rolling window</b> that moves forward daily. A plain max is
-            not robust — the FUELHH columns carry occasional
-            single-half-hour spike artefacts well above anything the cable
-            sustains — while a nameplate-based cap misfires the other way,
-            because cables can genuinely sustain flows somewhat above
-            their published rating: the sustained rule drops isolated
-            artefacts and keeps genuine plateaus. Chosen over nameplate
-            because it self-adjusts to de-ratings and phased ramp-ups; a
-            direction whose ceiling is under 5% of nameplate is treated as
-            offline (—) rather than flagging noise as utilisation.
-            Symmetrically, a rarely-used direction's ceiling reflects use,
-            not capability — read it against the nameplate column.</li>
-        <li><b>Nameplate (Reference):</b> operator-published design
-            capacity, shown for context and never used in the near-capacity
-            test — sources cited in <code>methodology.md</code>. Values:
+            necessarily consecutive, in other words the 4th-largest
+            reading) over the trailing 90 days: a rolling window that
+            moves forward daily. A plain max is not robust here: the
+            FUELHH columns carry occasional single-half-hour spike
+            artefacts well above anything the cable sustains, and an
+            unfiltered max would lift a pegged cable's
+            <a class="term-link" data-term="ceiling" href="#g-ceiling">
+            ceiling</a> above its true plateau and zero its utilisation
+            count. A nameplate-based cap fails the other way, because
+            cables can genuinely sustain flows somewhat above their
+            published rating. The sustained rule drops isolated artefacts
+            and keeps genuine plateaus without consulting nameplate.
+            Chosen over nameplate because it self-adjusts to de-ratings
+            and phased ramp-ups: a direction whose ceiling falls below 5%
+            of nameplate is treated as offline rather than flagging noise
+            as utilisation. Symmetrically, a rarely-used direction's
+            ceiling reflects use, not capability: read it against the
+            nameplate column.</li>
+        <li><b><a class="term-link" data-term="nameplate" href="#g-nameplate">
+            Nameplate</a> (Reference):</b> operator-published design
+            capacity, shown for context and never used in the
+            near-capacity test, cross-checked 2026-07-10 against DESNZ,
+            "Electricity interconnectors' contribution to security of
+            supply" (October 2025, capacity-market derating annex,
+            assets.publishing.service.gov.uk) and Elexon's interconnector
+            register (elexon.co.uk/bsc/about/interconnectors/). Values:
             ${Object.values(Data.INTERCONNECTORS).map((ic) =>
               `${ic.label} ${ic.nameplate_mw.toLocaleString("en-GB")}`)
               .join(" · ")} (MW).</li>
@@ -766,87 +1268,228 @@ const UI = (() => {
             tested per half-hour over the selected range.</li>
         <li><b>Δ (Derived, indicative only):</b> mean of GB MID minus the
             counterparty day-ahead price (converted at the daily BoE
-            EUR/GBP rate) over near-capacity half-hours; positive = GB
-            premium. Day-ahead auction vs within-day MID are different
+            EUR/GBP rate) over near-capacity half-hours: positive means a
+            GB premium. Day-ahead auction vs within-day MID are different
             market segments, so the gap is context, not a tradable spread.
             Zone prices exist only over the accumulated zone history:
             collection began 31 May 2026 and is append-only with no
-            backfill, so that date is a <b>fixed accumulation start</b> —
-            unlike the rolling ceiling window, it never moves — and it
-            bounds the join; the row tooltip counts the half-hours
-            actually used.</li>
-        <li><b>Congestion proxy (approximation — not a shadow price):</b>
-            a half-hour is flagged only when BOTH conditions hold — the
-            cable at ≥90% of its operational ceiling AND the GB−zone
-            spread wide in the direction the flow earns: importing with
-            Δ = GB − zone at or beyond the market's p75 (≥ £5/MWh), or
-            exporting with Δ at or beyond the p25 (≤ −£5/MWh). The spread
-            population is the market's full accumulated zone window, so
-            the thresholds do not move when the view range changes, and
-            cables landing in the same zone share them. Why a proxy: GB
-            left the EU's single day-ahead coupling at the end of 2020 —
-            capacity on GB–EU cables is allocated through explicit
+            backfill, so that date is a fixed accumulation start. Unlike
+            the rolling ceiling window, it never moves, and it bounds the
+            join. The row tooltip counts the half-hours actually used.</li>
+        <li><b><a class="term-link" data-term="congestion_proxy" href="#g-congestion_proxy">
+            Congestion proxy</a> (approximation, not a shadow price):</b>
+            a half-hour is flagged only when BOTH conditions hold: the
+            cable at ≥90% of its operational ceiling and the GB−zone
+            spread wide in the direction the flow earns. "Wide" means
+            importing with Δ = GB − zone at or beyond the market's p75
+            (and ≥ £5/MWh), or exporting with Δ at or beyond the p25
+            (and ≤ −£5/MWh). The spread population is every overlap
+            half-hour for that market over the full accumulated zone
+            window. Those thresholds are fixed. They do not move when the
+            view range changes, and cables landing in the same zone share
+            them. Why a proxy rather than an observation: GB left the EU
+            single day-ahead coupling (SDAC) at the end of 2020. Capacity
+            on GB–EU interconnectors is allocated through explicit
             day-ahead capacity auctions that close before the energy
-            auctions (the TCA's proposed multi-region loose volume
-            coupling is unimplemented as of mid-2026) — so no flow-based
-            shadow price exists to observe. Two deliberate exclusions:
-            wide spread with <i>slack</i> flow is not flagged (consistent
-            with an outage or ramp limit, not scarce capacity), and
-            at-ceiling flow <i>against</i> the price signal (e.g.
-            exporting while GB is the premium market) is not flagged —
-            at-limit, but not a congestion-rent picture.</li>
+            auctions, and the TCA's proposed replacement (multi-region
+            loose volume coupling) remains unimplemented, checked
+            2026-07-10. So no flow-based shadow price exists to observe.
+            Two exclusions are deliberate. Wide spread with slack flow is
+            not flagged, because that pattern is consistent with an
+            outage or ramp limit rather than scarce capacity. At-ceiling
+            flow against the price signal is not flagged, because that is
+            emergency-action shaped: at-limit, but not congestion rent.
+            Known limitation, recorded so it is never re-investigated: a
+            full RAM decomposition (IVA / FRM / AAC / Fnrao / F0−Fnrao,
+            as shown on flow-based CCR dashboards) cannot be built for
+            GB. It needs TSO-level flow-based allocation data that does
+            not exist for per-cable, explicitly allocated
+            interconnectors, and simulating the components would
+            fabricate data.</li>
         <li><b>Three cables share the SEM counterparty price.</b> Moyle
             lands in Northern Ireland and East-West/Greenlink in the
             Republic of Ireland, but all three connect GB to the same
             all-island SEM bidding zone, so their Δs use the same
             day-ahead series. The rows remain distinct: each Δ is
             averaged over that cable's own near-capacity half-hours, so
-            the three can — and do — differ.</li>
+            the three can, and do, differ.</li>
       </ul>
 
+      <h3 id="m-stress">System stress (observed metrics, derived flags)</h3>
+      <p>The System stress tab shows daily operational-stress metrics over
+         the trailing year with deterministic anomaly flags, refreshed by
+         <code>etl/fetch_stress.py</code>. It is append-only, keeps at
+         least 400 days, and its retention is independent of the core
+         dataset's window. Every stored figure is <b>Observed</b>. The
+         flags are <b>derived from observed</b>: threshold arithmetic
+         computed at build time and shipped in the JSON, never recomputed
+         in the browser, and never changed retroactively. Sources, all
+         Elexon Insights (keyless): 15 s system
+         <a class="term-link" data-term="frequency" href="#g-frequency">
+         frequency</a> (FREQ),
+         <a class="term-link" data-term="lolp" href="#g-lolp">loss-of-load
+         probability</a> and
+         <a class="term-link" data-term="drm" href="#g-drm">de-rated
+         margin</a> (1/8/12 h horizons), settlement system prices, and
+         system warnings
+         (<a class="term-link" data-term="syswarn" href="#g-syswarn">
+         SYSWARN</a>).</p>
+      <p>The price series here is
+         <a class="term-link" data-term="ssp" href="#g-ssp">SSP</a>
+         rather than MID, deliberately. SSP is the settlement price of the
+         balancing actions the operator actually took, the realised cost
+         of keeping the system whole in real time, so it is the series
+         that directly prices operational scarcity. MID aggregates traded
+         wholesale sessions. It often rises on the same days: 23 Jun 2026,
+         MID's year-max £561 against SSP's year-max £800 in the same
+         evening. But it measures what the market traded, not what
+         balancing cost, and a stress detector must price the latter.</p>
+      <p>A day is flagged when ANY of four typed rules fires. Each flag
+         records the value and the exact threshold used:</p>
+      <ul>
+        <li><b>frequency</b>: seconds below 49.8 Hz reach
+            max(trailing-365d p99, 60 s floor). Sub-49.8 blips are
+            routine in small doses (about 1 day in 6 has ≥15 s), so the
+            percentile does the work and the floor only guards the
+            all-zero-history case.</li>
+        <li><b>price</b>: daily max settlement system price reaches the
+            trailing-365d p99 of daily maxima.</li>
+        <li><b>emn</b>: at least one Electricity Margin Notice is
+            <em>issued</em> that day, publish-date attribution (UTC).
+            Cancellation notices share the warning type but withdraw a
+            warning, so they never count.</li>
+        <li><b>adequacy</b>: daily max LoLP across the 1/8/12 h horizons
+            reaches max(trailing-365d p99, 0.01 floor). The floor targets
+            true near-misses: the 8 Jan 2025 event reached 0.294.
+            De-rated margin is stored for context but is not a
+            trigger.</li>
+      </ul>
+      <p>Baselines are <b>point-in-time</b>: each day is judged only
+         against the up-to-365 days before it, its own value never
+         raises its own threshold, and percentile rules need at least 90
+         days of history. With less, only the EMN flag and the adequacy
+         floor can fire. Days early in the backfilled window therefore
+         face thinner baselines than days from launch onward. Every
+         flag's tooltip shows the threshold it actually fired against.</p>
+      <p>The frequency and adequacy families are deliberately
+         complementary. LoLP and de-rated margin are
+         <em>leading margin</em> indicators that can stay quiet through a
+         delivery event: 23 Jun 2026, max LoLP 0.0017. Frequency, price
+         and EMNs are <em>outcome</em> indicators that can stay quiet
+         through a managed adequacy squeeze: 8 Jan 2026, zero excursion
+         seconds, no EMN, LoLP 0.036. Neither family may be dropped in
+         favour of the other. The flag set is their union.</p>
+      <ul>
+        <li><b>Percentile context (tooltips):</b> the day's max SSP, max
+            LoLP and min DRM each carry a display-only
+            <a class="term-link" data-term="percentile" href="#g-percentile">
+            rank</a> against the same point-in-time trailing window the
+            flags use. This is midrank: the day's own value never joins
+            its own baseline. Under 90 days of history the annotation
+            says "insufficient history" rather than fabricating a rank.
+            Ranks are stress-oriented: DRM is inverted, so p97 tight
+            means only 3% of trailing days had less margin. Bands at
+            p99/p95/p90/p50: extreme, very high/very tight, high/tight,
+            regular, low/loose. One caveat: LoLP's trailing distribution
+            is zero-inflated (the median day is 0), so <em>any</em>
+            nonzero LoLP ranks high. The annotation reads "relative to
+            the past year", while the adequacy flag's absolute 1% floor
+            keeps deciding what counts as a flag.</li>
+        <li><b>Feed artefacts:</b> the FREQ feed occasionally carries
+            implausible samples (literal 0.0 Hz). Readings outside
+            45–55 Hz are treated as gaps, not excursions: 18 affected
+            days in the first backfill, worst 404 samples in one day.</li>
+        <li><b>Event slices:</b> every flagged day gets a full-day 15 s
+            frequency slice for the viewer, any flag type. The trace is
+            frequency regardless, so price/adequacy days can show a calm
+            grid. Slices are fetched lazily per view, so they add nothing
+            to the page load. On disk they run ~40 kB per flagged day.
+            The viewer's day list follows the global range presets. This
+            is presentation only: slices exist for every flagged day.
+            When the selected day falls out of a newly chosen range, the
+            viewer falls back to the newest flagged day in range, or an
+            empty state if the range contains none.</li>
+        <li><b>Day granularity:</b> frequency metrics are UTC days. SSP
+            and LoLP rows carry local settlement dates. At daily
+            resolution the mismatch is at most the 23:00–24:00 BST
+            hour.</li>
+        <li><b>Header chip and latest-day digest:</b> when the most recent
+            day is flagged, an amber chip appears next to the freshness
+            element naming the flag type(s), same visual convention, and
+            like the flags themselves it marks a <em>notable</em> day,
+            not a security assessment. The tab's first card additionally
+            leads with a one-line digest of the most recent stored day, a
+            deterministic restatement of stress_daily.json, unrelated to
+            the AI overnight summary card. Its quiet-day wording is
+            "no flags fired", meaning no threshold was crossed, never
+            "all clear": flags mark notable days, and no N-1, constraint
+            or reserve model exists anywhere in this app. When the latest
+            day's baseline is under 90 days the digest says so
+            ("baseline building") instead of implying confidence the
+            rules cannot have. <b>Both the chip and the digest are
+            deliberately range-independent:</b> they always reflect the
+            latest day in stress_daily.json whatever the 7D–1Y presets
+            say, while the daily chart and the event viewer's day list
+            <em>do</em> follow the presets. That asymmetry is by design,
+            not a range-selector bug: the presets scope the history you
+            are inspecting, and the chip and digest report the newest
+            state regardless.</li>
+      </ul>
+      ${stressFeedNote}
+
       <h3 id="m-overnight">Overnight summary (AI-generated)</h3>
-      <p>The collapsible panel below the KPI strip is written by an LLM (the
-         <code>dashboard-watcher</code> agent, invoked headlessly by
-         <code>ops/run_overnight_summary.py</code> during the daily refresh).
-         It produces <b>one section per tab</b>, and each tab shows only its
-         own: Overview, Prices and Generation share the general overnight
-         narrative; Merit order analyses the gap between the panel's implied
-         clearing price and the observed price; Spreads places spark/dark
-         against their own history; Flows covers cable direction changes
-         and import dependency. Every statistic the agent uses — baselines,
-         z-scores, spread percentiles, cable facts and the merit figures —
-         is precomputed deterministically with the dashboard's exact
-         formulas (<code>ops/panel_facts.py</code>,
+      <p>The collapsible panel below the KPI strip is written by an LLM,
+         the <code>dashboard-watcher</code> agent, invoked headlessly by
+         <code>ops/run_overnight_summary.py</code> during the daily
+         refresh. It produces <b>one section per tab</b>, and each tab
+         shows only its own. Overview, Prices and Generation share the
+         general overnight narrative. Merit order analyses the gap
+         between the panel's implied clearing price and the observed
+         price. Spreads places spark/dark against their own history.
+         Flows covers cable direction changes and import dependency.</p>
+      <p>Every statistic the agent uses, baselines, z-scores, spread
+         percentiles, cable facts and the merit figures, is precomputed
+         deterministically with the dashboard's exact formulas
+         (<code>ops/panel_facts.py</code>,
          <code>ops/merit_panel_figures.py</code>) and injected into the
-         prompt; the publisher rejects a summary whose figures or window
+         prompt. The publisher rejects a summary whose figures or window
          deviate, so the LLM writes the narrative but never computes a
-         number. The agent is instructed to
-         synthesise — at most two causally-explained findings per tab, with
-         correlated hours collapsed into one finding — rather than enumerate
-         threshold crossings. It compares the last 48 hours against a
-         14–30 day baseline and reports data-quality flags separately. It is
-         an <b>interpretation of the published dataset, not a data
-         series</b> — hence the distinct dashed styling and AI-generated
-         badge. Hypotheses are phrased as "consistent with"; the agent is
-         instructed never to assert market events it cannot support from the
-         data. A failed generation leaves the previous summary in place; if
-         none exists the panel says so rather than guessing. The panel is
-         collapsed by default (takeaway line only) and expands on click.</p>
+         number. The agent is instructed to synthesise: at most two
+         causally-explained findings per tab, with correlated hours
+         collapsed into one finding, rather than enumerate threshold
+         crossings. It compares the last 48 hours against a 14–30 day
+         baseline and reports data-quality flags separately.</p>
+      <p>It is an <b>interpretation of the published dataset, not a data
+         series</b>, hence the distinct dashed styling and AI-generated
+         badge. Hypotheses are phrased as "consistent with". The agent is
+         instructed never to assert market events it cannot support from
+         the data. A failed generation leaves the previous summary in
+         place. If none exists, the panel says so rather than guessing.
+         The panel is collapsed by default (takeaway line only) and
+         expands on click.</p>
 
       <h3 id="m-refresh">Refresh process</h3>
       <p><code>python etl/build_dataset.py --incremental</code> re-fetches
-         the last two stored days plus anything newer (upstream revisions are
-         overwritten), merges onto the published dataset, keeps the window
-         rolling at 365 days and publishes atomically behind a validation
-         guard — a failed run leaves the live files untouched. A versioned
-         <code>manifest.json</code> cache-busts the data files. A launchd job
-         (installed via <code>ops/install_schedule.sh</code>) runs this daily
-         at 07:00 local time; missed runs fire on wake — see
-         <code>ops/README.md</code>. The header's "updated … ago" element
-         and the footer's "Dataset built" timestamp are the staleness
-         signals — the header turns amber past 26 h (one missed daily
-         refresh; freshness, not a data-quality badge); a full rebuild is
+         the last two stored days plus anything newer. Upstream revisions
+         are overwritten. It merges onto the published dataset, keeps the
+         window rolling at 365 days, and publishes atomically behind a
+         validation guard. The guard refuses to publish a merged dataset
+         whose time axis is broken, or whose coverage falls more than two
+         percentage points (2 pp) below the published one. A failed run
+         leaves the live files untouched.</p>
+      <p>A versioned <code>manifest.json</code> cache-busts the data
+         files. A launchd job (installed via
+         <code>ops/install_schedule.sh</code>) runs this daily at 07:00
+         local time. Missed runs fire on wake, see
+         <code>ops/README.md</code>.</p>
+      <p>The header's "updated … ago" element and the footer's "Dataset
+         built" timestamp are the staleness signals. The header turns
+         amber past 26 h, one missed daily refresh. This is a freshness
+         signal, not a data-quality badge. A full rebuild is
          <code>--days 365</code>.</p>
+      <p>The same scheduled run also appends the day's stress metrics
+         (<code>etl/fetch_stress.py</code>, non-fatal). First-time build:
+         <code>--backfill 365</code>.</p>
 
       <h3 id="m-limits">Known limitations</h3>
       <ul>
@@ -855,15 +1498,19 @@ const UI = (() => {
         <li>Gas SAP is within-day, lagging the forward curve in fast markets.</li>
         <li>No unit commitment, network constraints or balancing actions are
             modelled anywhere in this app.</li>
+        <li>Stress flags are threshold rules on observed daily metrics.
+            They mark notable days for inspection. They do not model
+            security margins, N-1 conditions or reserve adequacy.</li>
         <li>Embedded wind is invisible to all sources used.</li>
         <li>A flow-based RAM decomposition (IVA / FRM / AAC / Fnrao /
             F0−Fnrao, as shown on Nordic/Core CCR dashboards) cannot be
-            built for GB: it requires TSO-level flow-based allocation
+            built for GB. It requires TSO-level flow-based allocation
             data that does not exist for per-cable, explicitly allocated
             interconnectors. Simulating the components would fabricate
-            data — permanently out of scope; the congestion proxy above
+            data, permanently out of scope. The congestion proxy above
             is the honest substitute.</li>
       </ul>`;
+    finalizeMethodologyLayout();
   }
 
   /* ---------------- CSV export ---------------- */
@@ -936,6 +1583,7 @@ const UI = (() => {
     URL.revokeObjectURL(a.href);
   }
 
-  return { renderDataAge, renderGlance, renderOvernight, renderKpis,
-           renderAssumptions, renderMethodology, exportCsv };
+  return { renderDataAge, renderStressChip, renderWarnings, renderGlossary,
+           renderGlance, renderOvernight, renderKpis, renderAssumptions,
+           renderMethodology, jumpToMethodology, exportCsv };
 })();

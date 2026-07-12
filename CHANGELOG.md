@@ -636,6 +636,347 @@ machine, worked through in priority order.
   near-coincident lines can no longer overlay each other's labels at
   any zoom level.
 
+### System stress anomaly detector (#22, 2026-07-11)
+
+- `etl/fetch_stress.py` (plan/06 workstream B): daily observed stress
+  metrics over the trailing year — 15 s frequency aggregates, LoLP /
+  de-rated margin per 1/8/12 h horizon, settlement system prices, EMN
+  counts — with four typed anomaly flags (`frequency`, `price`, `emn`,
+  `adequacy`) computed at build time against point-in-time trailing
+  baselines (p99, 60 s / 0.01 floors, ≥90 d history for percentile
+  rules) and persisted, never recomputed retroactively. Outputs
+  `stress_daily.json` (~125 kB, ≥400 d retention), `warnings.json`
+  (EMNs + emergency instructions verbatim; publish stamps UTC, body
+  times UK local by design), and a 15 s event slice under
+  `events/<date>/` for every flagged day (D8 owner-revised at review:
+  slices are lazy-fetched per view, so completeness costs disk, not
+  page load — eager payload 153 kB against the 512 kB budget; 17
+  slices ≈ 660 kB on disk). One-off `--backfill 365` ran gap-free on
+  all three sources; the daily incremental append is wired into
+  `ops/refresh.py` (non-fatal).
+- Data gotcha found and filtered: the FREQ feed carries literal-0.0 Hz
+  artefact samples (18 days in the backfill, worst 404 samples/day) —
+  each would count as a fake excursion below both thresholds. Samples
+  outside 45–55 Hz are treated as gaps; the per-day rejected count is
+  stored. Signature to recognise it: `secs<49.8 == secs<49.5` with
+  `freq_min = 0.000`.
+- "System stress" tab (GB-only, gated like Merit/Spreads/Flows): daily
+  strip chart (excursion bars + max-SSP line + amber flag markers,
+  tooltip shows each flag's value against the exact threshold that
+  fired; honours the global range presets), 15 s event viewer with
+  operational/statutory bands (its day list follows the same range
+  presets — presentation only, every flagged day keeps its slice; on a
+  range change the selection survives if still in view, else falls
+  back to the newest flagged day in range, else an empty state), and a
+  verbatim warnings list (collapsed to the newest 5, in-memory expand
+  toggle). Header gains an amber
+  chip when the most recent day is flagged, naming the flag types —
+  same convention as the staleness element, click-through to the tab.
+  Panel copy states why the price series is SSP rather than MID: SSP
+  settles the balancing actions the operator actually took — the
+  realised cost of real-time scarcity — where MID measures traded
+  sessions (both spiked on 23 Jun 2026: MID year-max £561, SSP
+  year-max £800; the detector prices the balancing side). The
+  warnings-feed composition stats moved to the methodology entry
+  (not user-verifiable on the panel). Tooltips carry a display-only
+  percentile context for max SSP / max LoLP / min DRM (`pctl`,
+  computed in the ETL against the same point-in-time trailing window
+  as the flags; stress-oriented, DRM inverted; "insufficient history"
+  under 90 d; bands extreme / very high‑tight / high‑tight / regular /
+  low‑loose at p99/95/90/50) — e.g. 23 Jun reads SSP p100 extreme,
+  LoLP p98.6 very high, DRM p97.7 very tight. Caveat recorded: LoLP's
+  zero-inflated distribution means any nonzero value ranks high —
+  relative rank, not absolute severity; the 1% adequacy floor still
+  decides flags. The tooltip renders as a fixed three-column monospace
+  grid (metric | value | context, value and context right-aligned) so
+  its width holds steady while hovering across days; and the first
+  card leads with a deterministic latest-day digest line — the
+  quiet-day complement to the header chip, unrelated to the AI
+  overnight summary. Digest wording is operational, never a verdict:
+  quiet days read "no flags fired" (no threshold crossed, not "all
+  clear"), and a latest day with under 90 days of baseline says
+  "baseline building" with the percentile flags inactive, rather than
+  letting silence imply confidence. Chip and digest are deliberately
+  range-independent (always the latest stored day); the daily chart
+  and event-viewer list follow the 7D–1Y presets — an asymmetry by
+  design, stated in the methodology so it is never mistaken for a
+  range-selector bug.
+- 18 unit tests (five evidence dates as fixtures incl. 8 Jan 2025 —
+  live SYSWARN showed two same-day EMN issuances, so publish-date
+  attribution fires all four flags there — plus rule mechanics and the
+  artefact filter). Live retro-test outcomes recorded in plan/06:
+  23 Jun 2026 fires frequency+price+emn exactly as designed; 8 Jan
+  2026 fires adequacy+price (£434.85 was the year's 4th-highest SSP
+  day — the design's "adequacy only" guess corrected); early-window
+  frequency flags (21 Nov, 5 Jan) fire against thin point-in-time
+  baselines, accepted as-is since every flag carries its threshold.
+
+### Glossary tab + single-source term definitions (2026-07-12)
+
+- `app/js/terms.js`: one map of ~34 plain-language term definitions —
+  the single source of truth for the new Glossary tab and (next pass)
+  for metric hover tooltips, so wording is never maintained twice.
+  Each entry: one tooltip-ready sentence, optional glossary-only
+  extra, a `gb: true` tag for GB-market-specific terms, a link to the
+  formal Elexon BSC glossary definition where one exists (ten pages
+  verified live 2026-07-12: SSP, LoLP, DRM forecast, MID, PN, BM
+  Unit, NIV, Settlement Period, System Warning, Bid-Offer
+  Acceptance — linked, never copied: BSC wording is code/legal
+  language, ours deliberately is not), and a methodology anchor.
+- "Glossary" nav tab, zone-neutral by design: the terms document the
+  app, so the tab stays visible on non-GB zones; GB-specific entries
+  carry a visible "GB market term" tag and the intro explains why
+  they remain listed. Flat, alphabetical, one entry per term —
+  Methodology explains how things are computed, the Glossary is the
+  lookup; entries deep-link into the relevant methodology section and
+  both methodology variants (GB + zone) open with a pointer back.
+
+### methodology.md plain-language pass (2026-07-12)
+
+- Sentence-level rewrite of the repo methodology doc: shorter, direct
+  sentences; jargon-second phrasing; em-dashes cut back to where they
+  earn their place. A language pass, not a content pass — every
+  threshold, date, formula, source citation, quality label and caveat
+  is unchanged (point-in-time baselines, thin-history warnings, the
+  four-flag union, the ceiling failure modes, the congestion-proxy
+  exclusions, the RAM limitation, judgement calls 1–12 all survive
+  verbatim in substance). One factual fix folded in: the manifest
+  paragraph claimed the zones list was "currently [GB]" — stale since
+  the Europe extension; it now says GB plus any fetched ENTSO-E zones.
+  Tables untouched. The in-app Methodology tab keeps its original
+  denser style for now; aligning it is a scoped follow-up awaiting a
+  go-ahead.
+- Review round (2026-07-12): hard line-wrapping removed (paragraphs
+  are single logical lines that reflow with the viewer); all internal
+  planning-doc references dropped (D-number decision labels, plan/06
+  and plan/04 pointers — meaningless to readers without the private
+  plan docs; the substance stays, the history lives here instead);
+  punctuation pass — em dashes to en dashes or commas (13 → 0),
+  semicolons split into sentences (27 → 0), formula minus signs
+  untouched; the two schema tables normalized to one compact style;
+  and a "Price series scope: MID, not day-ahead" note added at the
+  top with a forward pointer to the System stress section's
+  deliberate SSP exception. Glossary review fixes same day: duplicate
+  CSS block removed (its leaked margins caused the pill indent and
+  the intro tag misalignment), definition text now fills the entry
+  width (max-width dropped), and a sticky A–Z letter rail added,
+  mirroring the methodology contents rail (instant jumps).
+
+### Methodology layout, glossary polish, dev cache-buster (2026-07-12)
+
+- Methodology tab layout (CSS + a post-render wrapper only — the text
+  templates are untouched): each h3-headed topic now wraps into its own
+  card-styled section with a bordered header, so topics separate
+  visually instead of reading as one wall of text with bold pop-outs.
+  A sticky mini-contents rail (18 entries on GB, 5 on zones — built
+  from the headings at render time, so it can never drift) jumps
+  instantly to any section; anchor targets land below the sticky
+  topbar via scroll-margin. Works identically for the zone variant;
+  collapses to one column under 980px.
+- Glossary polish: A–Z letter dividers, each term in a subtle raised
+  row with tighter typographic hierarchy, the "GB market term" tag as
+  a small outline pill, and the Elexon / methodology links as pill
+  buttons instead of bare inline links. terms.js copy got the same
+  plain-language pass as methodology.md (wording only — every
+  definition's facts unchanged; no Elexon re-fetch).
+- Stress daily chart: the "min below 49.8 Hz" axis title was clipped
+  by the 52px left gutter (ECharts centres axis names on the axis
+  line); now anchored left so the full label reads over the chart's
+  top band.
+- DEV-CACHE-BUSTER (two clearly-marked blocks in index.html, dev only):
+  `python -m http.server` sends no cache headers, so browsers
+  heuristically cache the app's JS/CSS and serve stale code after
+  edits — the recurring "the fix isn't on screen" gremlin. When served
+  from localhost, a fresh `?v=` is appended to the app's own JS/CSS on
+  every load; on any other host the emitted tags are byte-identical to
+  the plain ones and normal HTTP caching applies. (A `<meta
+  cache-control>` hint could not do this: it does not apply to
+  subresources in modern browsers.) Review/strip before any hosted
+  build — grep DEV-CACHE-BUSTER.
+
+### Glossary + Methodology search (2026-07-12)
+
+- Shared `.tab-search` box at the top of both tabs (matches the
+  existing input language: raised bg, bordered, magnifier icon, ×
+  clear button, Esc to clear). Client-side substring filter,
+  case-insensitive, instant (no debounce — matching 34 terms / ~18
+  sections is nanoseconds).
+- Glossary: matches term title + full definition + extra text, so
+  "loss" finds Loss of Load Probability and "cash-out" surfaces SSP
+  (not in its title). Non-matching entries and their now-empty letter
+  dividers hide; the A–Z rail greys (and disables) letters with no
+  matches. Empty state when nothing matches.
+- Methodology: matches the whole section (heading + body), so a term
+  only mentioned in passing still surfaces its section (e.g. "spark"
+  also finds the Overnight-summary section that references it).
+  Non-matching section cards hide and the contents rail greys to the
+  matching sections. Resets on zone switch so a new zone opens
+  unfiltered. (Chosen over header-only matching for usefulness — say
+  the word if you'd prefer headers-only, it's a one-line change.)
+- Scroll behaviour: filtering shrinks page height. The sticky rails
+  use CSS `position: sticky` and self-correct (never break). The
+  browser natively clamps scrollTop so a shrink can't strand you in
+  empty space. A small guard additionally brings the search box back
+  into view if a deep-scrolled search would otherwise leave it above
+  the fold; it no-ops during normal top-of-tab searching (gated on the
+  box being scrolled off-screen), and runs synchronously rather than
+  via requestAnimationFrame so it works in degraded renderers.
+
+### Search refinements + back-to-top (2026-07-12)
+
+- Empty-state fix: the "no results" message was a `<p>` below the grid,
+  so it rendered ~400px under the tall greyed A–Z rail and off-screen
+  (reported: nonsense search showed a greyed rail and no message). Moved
+  into the content column so it appears beside the rail top. Message
+  reworded to "Nothing found for "…"" on both tabs.
+- Match highlighting: the matched substring is wrapped in
+  `<mark class="search-hl">` wherever it appears — glossary titles and
+  definitions, methodology headers and section bodies — in its original
+  case (case-insensitive match). Implemented by walking text nodes, so
+  tables/formulas/links are never corrupted; the link/label pills are
+  skipped. Subtle blue accent highlight (rgba(78,161,255,.28)), never
+  the default yellow `<mark>`. Clears and re-merges text on reset.
+- Search input colour pinned to the cool UI grey (`--text`) with
+  `-webkit-text-fill-color` and an autofill override so no warm
+  webkit/UA fill can bleed through; placeholder set to `--text-dim`.
+- Back to top: one global button, fixed bottom-right, card-styled
+  circle with an up-arrow. Hidden until scrolled past ~500px, instant
+  scroll-to-top on click (matching the rails). Bottom-right corner
+  keeps it clear of the top search bar and the sticky rails; z-index 45
+  sits above content, below the sticky topbar's 50. Scroll-driven, so
+  it only appears on tabs long enough to scroll (Methodology, Glossary,
+  System stress, the chart tabs) and never on short ones.
+
+### Reference-tab polish (2026-07-12)
+
+- Market KPI strip (glance + KPI cards) hidden on Glossary and
+  Methodology — they are static reference tabs, and live metrics above
+  them implied a time-sensitivity they don't have. Driven by the tab
+  (REFERENCE_TABS in app.js); shown unchanged on every other tab.
+- Search box colours pinned to exact requested values (confirmed with
+  getComputedStyle): typed text, placeholder and webkit/autofill fill
+  all `rgb(102,112,125)`. Note: that value has no dark-theme token (it
+  is the light theme's `--text-dim`), so it is a documented literal.
+- Search box fill aligned to the cards it sits among: `--bg-card`
+  (`rgb(21,27,35)`), replacing the lighter `--bg-raised`. The border
+  was already on the shared `--border` token (`rgb(35,44,56)`) — the
+  `rgb(27,35,48)` seen earlier was the old fill, not a stray border
+  value.
+- Reference-tab intro cards fit their content: the card-head
+  paragraph's 10px bottom margin was stacking on the card's 14px
+  bottom padding (~25px of dead space under the text). Collapsed the
+  paragraph margin and set padding-bottom to 12px, scoped to the two
+  intro cards only — gap now ~13px on both.
+
+### Sticky-rail + scroll-jump offset fix (2026-07-12)
+
+- Both reference-tab rails (Glossary A–Z, Methodology TOC) were pinned
+  with a hardcoded `top: 66px`, and jump targets used a hardcoded
+  `scroll-margin-top: 76px`. The sticky topbar is actually taller and
+  variable — its nav wraps to 2–3 rows at narrower widths and grows on
+  font-load reflow (measured 143px at 1280px). So the rail pinned
+  *under* the topbar (clipping the first entry) and rail/deep-link jumps
+  landed with the target's header hidden behind it.
+- Both offsets now derive from the topbar's measured height, published
+  as `--topbar-h`: the rails pin at `calc(var(--topbar-h) + 8px)` and
+  jump targets use `scroll-margin-top: calc(var(--topbar-h) + 12px)`.
+  `--topbar-h` is set synchronously at init and kept current by a
+  `ResizeObserver` on the topbar, `document.fonts.ready` (font-load
+  reflow fires no resize event), and a window `resize` listener — so it
+  tracks the topbar through wraps and font loads rather than guessing.
+- Verified with a mid-list item on both tabs: the full rail is visible
+  (first entry sits below the topbar, not clipped) and jumped-to card
+  headers clear the topbar. The resize listener was confirmed to update
+  the value to match a changed topbar height.
+
+### Methodology jump-landing + rail parity (2026-07-12)
+
+- Jumping to a Methodology section (TOC click, glossary "Methodology →"
+  pill, or an ⓘ mark) landed the section card's top border flush under
+  the sticky topbar: the `scroll-margin-top` was on the `<h3>`, which
+  sits ~15px inside the card (its padding + border), so the card border
+  cleared the topbar by 15px less than the heading did. Now all three
+  jump paths scroll the `.method-section` card via one helper
+  (`UI.jumpToMethodology`), and `.method-section` carries the same
+  `scroll-margin-top: calc(var(--topbar-h) + 12px)` as `.gloss-letter`
+  — so a section card lands at the identical 12px gap the Glossary
+  letter dividers do.
+- Rail parity: the TOC and A–Z rails already pinned at the identical
+  `calc(var(--topbar-h) + 8px)` (verified 8px below the topbar on both);
+  the only remaining difference was 2px more internal padding on the
+  TOC rail, now unified to match — the two rails are pixel-identical
+  (8px pin gap, 17px to first content). Any earlier "tighter" look was
+  a transient pre-font-load `--topbar-h` state, closed by the layered
+  triggers added with the sticky-offset fix.
+- Follow-up: both rails now pin at `+12px` — the same N as the jump
+  targets' scroll-margin — so the frozen rail's top edge aligns exactly
+  with a jumped-to card's top edge (verified 155px == 155px on both
+  tabs; previously the rail sat 4px higher than the card beside it).
+  Back-to-top icon swapped from a stemmed arrow to an 18px chevron,
+  matching the app's caret language (▾/▴ toggles), verified centred.
+
+### Search-highlight spacing, the real fix (2026-07-12)
+
+- Single-letter/mid-word searches visibly split words in glossary TERM
+  TITLES ("Derived flags ( Syste m stress)"). Two stacked causes: the
+  mark's 1px horizontal padding (fixed earlier — that one was real but
+  only covered the plain-paragraph definition bodies), and the actual
+  title culprit: `.gloss-term` is a flex container with `gap: 8px`, and
+  when the highlighter splits the title's text around a <mark>, every
+  fragment becomes its own (anonymous) flex item — so the flex gap
+  rendered as fake 8px spaces mid-word. Fix: no gap on `.gloss-term`;
+  the title↔pill spacing moved to the pill's own margin-left. Verified
+  by raster: titles render intact with flush highlights, pill spacing
+  unchanged.
+- Post-mortem on the earlier false "verified": the check measured the
+  flex CONTAINER's width, which spans the row regardless of content —
+  it could never catch inter-item gaps. Lesson recorded: verify layout
+  bugs at the fragment level (client rects / raster), not container
+  boxes.
+- Related filter-spacing fix: with a search active, stray space
+  appeared above the first result group — the "A" divider's compact
+  `:first-child` margin stopped applying once "A" was hidden, so the
+  first VISIBLE divider kept the full 18px group margin. Replaced with
+  a sibling rule (`.gloss-entry:not(.hidden) ~ .gloss-letter`): the
+  compact 4px is now the base and only dividers with visible entries
+  above them get 18px — filtered and unfiltered lists start at the
+  identical 19px from the card top (verified both states + raster).
+
+### In-app Methodology tab synced to methodology.md (2026-07-12)
+
+- Both in-app methodology templates (GB + zone variants in ui.js) now
+  carry methodology.md's approved plain-language register — ported, not
+  reinvented; sections with no repo-doc counterpart (overnight summary,
+  refresh process, known limitations, the UI-specific stress bullets)
+  got the same style pass with substance intact. Punctuation now
+  matches the doc: no em dashes or prose semicolons in the templates
+  (the pre-existing pointer line and the stressFeedNote variable are
+  the two deliberate carve-outs). Improvements folded in during the
+  sync: nameplate reference values now render dynamically from
+  `Data.INTERCONNECTORS` (cannot drift from the constants), the CCGT
+  SRMC formula + η∈[0.45, 0.57] band and the 2 pp validation-guard
+  detail are now stated in-app, and the zone variant gained the IE
+  EIC-split paragraph.
+- New: inline glossary term links in the methodology prose (28 across
+  both variants, first mention per section) — dotted-underline
+  `.term-link`s that jump to the Glossary entry, mirroring the
+  glossary→methodology pills that already existed. Glossary entries
+  gained the standard scroll-margin so the jump lands below the topbar.
+- Execution was delegated (Sonnet) with orchestrator review: full
+  constants audit passed (one verified figure — the 8 Jan 2025 LoLP
+  0.294 example — was dropped as "uncorroborated" and restored in
+  review; it is live-verified against Elexon). Rendered output
+  spot-checked word-for-word against methodology.md; term-link
+  click-through, zone variant, and console verified in-browser.
+- Glossary highlight, structural fix: term titles now wrap their text
+  in a `.gloss-term-name` span, so search marks split text in a normal
+  inline context. Bare text fragments as anonymous flex items broke
+  both ways — flex gap rendered fake mid-word spaces, no-gap swallowed
+  real inter-word spaces ("BalancingMechanism"). With the span, the
+  title's rendered width is byte-stable under highlighting, and the
+  original flex gap (title↔pill) plus the intro tag's flush alignment
+  both return.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

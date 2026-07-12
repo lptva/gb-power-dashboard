@@ -86,6 +86,8 @@ const Data = (() => {
                        // under data/zones/<zone>/ (see plan/04)
   let bmu = null;      // observed dispatch snapshot (optional, GB only)
   let overnight = null; // AI overnight summary (optional, GB only)
+  let stress = null;    // daily stress metrics + flags (optional, GB only)
+  let warnings = null;  // filtered SYSWARN notices (optional, GB only)
 
   async function load(requestedZone = "GB") {
     const fetchJson = async (path, opts) => {
@@ -114,6 +116,8 @@ const Data = (() => {
     // etl/build_bmu_snapshot.py; absent until that script has run)
     bmu = null;
     overnight = null;
+    stress = null;
+    warnings = null;
     if (zone === "GB") {
       try { bmu = await fetchJson(`data/bmu_snapshot.json${v}`); }
       catch { bmu = null; }
@@ -123,6 +127,12 @@ const Data = (() => {
         overnight = await fetchJson("data/overnight_summary.json",
           { cache: "no-store" });
       } catch { overnight = null; }
+      // System-stress metrics + system warnings (optional — written by
+      // etl/fetch_stress.py; absent until that pipeline has run)
+      try { stress = await fetchJson(`data/stress_daily.json${v}`); }
+      catch { stress = null; }
+      try { warnings = await fetchJson(`data/warnings.json${v}`); }
+      catch { warnings = null; }
     }
     // Derived half-hourly columns (computed once)
     const icKeys = Object.keys(INTERCONNECTORS).filter((k) => hh[k]);
@@ -225,6 +235,26 @@ const Data = (() => {
     return promise;
   }
 
+  /* Lazily load one event day's 15 s frequency slice (System stress tab)
+     without touching the active dataset — same session-cache pattern as
+     loadZoneContext. Slices are small (~40 kB) grid-aligned arrays. */
+  const eventSliceCache = new Map();
+  function loadEventSlice(day) {
+    if (eventSliceCache.has(day)) return eventSliceCache.get(day);
+    const v = manifest ? `?v=${manifest.version}` : "";
+    const promise = fetch(`data/events/${day}/freq.json${v}`)
+      .then((resp) => {
+        if (!resp.ok) throw new Error(`events/${day}: HTTP ${resp.status}`);
+        return resp.json();
+      })
+      .catch((error) => {
+        eventSliceCache.delete(day); // allow retry after a transient failure
+        throw error;
+      });
+    eventSliceCache.set(day, promise);
+    return promise;
+  }
+
   /* True when a column carries any real signal (non-null AND non-zero).
      Constant-zero generation columns are TSO placeholders (e.g. IE solar)
      — display paths exclude them; the raw data keeps them. */
@@ -254,6 +284,9 @@ const Data = (() => {
     get manifest() { return manifest; },
     get bmu() { return bmu; },
     get overnight() { return overnight; },
+    get stress() { return stress; },
+    get warnings() { return warnings; },
+    loadEventSlice,
     get zone() { return zone; },
     currency, ZONE_INFO,
     FUELS, INTERCONNECTORS, STACK_ORDER, LOW_CARBON,
