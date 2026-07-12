@@ -6,7 +6,24 @@
 <title>GB Power Market Intelligence</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="favicon.ico" sizes="16x16">
-<link rel="stylesheet" href="css/style.css">
+<script>
+/* DEV-CACHE-BUSTER — development convenience only; review before any
+   hosted/"sellable" build (grep for DEV-CACHE-BUSTER, this block and the
+   script loader at the end of <body> are the only two sites).
+   Why: `python -m http.server` sends no cache headers, so browsers
+   heuristically cache the app's JS/CSS and serve STALE code after edits —
+   a recurring source of "the fix isn't on screen" review cycles. A <meta
+   cache-control> hint cannot fix this (it does not apply to subresources
+   in modern browsers), so instead: when served from localhost, a fresh
+   ?v= is appended to the app's own JS/CSS so every load is current. On
+   any other host DEV_CACHE_V is empty — URLs are byte-identical to the
+   plain tags and normal HTTP caching applies untouched. */
+var DEV_CACHE_V = (location.hostname === "localhost"
+  || location.hostname === "127.0.0.1") ? "?v=" + Date.now() : "";
+document.write('<link rel="stylesheet" href="css/style.css'
+  + DEV_CACHE_V + '">');
+</script>
+<noscript><link rel="stylesheet" href="css/style.css"></noscript>
 </head>
 <body>
 
@@ -16,6 +33,8 @@
     <span class="brand-name">Power Market Intelligence</span>
     <span class="brand-sub" id="data-window"></span>
     <span class="brand-sub data-age" id="data-age"></span>
+    <span class="brand-sub stress-chip hidden" id="stress-chip"
+          role="button" tabindex="0"></span>
   </div>
   <nav class="tabs" id="tabs">
     <button data-tab="overview" class="active">Overview</button>
@@ -24,6 +43,8 @@
     <button data-tab="merit">Merit order</button>
     <button data-tab="spreads">Spreads</button>
     <button data-tab="flows">Flows</button>
+    <button data-tab="stress">System stress</button>
+    <button data-tab="glossary">Glossary</button>
     <button data-tab="methodology">Methodology</button>
   </nav>
   <div class="controls">
@@ -410,12 +431,130 @@
     </div>
   </section>
 
+  <!-- ============ SYSTEM STRESS ============ -->
+  <section class="tab-panel hidden" data-panel="stress">
+    <div class="card span-2">
+      <div class="card-head">
+        <h2>Daily stress metrics
+          <span class="badge observed">Observed</span>
+          <span class="badge proxy">Derived flags</span></h2>
+        <p class="card-meta" id="stress-latest"></p>
+        <p>One row per day: seconds spent below 49.8&nbsp;Hz (bars), the
+           day's maximum settlement system price (line), and amber markers
+           on <b>flagged days</b>. The price here is <b>SSP, not MID</b>:
+           SSP is the settlement price of the balancing actions NESO
+           actually took — the realised cost of real-time scarcity, which
+           is the signal this detector exists to catch — where MID
+           measures traded wholesale sessions rather than what balancing
+           cost. A day is flagged by deterministic rules
+           on observed metrics — frequency excursions or max SSP above
+           their trailing-year 99th percentile, an Electricity Margin
+           Notice issued, or loss-of-load probability at/above 1% —
+           computed at build time, never in the browser. Flags mark
+           <em>notable</em> days; they are not a security-margin model.
+           Hover any day for its full metrics and the exact
+           value-vs-threshold of each flag.
+           <span class="info" data-method="stress">ⓘ</span></p>
+        <p class="card-meta" id="stress-meta"></p>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart tall" id="ch-stress-daily"></div>
+        <div class="chart-empty hidden" id="stress-empty">
+          No stress dataset available — run
+          <code>python etl/fetch_stress.py --backfill 365</code> to build
+          the trailing-year metrics.
+        </div>
+      </div>
+    </div>
+
+    <div class="card span-2">
+      <div class="card-head">
+        <h2>Event viewer — 15 s system frequency
+          <span class="badge observed">Observed</span>
+          <select id="stress-event" title="Flagged event day"></select></h2>
+        <p>Raw 15-second system frequency for <b>every flagged day in the
+           selected range</b> (the day list follows the 7D–1Y presets;
+           every flagged day keeps a slice regardless) — the trace is
+           frequency whatever the flag type, so a price- or
+           adequacy-flagged day can (and often does) show a calm grid.
+           Dashed lines mark the 49.8/50.2&nbsp;Hz operational band and
+           the 49.5&nbsp;Hz statutory floor. Implausible feed readings
+           (outside 45–55&nbsp;Hz) are shown as gaps, not excursions.</p>
+        <p class="card-meta" id="stress-event-meta"></p>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart tall" id="ch-stress-event"></div>
+        <div class="chart-empty hidden" id="stress-event-empty"></div>
+      </div>
+    </div>
+
+    <div class="card span-2">
+      <div class="card-head">
+        <h2>System warnings
+          <span class="badge observed">Observed</span></h2>
+        <p>NESO transmission-system warnings, filtered to Electricity
+           Margin Notices and emergency instructions, verbatim. Publish
+           stamps are UTC; <b>times quoted inside notice bodies are UK
+           local time</b> — the dashboard never converts or interprets
+           them. EMN cancellations are shown but do not count as
+           issuances.</p>
+      </div>
+      <div id="warnings-list" class="warnings-list"></div>
+    </div>
+  </section>
+
+  <!-- ============ GLOSSARY ============ -->
+  <section class="tab-panel hidden" data-panel="glossary">
+    <div class="tab-search">
+      <input type="text" id="gloss-search" class="tab-search-input"
+        placeholder="Search terms and definitions…"
+        autocomplete="off" spellcheck="false" aria-label="Search the glossary">
+      <button type="button" id="gloss-search-clear"
+        class="tab-search-clear hidden" aria-label="Clear search">×</button>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h2>Glossary</h2>
+        <p>Every term and abbreviation used on this dashboard, in plain
+           language, alphabetically — a lookup, not an explanation of how
+           anything is computed (that lives on the
+           <b>Methodology</b> tab; entries link across where relevant).
+           Terms tagged <span class="gloss-gb">GB market term</span> are
+           specific to the GB market this dashboard is built around —
+           they stay listed on other zones because the GB panels and
+           comparisons still reference them. Where a term has a formal
+           BSC definition, the entry links to Elexon's glossary; the
+           wording here is deliberately our own.</p>
+      </div>
+    </div>
+    <div class="gloss-layout">
+      <nav id="gloss-nav" class="gloss-nav" aria-label="Glossary A–Z"></nav>
+      <div class="card">
+        <div id="glossary-body" class="glossary"></div>
+        <p id="gloss-empty" class="tab-search-empty hidden"></p>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ METHODOLOGY ============ -->
   <section class="tab-panel hidden" data-panel="methodology">
+    <div class="tab-search">
+      <input type="text" id="method-search" class="tab-search-input"
+        placeholder="Search sections…"
+        autocomplete="off" spellcheck="false" aria-label="Search methodology">
+      <button type="button" id="method-search-clear"
+        class="tab-search-clear hidden" aria-label="Clear search">×</button>
+    </div>
     <div class="card"><div class="card-head"><h2>Methodology &amp; data provenance</h2>
     <p>Every series, formula, unit and limitation. Generated partly from the ETL
-       metadata so it cannot drift from the data.</p></div>
-    <div id="methodology-body" class="method-body"></div></div>
+       metadata so it cannot drift from the data.</p></div></div>
+    <div class="method-layout">
+      <nav id="method-toc" class="method-toc" aria-label="Methodology contents"></nav>
+      <div class="method-col">
+        <div id="methodology-body" class="method-body"></div>
+        <p id="method-empty" class="tab-search-empty hidden"></p>
+      </div>
+    </div>
   </section>
 
   <footer class="foot">
@@ -425,12 +564,30 @@
   </footer>
 </main>
 
+<!-- Back to top: one global button, shown after scrolling past a screen;
+     bottom-right so it never meets the top search bar or the sticky rails. -->
+<button type="button" id="back-to-top" class="back-to-top hidden"
+  aria-label="Back to top" title="Back to top">
+  <!-- Chevron, not a stemmed arrow: matches the app's caret language
+       (▾/▴ toggles) and reads lighter in a small circle. Path sits a
+       touch low in the viewBox to optically centre the apex. -->
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+    stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
+    stroke-linejoin="round"><path d="M5 15l7-7 7 7"/></svg>
+</button>
+
 <script src="vendor/echarts.min.js"></script>
-<script src="js/data.js"></script>
-<script src="js/metrics.js"></script>
-<script src="js/state.js"></script>
-<script src="js/charts.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/app.js"></script>
+<script>
+/* DEV-CACHE-BUSTER (part 2 of 2 — see the <head> block for the why).
+   document.write keeps these parser-blocking and in-order, exactly like
+   the plain tags they replace. The vendor bundle stays static above: it
+   never changes, and staying cached is what we want even in dev. On any
+   non-localhost host DEV_CACHE_V is "" and the emitted tags are
+   byte-identical to the originals. */
+["js/data.js", "js/metrics.js", "js/state.js", "js/terms.js",
+ "js/charts.js", "js/ui.js", "js/app.js"].forEach(function (src) {
+  document.write('<script src="' + src + DEV_CACHE_V + '"><\/script>');
+});
+</script>
 </body>
 </html>

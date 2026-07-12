@@ -6,9 +6,9 @@ Scheduler on Windows via install_schedule.ps1) or by hand:
 
     python3 ops/refresh.py        # any Python 3.10+; stdlib only
 
-Pipeline, matching the retired refresh.sh exactly: incremental dataset
-update (falls back to a full rebuild when no readable dataset exists) →
-BMU dispatch snapshot (non-fatal) → seven ENTSO-E zone refreshes
+Pipeline: incremental dataset update (falls back to a full rebuild when
+no readable dataset exists) → BMU dispatch snapshot (non-fatal) →
+system-stress metrics append (non-fatal) → seven ENTSO-E zone refreshes
 (non-fatal per zone) → AI overnight summary (non-fatal, and OPT-IN:
 skipped unless ENABLE_AI_SUMMARY=true, regardless of whether the claude
 CLI is installed — see ops/env_flags.py). Logs to
@@ -91,6 +91,12 @@ def main():
         # Observed dispatch snapshot (plan/05 Phase B).
         run([python, str(ROOT / "etl" / "build_bmu_snapshot.py")],
             "bmu snapshot refresh", fatal=False)
+
+        # System-stress daily metrics + anomaly flags (plan/06 workstream
+        # B). Incremental append; the one-off historical build is
+        # `python etl/fetch_stress.py --backfill 365`, run once by hand.
+        run([python, str(ROOT / "etl" / "fetch_stress.py")],
+            "stress metrics refresh", fatal=False)
 
         # Counterparty zone context (append-only history, ~6 kB/day/zone).
         # --days 7 keeps runs cheap; the merge handles the overlap.

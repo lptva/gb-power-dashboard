@@ -12,6 +12,32 @@
 
   document.getElementById("loading").classList.add("hidden");
   document.getElementById("main").classList.remove("hidden");
+
+  // The sticky topbar is the only element pinned above the content, and
+  // its height varies: the nav wraps to 2–3 rows at narrower widths. The
+  // sticky rails' top offset and the scroll-jump landing offset are both
+  // derived from this measured height (published as --topbar-h) rather
+  // than a hardcoded guess, so nothing clips under the topbar when it
+  // wraps. A ResizeObserver tracks the topbar's own box, so the value
+  // stays correct through wraps and font-load reflow even when no window
+  // resize event fires (a plain resize listener went stale that way).
+  const topbar = document.querySelector(".topbar");
+  function syncTopbarHeight() {
+    document.documentElement.style.setProperty(
+      "--topbar-h", topbar.offsetHeight + "px");
+  }
+  syncTopbarHeight();                       // immediate value
+  // The topbar grows on font-load reflow (fallback font wraps to fewer
+  // rows than Inter) with no resize event, so also re-measure when fonts
+  // settle and whenever the box itself changes size.
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(syncTopbarHeight);
+  }
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncTopbarHeight).observe(topbar);
+  }
+  window.addEventListener("resize", syncTopbarHeight, { passive: true });
+
   document.getElementById("data-window").textContent =
     `${Metrics.fmtDate(Data.meta.window.start, "day")} → ` +
     `${Metrics.fmtDate(Data.meta.window.end, "day")} · UTC`;
@@ -21,8 +47,21 @@
   // Keep the header age honest while a tab stays open (in-memory timer
   // only — no browser storage).
   setInterval(UI.renderDataAge, 60 * 1000);
+  // Stress chip: amber when the latest stress day is flagged; clicking it
+  // jumps to the System stress tab.
+  document.getElementById("stress-chip").addEventListener("click", () =>
+    document.querySelector('#tabs button[data-tab="stress"]')?.click());
 
   /* ---- tabs ---- */
+  // Glossary and Methodology are static reference tabs, not live-data
+  // views: hide the market KPI strip there so it never implies those
+  // pages are time-sensitive. Shown on every other tab.
+  const REFERENCE_TABS = ["glossary", "methodology"];
+  function applyReferenceTabChrome(tab) {
+    const hide = REFERENCE_TABS.includes(tab);
+    document.getElementById("glance").classList.toggle("hidden", hide);
+    document.getElementById("kpi-strip").classList.toggle("hidden", hide);
+  }
   document.getElementById("tabs").addEventListener("click", (event) => {
     const button = event.target.closest("button");
     if (!button) return;
@@ -31,6 +70,7 @@
     const tab = button.dataset.tab;
     document.querySelectorAll(".tab-panel").forEach((panel) =>
       panel.classList.toggle("hidden", panel.dataset.panel !== tab));
+    applyReferenceTabChrome(tab);
     State.set({ tab });
   });
 
@@ -64,7 +104,8 @@
   // rendering broken or misleading GB-costed panels.
   // Flows joins the list because interconnector data is not fetched for
   // ENTSO-E zones (cross-border flows are a separate document type).
-  const GB_ONLY_TABS = ["merit", "spreads", "flows"];
+  // System stress joins it because every input is a GB-only Elexon feed.
+  const GB_ONLY_TABS = ["merit", "spreads", "flows", "stress"];
   function applyZoneTabGating(zone) {
     const away = zone !== "GB";
     GB_ONLY_TABS.forEach((t) => {
@@ -152,23 +193,41 @@
   document.querySelectorAll(".info").forEach((el) => {
     el.addEventListener("click", () => {
       document.querySelector('#tabs button[data-tab="methodology"]').click();
-      const anchor = document.getElementById("m-" + el.dataset.method);
-      if (anchor) anchor.scrollIntoView({ behavior: "smooth" });
+      UI.jumpToMethodology("m-" + el.dataset.method, "smooth");
     });
   });
+
+  /* ---- back to top (one global button, all long tabs) ---- */
+  const backToTop = document.getElementById("back-to-top");
+  if (backToTop) {
+    const SHOW_AFTER = 500; // ~one screen; hidden at the top of the page
+    const syncBackToTop = () =>
+      backToTop.classList.toggle("hidden", window.scrollY < SHOW_AFTER);
+    window.addEventListener("scroll", syncBackToTop, { passive: true });
+    backToTop.addEventListener("click", () =>
+      window.scrollTo({ top: 0, behavior: "auto" })); // instant, like the rails
+    syncBackToTop();
+  }
 
   /* ---- render on any state change ---- */
   State.subscribe((state) => {
     UI.renderGlance();
     UI.renderOvernight(); // re-render on zone switch (GB-only content)
     UI.renderKpis();
+    UI.renderStressChip(); // GB-only; follows zone switches
+    UI.renderWarnings();
     Charts.renderTab(state.tab);
   });
 
   UI.renderGlance();
   UI.renderOvernight();
   UI.renderKpis();
+  UI.renderStressChip();
+  UI.renderWarnings();
+  UI.renderGlossary(); // static, zone-neutral — rendered once
   UI.renderAssumptions();
   UI.renderMethodology();
+  applyReferenceTabChrome(State.get().tab);
   Charts.renderTab("overview");
+  syncTopbarHeight(); // re-measure after the full header has rendered
 })();

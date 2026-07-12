@@ -11,7 +11,14 @@ buildable workstreams, separate commits per workstream.
 Design approved 2026-07-11 (decisions D1–D12 resolved by owner). Workstreams
 B (#22) and C (#24) are cleared for build, in that order; workstream A (#23)
 is **closed as no-build** with the rationale recorded below — issue #23 to be
-closed. Build not started.
+closed.
+
+Workstream B progress (2026-07-11): etl/fetch_stress.py built with the
+365-day backfill run and verified (payloads 386 kB of the 512 kB budget);
+flag rules live, with retro-test outcomes recorded under the flag-rules
+section; 18 unit tests added (five evidence dates + rule mechanics + the
+FREQ artefact filter). Pending owner review of the data before the UI tab,
+header chip, and ops/refresh.py wiring are built.
 
 ---
 
@@ -90,6 +97,11 @@ the methodology entry.
 - Elexon `/datasets/FREQ` silently ignores unknown params (returns latest
   ~5 h with HTTP 200) → range assertion on returned timestamps is mandatory;
   ~1 day per call.
+- The FREQ feed also carries literal-0.0 Hz artefact samples (found on 18
+  days of the 2025-26 backfill, worst 404 samples in one day) — without a
+  plausibility band each counts as a giant fake excursion below both
+  thresholds. Samples outside 45-55 Hz are treated as gaps, never readings
+  (GB has never left 48.8-50.5 in the modern record).
 - SYSWARN notice **bodies** are UK local time; **publish stamps** are UTC —
   never mix.
 - NESO CKAN: exact `filters={...}`, never fuzzy `q=` (matches any column).
@@ -127,15 +139,48 @@ the methodology entry.
      day/yr) rather than routine winter tightness. DRM is stored for context
      but is not a flag trigger.
   Flags are computed in the ETL and shipped in the JSON — deterministic, no
-  client-side statistics. Retro-test the rules against the five table dates
-  as unit-test fixtures: expected — 23 Jun 2026 fires FREQUENCY+PRICE+EMN,
-  8 Jan 2026 fires ADEQUACY only (via percentile term), 8 Jan 2025 fires all
-  four.
+  client-side statistics. The five table dates are unit-test fixtures.
+
+  **Live retro-test outcomes (365-day backfill, 2026-07-11)** — the approved
+  rules run on real data:
+  - 23 Jun 2026 fires FREQUENCY+PRICE+EMN as expected (2,895 s vs threshold
+    415.5 s; £800 vs £356.87; every metric matches Phase A to the digit).
+  - 8 Jan 2026 fires ADEQUACY **and PRICE** — the design guessed "adequacy
+    only", but £434.85 was legitimately the 4th-highest SSP day of the year
+    (trailing p99 £355.96). Adequacy fired via the 0.01 floor, not the
+    percentile term (trailing LoLP p99 sat below the floor).
+  - 8 Jan 2025 is outside the window; fixture-verified — and live SYSWARN
+    shows two EMN issuances published on the day itself, so publish-date
+    attribution fires all four on that day's data too.
+  - Calibration note, historical window only: 21 Nov 2025 (240 s) and
+    5 Jan 2026 (225 s — by 8 seconds) fire FREQUENCY against thin
+    point-in-time baselines (133 / 178 days of history in the backfill's
+    early months); a full-year baseline puts the same threshold at
+    ~400-500 s. Every day from launch forward is judged against a full
+    365-day window, so the effect is confined to the backfill's first ~6
+    months and scrolls out with retention. Accepted as-is — flags carry
+    value + threshold, so the surface shows the context. (The alternative,
+    raising min-baseline from 90 to 180 days, would also silence the
+    Oct-2025 price cluster; not taken.)
+  - Whole-window yield: 17 flagged days of 365 (8 frequency, 7 price,
+    6 EMN, 1 adequacy; some days multi-flag) — a sensible "notable
+    days" rate.
 - **Backfill (resolved D6)**: one-off 365-day FREQ/LoLP/SSP backfill (~365
-  FREQ calls, one evening run, ~150 MB local cache; shipped JSON stays
-  ~40 kB), then daily append.
-- **Event slices (resolved D8)**: auto-generated for days firing the EMN or
-  FREQUENCY flag, capped at the 6 most recent events.
+  FREQ calls, one evening run, ~150 MB local cache), then daily append.
+  Ran 2026-07-11: gap-free on all three sources. Actual payloads:
+  stress_daily.json 125 kB (the ~40 kB estimate predated per-horizon
+  fields and flag detail), warnings.json 27 kB, six event slices 234 kB —
+  total 386 kB against the 512 kB budget.
+- **Event slices (resolved D8; owner-revised 2026-07-11 after review)**:
+  auto-generated for **every flagged day**, any flag type, no recency cap.
+  Original D8 (EMN/frequency only, 6 most recent) was superseded once the
+  cost was scoped: slices are lazy-fetched per view, so lifting the cap
+  changes on-disk size only (~40 kB per flagged day; 17 days ≈ 680 kB),
+  never the eager page payload — the <0.5 MB budget is restated as
+  applying to the eagerly-fetched files (stress_daily + warnings,
+  ~152 kB). The viewer's day list additionally follows the global range
+  presets — presentation only; slice generation stays range-independent,
+  so no cap logic returns through the back door.
 - **UI (resolved D7)**: new GB-only "System stress" tab (nav button + panel +
   renderTab case + GB_ONLY_TABS entry, app.js:67): daily strip chart
   (excursion-seconds bars + max-SSP line + adequacy markers, flagged days
@@ -158,7 +203,9 @@ the methodology entry.
 
 D4 outcome thresholds = frequency p99 + 60 s floor, SSP p99 · D5 adequacy
 floor = 0.01, DRM not a trigger · D6 = 365-day one-off backfill · D7 = tab +
-header chip · D8 = auto-slice on EMN/FREQUENCY flags, cap 6.
+header chip · D8 = slice every flagged day, no cap (owner-revised
+2026-07-11; originally EMN/FREQUENCY-only capped at 6 — see the event-
+slices bullet for the cost scoping that motivated the revision).
 
 ---
 
