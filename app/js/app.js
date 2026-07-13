@@ -63,6 +63,9 @@
     const hide = REFERENCE_TABS.includes(tab);
     document.getElementById("glance").classList.toggle("hidden", hide);
     document.getElementById("kpi-strip").classList.toggle("hidden", hide);
+    // No live view behind these tabs, so the CSV button is a false
+    // affordance there (it would download the market file); hide it.
+    document.getElementById("export-btn").classList.toggle("hidden", hide);
   }
   document.getElementById("tabs").addEventListener("click", (event) => {
     const button = event.target.closest("button");

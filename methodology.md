@@ -106,6 +106,89 @@ Nameplate reference capacities are shown for context and never used in the near-
 
 **Congestion proxy** (Utilisation ranking column, an approximation, NOT a shadow price). A half-hour is flagged only when BOTH conditions hold: |flow| at or above 90% of the cable's operational ceiling, AND the GB−zone spread wide in the direction the flow earns. "Wide" means importing with Δ = GB − zone at or beyond the market's p75 (and ≥ £5/MWh), or exporting with Δ at or beyond the p25 (and ≤ −£5/MWh). The spread population is every overlap half-hour for that market over the full accumulated zone window. Those thresholds are fixed. They do not move when the view range changes, and cables landing in the same zone share them. Why a proxy rather than an observation: GB left the EU single day-ahead coupling (SDAC) at the end of 2020. Capacity on GB–EU interconnectors is allocated through explicit day-ahead capacity auctions that close before the energy auctions, and the TCA's proposed replacement (multi-region loose volume coupling) remains unimplemented (checked 2026-07-10). So no flow-based shadow price exists to observe. Two exclusions are deliberate. Wide spread with slack flow is not flagged, because that pattern is consistent with an outage or ramp limit rather than scarce capacity. At-ceiling flow against the price signal is not flagged, because that is emergency-action shaped: at-limit, but not congestion rent. Known limitation, recorded so it is never re-investigated: a full RAM decomposition (IVA / FRM / AAC / Fnrao / F0−Fnrao, as shown on flow-based CCR dashboards) cannot be built for GB. It needs TSO-level flow-based allocation data that does not exist for per-cable explicitly allocated interconnectors, and simulating the components would fabricate data.
 
+## CSV downloads
+
+The ⤓ CSV button downloads the data behind the active tab. The filename
+encodes the tab, the date window and, where the tab has one, the selected
+resolution. The button is hidden on Glossary and Methodology, since neither
+view has data behind it.
+
+**`<zone>_market_<from>_<to>_<res>.csv`** (Overview, Prices, Generation).
+Observed data, net imports derived.
+
+| Column | Contents |
+|---|---|
+| `timestamp_utc` | interval start, ISO |
+| `price_<currency>_mwh` | zone's settlement currency, lower-cased code |
+| `demand` | MW |
+| one column per fuel | only fuels that carry a real signal in this zone |
+| `net_imports_mw` | present only where interconnector data exists (GB) |
+
+Values are bucket means at the selected resolution.
+
+**`gb_spreads_<from>_<to>.csv`** (Spreads). Observed inputs, Estimated
+spreads, coal Proxy or Assumption depending on source. Existing daily
+columns, including `carbon_is_ffill` and `coal_is_ffill`. The coal trio
+(`coal_proxy_gbp_mwh_th`, `coal_is_ffill`, `clean_dark_gbp_mwh`) appears
+only when a coal price exists. A manual coal entry overrides the ETL proxy
+and leaves `coal_is_ffill` blank for that row.
+
+**`gb_flows_<from>_<to>_<res>.csv`** (Flows). `timestamp`, `net_imports_mw`,
+and one signed MW column per cable, positive for import. Two honesty notes:
+
+- Per-cable cells keep gaps as gaps, but `net_imports_mw` counts a missing
+  cable reading as zero. A row with a gap in one cable therefore does not
+  sum exactly across the row. This is existing behaviour, stated here, not
+  fixed.
+- Utilisation and congestion columns are deliberately absent. They are
+  window-level derived views, not per-row quantities (see the Utilisation
+  ranking and Congestion proxy entries above): the ceilings come from a
+  trailing 90-day window, so a per-row percentage would be a metric the
+  tab never computes. To reproduce the ranking table's ceilings and
+  near-capacity shares from an export, take a 30-minute export covering
+  the trailing 90 days (the 3M preset or longer) and apply the documented
+  rules: the 4th-largest reading per direction, the 90% near-capacity
+  threshold, and the 5% nameplate floor for treating a direction as
+  offline. The congestion proxy is NOT reproducible from exports alone.
+  It also needs the counterparty day-ahead price series, which is not in
+  this file.
+
+**`gb_stress_<from>_<to>.csv`** (System stress, daily). The metric columns
+mirror the `stress_daily.json` fields already tabled in the System stress
+section above, so they are not repeated here, plus `emn_count` and `flags`.
+
+`emn_count` is the number of Electricity Margin Notices issued that day,
+observed from Elexon SYSWARN with publish-date attribution and
+cancellation notices excluded. 0 means no EMN was issued that day. In the
+underlying `stress_daily.json` the key is present only on days with at
+least one issuance, and the CSV writes the zero explicitly.
+
+`flags` is the day's fired flag types joined with a `+` sign, empty when
+none fired. Per-flag values and thresholds, and the display-only `pctl`
+percentile context, stay in `stress_daily.json`, which this file points at
+rather than duplicating.
+
+**`gb_merit_<date>.csv`** (Merit order). One row per plotted tranche of the
+modelled curve, sorted SRMC ascending. Estimated throughout. It is a
+snapshot at the latest observed inputs, dated by the window end, not a
+range series.
+
+| Column | Meaning |
+|---|---|
+| `capacity_basis` | `latest_observed` for wind and solar, `p98_observed` for everything else |
+| `contains_assumptions` | true where the technology's SRMC range is a broad estimate (see Formulas above) |
+| `gas_sap_gbp_mwh_th`, `carbon_uka_gbp_t`, `coal_gbp_mwh_th` (when present) | the constant inputs held fixed across every row, so the file is self-reproducing against the SRMC formulas above |
+
+Two related exports live elsewhere, not in this file: the observed-dispatch
+panel's raw per-unit data is already a served file at
+`data/bmu_snapshot.json` (schema documented above), and the SRMC-vs-price
+time series is reproducible from the spreads CSV plus the CCGT SRMC
+formula above.
+
+No export contains free text. Every value is a number, an ISO date or
+timestamp, a boolean, or a value from a fixed token set, because the CSV
+writer does no comma-escaping.
+
 ## Zone set (Europe extension)
 
 Two inclusion rules, never mixed silently. *Interconnected* zones are GB's physical counterparty bidding zones, one per cable landing market: FR (IFA, IFA2, ElecLink), NL (BritNed), BE (Nemo), NO_2 (North Sea Link), DK_1 (Viking Link) and IE/SEM (Moyle, EWIC, Greenlink). DE_LU has **no direct GB cable**. It is included as a *reference market* only, the European price anchor, labelled "· ref" in the switcher and flagged on the Methodology tab so it is never read as a flow counterparty. Settlement currency is read from each zone's A44 response (EUR for all current zones, NO_2 included), never assumed. Merit order, Spreads and Flows stay GB-only: there are no per-zone SRMC assumptions, ENTSO-E data has no CCGT/OCGT split, and cross-border flows are not fetched per zone. Those tabs therefore hide off-GB, and the in-app Methodology tab says why. IE quirk: ENTSO-E publishes each document type against a specific area type. Day-ahead prices sit under the SEM bidding-zone EIC, and load sits under the Ireland control-area EIC. Both codes are current, and the fetcher handles the split automatically, confirmed by probing the API directly and against ENTSO-E's published area-code documentation.

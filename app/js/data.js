@@ -286,6 +286,22 @@ const Data = (() => {
     return result;
   }
 
+  /* Merit-order capacity proxy (GW) per technology. Single source shared
+     by the merit-curve chart AND its CSV export so the two can never
+     disagree: p98 of observed output for dispatchables, latest observed
+     output for must-run wind/solar. Everything here is Estimated. */
+  function meritCapacityGw() {
+    const cap = {};
+    ["NUCLEAR", "BIOMASS", "NPSHYD", "CCGT", "OCGT", "COAL"].forEach((k) => {
+      const q = hhQuantile(k, 0.98);
+      cap[k] = q == null ? null : q / 1000;
+    });
+    const windNow = latest("WIND"), solarNow = latest("solar");
+    cap.WIND = windNow ? windNow.value / 1000 : null;
+    cap.solar = solarNow ? solarNow.value / 1000 : null;
+    return cap;
+  }
+
   return {
     load,
     get hh() { return hh; },
@@ -302,6 +318,6 @@ const Data = (() => {
     currency, ZONE_INFO,
     FUELS, INTERCONNECTORS, STACK_ORDER, LOW_CARBON,
     hhRange, aggregate, aggregateArrays, dailySlice, latest, latestDaily,
-    hhQuantile, hasSignal, loadZoneContext, CABLE_ZONE,
+    hhQuantile, hasSignal, meritCapacityGw, loadZoneContext, CABLE_ZONE,
   };
 })();
