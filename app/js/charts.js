@@ -772,14 +772,9 @@ const Charts = (() => {
     const price = Data.latest("price");
     const rows = Metrics.meritLadder(gas.value, carbonRow.value, a);
 
-    const cap = {};
-    ["NUCLEAR", "BIOMASS", "NPSHYD", "CCGT", "OCGT", "COAL"].forEach((k) => {
-      const q = Data.hhQuantile(k, 0.98);
-      cap[k] = q == null ? null : q / 1000;
-    });
-    const windNow = Data.latest("WIND"), solarNow = Data.latest("solar");
-    cap.WIND = windNow ? windNow.value / 1000 : null;
-    cap.solar = solarNow ? solarNow.value / 1000 : null;
+    // Capacity proxy shared with the CSV export (Data.meritCapacityGw)
+    // so the downloaded tranches cannot disagree with the plotted curve.
+    const cap = Data.meritCapacityGw();
 
     const steps = Metrics.meritCurveSteps(rows, cap);
     const demand = Data.latest("demand");

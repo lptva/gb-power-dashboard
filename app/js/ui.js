@@ -850,6 +850,14 @@ const UI = (() => {
         : `<p>No reporting gaps detected in this window: every series the
              TSO publishes is complete.</p>`}
 
+      <h3 id="m-csv">CSV downloads</h3>
+      <p>Off GB, only the market CSV exists:
+         <code>&lt;zone&gt;_market_&lt;from&gt;_&lt;to&gt;_&lt;res&gt;.csv</code>,
+         priced in this zone's own reported settlement currency
+         (<code>${meta.currency}</code>). The Spreads, Merit order, Flows
+         and System stress files do not apply here, because the GB-only
+         tabs behind them are hidden for this zone.</p>
+
       <h3 id="m-gbonly">What stays GB-only for this zone, and why</h3>
       <ul>
         <li><b>Merit order</b> and <b>Spreads</b>. The SRMC cost model is
@@ -1523,6 +1531,74 @@ const UI = (() => {
          (<code>etl/fetch_stress.py</code>, non-fatal). First-time build:
          <code>--backfill 365</code>.</p>
 
+      <h3 id="m-csv">CSV downloads</h3>
+      <p>The ⤓ CSV button downloads the data behind the active tab. The
+         filename encodes the tab, the date window and, where the tab has
+         one, the selected resolution. It is hidden on Glossary and
+         Methodology, since neither view has data behind it.</p>
+      <p><code>&lt;zone&gt;_market_&lt;from&gt;_&lt;to&gt;_&lt;res&gt;.csv</code>
+         (Overview, Prices, Generation): a timestamp column, price in the
+         zone's own settlement currency, demand, one column per fuel that
+         carries a real signal in that zone, and <code>net_imports_mw</code>
+         where interconnector data exists (GB). Values are bucket means at
+         the selected resolution. Observed data, net imports derived.</p>
+      <p><code>gb_spreads_&lt;from&gt;_&lt;to&gt;.csv</code> (Spreads): the
+         existing daily columns, including <code>carbon_is_ffill</code> and
+         <code>coal_is_ffill</code>. The coal trio (proxy price, ffill flag,
+         clean dark spread) appears only when a coal price exists, and a
+         manual coal entry leaves the ffill flag blank for that row.
+         Observed inputs, Estimated spreads, coal Proxy or Assumption
+         depending on source.</p>
+      <p><code>gb_flows_&lt;from&gt;_&lt;to&gt;_&lt;res&gt;.csv</code>
+         (Flows): a timestamp, <code>net_imports_mw</code>, and one signed
+         MW column per cable, positive for import. Two things worth
+         knowing. First, per-cable cells keep gaps as gaps, but
+         <code>net_imports_mw</code> counts a missing cable reading as
+         zero, so a row with a gap will not sum exactly across it. That is
+         existing behaviour, stated here, not fixed. Second, utilisation
+         and congestion columns are deliberately absent: they are
+         window-level views built from a trailing 90-day ceiling window
+         (see Utilisation ranking and Congestion proxy above), not
+         quantities this tab computes per row. To reproduce the ranking
+         table from an export, take a 30-minute export covering the
+         trailing 90 days (the 3M preset or longer) and apply the
+         documented rules: the 4th-largest reading per direction, the 90%
+         near-capacity threshold and the 5% nameplate floor for treating a
+         direction as offline. The congestion proxy cannot be reproduced
+         from exports at all, because it also needs the counterparty
+         day-ahead price series, which this file does not carry.</p>
+      <p><code>gb_stress_&lt;from&gt;_&lt;to&gt;.csv</code> (System stress,
+         daily): the metric columns mirror the <code>stress_daily.json</code>
+         fields tabled above, plus <code>emn_count</code> and
+         <code>flags</code>. <code>emn_count</code> is the number of
+         Electricity Margin Notices issued that day, observed from Elexon
+         SYSWARN with publish-date attribution and cancellation notices
+         excluded. 0 means no EMN was issued that day. In
+         <code>stress_daily.json</code> itself the key is present only on
+         days with at least one issuance, and the CSV writes the zero
+         explicitly. <code>flags</code> is the day's fired flag types
+         joined with a "+", empty when none fired. Per-flag values and
+         thresholds, and the display-only percentile context, stay in
+         <code>stress_daily.json</code>, which this file points at rather
+         than repeating.</p>
+      <p><code>gb_merit_&lt;date&gt;.csv</code> (Merit order): one row per
+         plotted tranche of the modelled curve, SRMC ascending, Estimated
+         throughout. It is a snapshot at the latest observed inputs, dated
+         by the window end, not a range series. <code>capacity_basis</code>
+         reads <code>latest_observed</code> for wind and solar and
+         <code>p98_observed</code> for everything else,
+         <code>contains_assumptions</code> flags technologies whose SRMC
+         range is a broad estimate, and the constant input columns (gas
+         SAP, UKA, coal when present) repeat on every row so the file is
+         self-reproducing against the SRMC formulas above. The
+         observed-dispatch panel's raw per-unit data is a separate served
+         file, <code>data/bmu_snapshot.json</code>, and the SRMC-vs-price
+         time series is reproducible from the spreads CSV plus the CCGT
+         SRMC formula.</p>
+      <p>No export contains free text. Every value is a number, an ISO
+         date or timestamp, a boolean, or a value from a fixed token set,
+         because the CSV writer does no comma-escaping.</p>
+
       <h3 id="m-limits">Known limitations</h3>
       <ul>
         <li>MID is a proxy, not the day-ahead auction price.</li>
@@ -1547,66 +1623,209 @@ const UI = (() => {
 
   /* ---------------- CSV export ---------------- */
 
+  /* Per-tab CSV builders. Each takes (st, win) — win is State.window() —
+     and returns { columns, name }: columns is the {header: array} object
+     Metrics.toCsv expects, name is the download filename. The tab keys
+     match index.html data-tab exactly (note "generation", not "gen").
+     HARD RULE: no free-text columns in any export — Metrics.toCsv does no
+     comma-escaping, so every value stays a number, ISO date/timestamp,
+     boolean, or closed token set (that is why merit's `note` is dropped
+     and stress flags collapse to a "+"-joined type set). */
+
+  /* Zone-aware market export (Overview/Prices/Generation): whatever fuel
+     columns the active zone actually carries (Data.* is already swapped
+     per zone by Data.load), plus net imports only where interconnector
+     data exists (GB). Price header carries the zone's settlement
+     currency, not hardcoded GBP. */
+  function buildMarketCsv(st, win) {
+    const { fromTs, toTs, fromIso, toIso } = win;
+    const sec = State.bucketSeconds();
+    const zone = st.zone.toLowerCase();
+    const curCode = (st.zone === "GB" ? "GBP"
+      : (Data.meta.currency || "EUR")).toLowerCase();
+    // hasSignal excludes absent AND constant-zero placeholder columns
+    // (e.g. IE solar) — their zeros are TSO artefacts, not output.
+    const keys = ["price", "demand",
+      ...Data.STACK_ORDER.filter((k) => Data.hasSignal(k)),
+      ...(Object.keys(Data.INTERCONNECTORS).some((k) => Data.hh[k])
+        ? ["netImports"] : [])];
+    const columns = {};
+    keys.forEach((k) => {
+      const agg = Data.aggregate(k, fromTs, toTs, sec);
+      if (!columns.timestamp_utc) {
+        columns.timestamp_utc = agg.t.map((t) =>
+          new Date(t).toISOString());
+      }
+      const header = k === "price" ? `price_${curCode}_mwh`
+        : k === "netImports" ? "net_imports_mw" : k.toLowerCase();
+      columns[header] = agg.v.map((v) =>
+        v == null ? null : +v.toFixed(2));
+    });
+    const name = `${zone}_market_${fromIso}_${toIso}_` +
+      `${State.effectiveResolution()}.csv`;
+    return { columns, name };
+  }
+
+  /* Daily clean-spread export. Coal trio (proxy, ffill flag, clean dark)
+     only when a coal price exists — manual entry overrides the ETL
+     proxy; ffill flag is blank under a manual override. */
+  function buildSpreadsCsv(st, win) {
+    const { fromIso, toIso } = win;
+    const a = st.assumptions;
+    const d = Data.dailySlice(fromIso, toIso,
+      ["price", "gas_sap", "carbon_uka_month", "carbon_ffill",
+       "coal_proxy_gbp_mwh", "coal_ffill"]);
+    const columns = {
+      date: d.d, price_gbp_mwh: d.price, gas_sap_gbp_mwh_th: d.gas_sap,
+      carbon_uka_gbp_t: d.carbon_uka_month, carbon_is_ffill: d.carbon_ffill,
+      clean_spark_gbp_mwh: Metrics.cleanSparkSpread(d.price, d.gas_sap,
+        d.carbon_uka_month, { eta: a.eta, efGas: a.efGas, vom: a.vom }),
+    };
+    const coal = State.coalInfo();
+    if (coal) {
+      const coalInput = coal.source === "manual"
+        ? coal.value : d.coal_proxy_gbp_mwh;
+      columns.coal_proxy_gbp_mwh_th = coal.source === "manual"
+        ? d.d.map(() => coal.value) : d.coal_proxy_gbp_mwh;
+      columns.coal_is_ffill = coal.source === "manual"
+        ? d.d.map(() => "") : d.coal_ffill;
+      columns.clean_dark_gbp_mwh = Metrics.cleanDarkSpread(
+        d.price, d.carbon_uka_month, coalInput,
+        { etaCoal: a.etaCoal, efCoal: a.efCoal, vomCoal: a.vomCoal });
+    }
+    const name = `gb_spreads_${fromIso}_${toIso}.csv`;
+    return { columns, name };
+  }
+
+  /* Merit-order snapshot: one row per plotted tranche, SRMC-ascending —
+     the exact tranche list the chart plots (Metrics.meritLadder →
+     meritCurveSteps at the latest observed gas SAP + UKA over the shared
+     Data.meritCapacityGw proxy). Fuel/carbon (and coal) inputs repeat on
+     every row so the snapshot is self-describing. `note` is excluded
+     (free text). Missing gas SAP or UKA → header-only file. */
+  function buildMeritCsv(st, win) {
+    const { toIso } = win;
+    const coal = State.coalInfo();
+    const header = ["technology", "srmc_gbp_mwh",
+      "cum_capacity_from_gw", "cum_capacity_to_gw", "tranche_gw",
+      "tech_srmc_low_gbp_mwh", "tech_srmc_high_gbp_mwh",
+      "tech_capacity_gw", "capacity_basis", "contains_assumptions",
+      "gas_sap_gbp_mwh_th", "carbon_uka_gbp_t",
+      ...(coal ? ["coal_gbp_mwh_th", "coal_source"] : [])];
+    const columns = {};
+    header.forEach((h) => { columns[h] = []; });
+
+    const gasRow = Data.latestDaily("gas_sap");
+    const carbonRow = Data.latestDaily("carbon_uka_month");
+    if (gasRow && carbonRow) {
+      // Re-derive the coal-augmented assumptions inline (3 lines over
+      // State.coalInfo()) rather than widening the Charts API; mirrors
+      // charts.js assumptionsWithCoal so CSV and chart share inputs.
+      const a = { ...st.assumptions,
+        coalPrice: coal ? coal.value : null,
+        coalSource: coal ? coal.source : null };
+      const rows = Metrics.meritLadder(gasRow.value, carbonRow.value, a);
+      const steps = Metrics.meritCurveSteps(rows, Data.meritCapacityGw());
+      steps.forEach((t) => {
+        columns.technology.push(t.key);
+        columns.srmc_gbp_mwh.push(t.srmc);
+        columns.cum_capacity_from_gw.push(t.x0);
+        columns.cum_capacity_to_gw.push(t.x1);
+        columns.tranche_gw.push(t.widthGw);
+        columns.tech_srmc_low_gbp_mwh.push(t.low);
+        columns.tech_srmc_high_gbp_mwh.push(t.high);
+        columns.tech_capacity_gw.push(t.techCapacityGw);
+        // capBasis distinction mirrored from the chart tooltip.
+        columns.capacity_basis.push(
+          t.key === "WIND" || t.key === "solar"
+            ? "latest_observed" : "p98_observed");
+        columns.contains_assumptions.push(t.assumed);
+        columns.gas_sap_gbp_mwh_th.push(gasRow.value);
+        columns.carbon_uka_gbp_t.push(carbonRow.value);
+        if (coal) {
+          columns.coal_gbp_mwh_th.push(coal.value);
+          columns.coal_source.push(coal.source);
+        }
+      });
+    }
+    const name = `gb_merit_${toIso}.csv`;
+    return { columns, name };
+  }
+
+  /* Interconnector flows: same aggregation/resolution machinery as the
+     market builder, one signed-MW column per cable that carries data
+     (Data.INTERCONNECTORS order; +ve = import). Utilisation/congestion
+     are deliberately omitted — they are window-level metrics on a
+     separate 90-day ceiling window, not per-row quantities this tab ever
+     computes (covered in the methodology); a per-row column would
+     fabricate a number. */
+  function buildFlowsCsv(st, win) {
+    const { fromTs, toTs, fromIso, toIso } = win;
+    const sec = State.bucketSeconds();
+    const columns = {};
+    const net = Data.aggregate("netImports", fromTs, toTs, sec);
+    columns.timestamp_utc = net.t.map((t) => new Date(t).toISOString());
+    columns.net_imports_mw = net.v.map((v) =>
+      v == null ? null : +v.toFixed(2));
+    Object.keys(Data.INTERCONNECTORS).forEach((k) => {
+      if (!Data.hh[k]) return;
+      const agg = Data.aggregate(k, fromTs, toTs, sec);
+      columns[`${k.toLowerCase()}_mw`] = agg.v.map((v) =>
+        v == null ? null : +v.toFixed(2));
+    });
+    const name = `gb_flows_${fromIso}_${toIso}_` +
+      `${State.effectiveResolution()}.csv`;
+    return { columns, name };
+  }
+
+  /* Daily system-stress export. Rows = stored days in [fromIso, toIso]
+     (same filter as the stress chart). Only closed-token/number columns:
+     flags collapse to a "+"-joined set of their `type` fields (the
+     free-text flag detail is dropped); emn_count defaults to 0 (the true
+     observed count — the key exists only on days with ≥1 issuance). No
+     stress data or no days in window → header-only (still valid). */
+  function buildStressCsv(st, win) {
+    const { fromIso, toIso } = win;
+    const metrics = ["freq_min", "freq_max", "freq_coverage_pct",
+      "secs_below_49p8", "secs_above_50p2", "secs_below_49p5",
+      "lolp_max_1h", "lolp_max_8h", "lolp_max_12h",
+      "drm_min_1h", "drm_min_8h", "drm_min_12h",
+      "ssp_max", "ssp_min", "ssp_max_sp"];
+    const columns = {};
+    ["date", ...metrics, "emn_count", "flags"].forEach((h) => {
+      columns[h] = [];
+    });
+    const s = Data.stress;
+    const keys = s && s.days
+      ? Object.keys(s.days).sort().filter((k) => k >= fromIso && k <= toIso)
+      : [];
+    keys.forEach((k) => {
+      const day = s.days[k];
+      columns.date.push(k);
+      metrics.forEach((m) => columns[m].push(day[m] ?? null));
+      columns.emn_count.push(day.emn_count ?? 0);
+      columns.flags.push((day.flags || []).map((f) => f.type).join("+"));
+    });
+    const name = `gb_stress_${fromIso}_${toIso}.csv`;
+    return { columns, name };
+  }
+
+  // Registry keyed by tab (index.html data-tab). Overview/Prices/
+  // Generation share the market builder; unknown tabs fall back to it.
+  const CSV_BUILDERS = {
+    overview: buildMarketCsv,
+    prices: buildMarketCsv,
+    generation: buildMarketCsv,
+    spreads: buildSpreadsCsv,
+    merit: buildMeritCsv,
+    flows: buildFlowsCsv,
+    stress: buildStressCsv,
+  };
+
   function exportCsv() {
     const st = State.get();
-    const { fromTs, toTs, fromIso, toIso } = State.window();
-    const sec = State.bucketSeconds();
-    let columns, name;
-
-    if (st.tab === "spreads" || st.tab === "merit") {
-      const a = st.assumptions;
-      const d = Data.dailySlice(fromIso, toIso,
-        ["price", "gas_sap", "carbon_uka_month", "carbon_ffill",
-         "coal_proxy_gbp_mwh", "coal_ffill"]);
-      columns = {
-        date: d.d, price_gbp_mwh: d.price, gas_sap_gbp_mwh_th: d.gas_sap,
-        carbon_uka_gbp_t: d.carbon_uka_month, carbon_is_ffill: d.carbon_ffill,
-        clean_spark_gbp_mwh: Metrics.cleanSparkSpread(d.price, d.gas_sap,
-          d.carbon_uka_month, { eta: a.eta, efGas: a.efGas, vom: a.vom }),
-      };
-      const coal = State.coalInfo();
-      if (coal) {
-        const coalInput = coal.source === "manual"
-          ? coal.value : d.coal_proxy_gbp_mwh;
-        columns.coal_proxy_gbp_mwh_th = coal.source === "manual"
-          ? d.d.map(() => coal.value) : d.coal_proxy_gbp_mwh;
-        columns.coal_is_ffill = coal.source === "manual"
-          ? d.d.map(() => "") : d.coal_ffill;
-        columns.clean_dark_gbp_mwh = Metrics.cleanDarkSpread(
-          d.price, d.carbon_uka_month, coalInput,
-          { etaCoal: a.etaCoal, efCoal: a.efCoal, vomCoal: a.vomCoal });
-      }
-      name = `gb_spreads_${fromIso}_${toIso}.csv`;
-    } else {
-      // Zone-aware export: whatever fuel columns the active zone actually
-      // carries (Data.* is already swapped per zone by Data.load), plus
-      // net imports only where interconnector data exists (GB). Price
-      // header carries the zone's settlement currency, not hardcoded GBP.
-      const zone = st.zone.toLowerCase();
-      const curCode = (st.zone === "GB" ? "GBP"
-        : (Data.meta.currency || "EUR")).toLowerCase();
-      // hasSignal excludes absent AND constant-zero placeholder columns
-      // (e.g. IE solar) — their zeros are TSO artefacts, not output.
-      const keys = ["price", "demand",
-        ...Data.STACK_ORDER.filter((k) => Data.hasSignal(k)),
-        ...(Object.keys(Data.INTERCONNECTORS).some((k) => Data.hh[k])
-          ? ["netImports"] : [])];
-      columns = {};
-      keys.forEach((k) => {
-        const agg = Data.aggregate(k, fromTs, toTs, sec);
-        if (!columns.timestamp_utc) {
-          columns.timestamp_utc = agg.t.map((t) =>
-            new Date(t).toISOString());
-        }
-        const header = k === "price" ? `price_${curCode}_mwh`
-          : k === "netImports" ? "net_imports_mw" : k.toLowerCase();
-        columns[header] = agg.v.map((v) =>
-          v == null ? null : +v.toFixed(2));
-      });
-      name = `${zone}_market_${fromIso}_${toIso}_` +
-        `${State.effectiveResolution()}.csv`;
-    }
-
+    const win = State.window();
+    const { columns, name } = (CSV_BUILDERS[st.tab] || buildMarketCsv)(st, win);
     const blob = new Blob([Metrics.toCsv(columns)], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);

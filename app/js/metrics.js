@@ -311,7 +311,11 @@ const Metrics = (() => {
     return { imp, exp };
   }
 
-  /* Build a CSV string from {header: array} columns. */
+  /* Build a CSV string from {header: array} columns. No comma-escaping —
+     do not add free-text columns to any export without revisiting this
+     function first: a single stray comma shifts every field on that row
+     and corrupts all downstream rows. Every exported value must stay a
+     number, ISO date/timestamp, boolean, or closed token set. */
   function toCsv(columns) {
     const keys = Object.keys(columns);
     const n = columns[keys[0]].length;

@@ -1019,6 +1019,50 @@ machine, worked through in priority order.
   orchestrator review; one review fix (crash path wrote "ok") and one
   cosmetic tooltip fix applied on top.
 
+### Per-tab CSV exports (#31, 2026-07-13)
+
+- What was wrong: the ⤓ CSV button had two paths, not five. Overview,
+  Prices and Generation correctly got the market file, but Flows and
+  System stress silently exported that same generic market file instead
+  of their own data, Merit order exported its cost-model *inputs*
+  (gas SAP, UKA) rather than the plotted curve, and the button stayed
+  live on the Glossary and Methodology reference tabs, where there is no
+  data behind either view to export.
+- What shipped: a `CSV_BUILDERS` registry keyed by tab (`app/js/ui.js`,
+  falls back to the market builder for any unmapped tab) and five
+  builders — `buildMarketCsv` (unchanged schema, now zone-aware and
+  currency-labelled), `buildSpreadsCsv` (existing daily columns plus the
+  conditional coal trio), `buildMeritCsv` (new
+  `gb_merit_<date>.csv`, one row per plotted SRMC tranche, sourced from
+  the same `Metrics.meritLadder` → `meritCurveSteps` path the chart uses),
+  `buildFlowsCsv` (new `gb_flows_<from>_<to>_<res>.csv`, one signed MW
+  column per cable) and `buildStressCsv` (new
+  `gb_stress_<from>_<to>.csv`, the daily metric columns plus `emn_count`
+  and a `+`-joined `flags` column). The merit builder now shares
+  `Data.meritCapacityGw()` with the chart rather than recomputing the
+  capacity proxy, so chart and export cannot drift apart. The export
+  button is hidden on Glossary and Methodology. `Metrics.toCsv` does no
+  comma-escaping, so every builder was audited to keep every column a
+  number, ISO date/timestamp, boolean or fixed token set — merit's `note`
+  field is dropped for exactly this reason.
+- Two deliberate omissions, not oversights: the flows export carries no
+  utilisation or congestion columns, because both are window-level views
+  built from a rolling 90-day ceiling (see the Utilisation ranking and
+  Congestion proxy sections), not a quantity the tab computes per row —
+  methodology.md states the reproduction path (a 30-minute, trailing
+  90-day export plus the documented rules) and the hard limit (the
+  congestion proxy also needs the counterparty day-ahead series, which
+  no export carries). The stress export carries no per-flag
+  thresholds/values or the display-only `pctl` percentile context; it
+  points at `stress_daily.json`, the source of truth, rather than
+  duplicating it into every CSV.
+- Docs: a new "CSV downloads" section in `methodology.md` (between
+  Formulas and Zone set) and matching `m-csv` sections in both in-app
+  Methodology templates (`app/js/ui.js`) — GB's between Refresh process
+  and Known limitations, the zone variant's noting that only the market
+  file exists off GB, since the GB-only tabs and files behind it are
+  hidden for those zones.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

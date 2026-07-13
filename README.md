@@ -149,6 +149,10 @@ The Merit order tab – the modelled SRMC merit-order curve with its implied cle
 |---|---|
 | ![Prices tab — wholesale price with gas, carbon and demand drivers overlaid, price distribution histogram, intraday shape, and price vs net load](docs/images/prices.png) | ![Flows tab — ten interconnectors stacked with net flow, import dependency, and the counterparty context card showing IFA flow against French day-ahead vs GB price](docs/images/flows.png) |
 
+The System stress tab – daily frequency excursions and settlement price extremes with amber-flagged days, the 15-second frequency event viewer, and the verbatim NESO warnings feed:
+
+![System stress tab — daily strip chart of frequency excursion seconds and settlement price extremes with amber anomaly flags, a 15-second frequency event viewer, and the verbatim EMN and emergency warnings list; all real GB data](docs/images/system-stress.png)
+
 Every value in these captures is what the app computes from the public sources – nothing is mocked up for the screenshots, which is also why the timestamps in them will lag the repository's live data.
 
 ## Known limitations
