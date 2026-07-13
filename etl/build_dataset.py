@@ -50,6 +50,7 @@ import json
 import os
 import re
 import ssl
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -934,3 +935,11 @@ if __name__ == "__main__":
     if args.no_cache:
         USE_CACHE = False
     build(args.days, incremental=args.incremental)
+    if not os.environ.get("GB_DASH_ORCHESTRATED"):
+        # Standalone run: only the core dataset was updated. Printed last
+        # (stderr) so it survives past whatever scrolled before it.
+        print("\nNOTE: this updated the core dataset only. Four steps did "
+              "not run: BMU dispatch snapshot, system-stress metrics, "
+              "counterparty zone data, AI overnight summary.\n"
+              "For the full routine refresh, run: python3 ops/refresh.py",
+              file=sys.stderr)

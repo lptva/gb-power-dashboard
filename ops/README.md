@@ -13,7 +13,13 @@ in order:
 
 1. `python etl/build_dataset.py --incremental` — append new settlement
    periods (~10 HTTP calls, seconds; falls back to a full rebuild if no
-   readable dataset exists).
+   readable dataset exists). **The only fatal step, and the only one
+   retried:** on failure it is attempted up to 3 times, waiting 2 minutes
+   after the first failure and 5 after the second, before the run is
+   treated as failed. This rides out a transient network-not-up-yet race
+   when the 07:00 fire lands on a just-woken laptop. Each failed attempt
+   and each wait is logged. The non-fatal steps below keep their
+   no-retry, warn-and-continue behaviour.
 2. `python etl/build_bmu_snapshot.py` — the observed-dispatch panel's
    latest settlement period (non-fatal if it fails).
 2b. `python etl/fetch_entsoe.py --zone <Z> --days 7` for each of the seven
@@ -49,6 +55,29 @@ in order:
 Output goes to `app/data/`, logs to `ops/logs/refresh_YYYY-MM-DD.log`.
 Non-zero exit if the core dataset refresh fails.
 
+### Status file — `app/data/refresh_status.json`
+
+Every run — success **or** failure, including the fatal-exit path — writes
+`app/data/refresh_status.json` (atomically, tmp + rename). It is the
+dashboard header's staleness/health signal; the header surfaces it. The
+file is gitignored (like the rest of `app/data/`). Schema:
+
+```json
+{
+  "ts": "2026-07-13T09:00:12Z",     // UTC ISO-8601 of run end
+  "outcome": "ok",                    // "ok" | "failed"
+  "failed_step": null,                // label of the fatal step, else null
+  "error": null,                      // one-line summary, else null
+  "steps_completed": ["core dataset refresh", "bmu snapshot refresh"],
+  "attempts": 1                       // attempts used on the core step
+}
+```
+
+`outcome` reflects whether the run as a whole survived: only the core
+dataset step failing after all retries makes it `"failed"`. A failed
+non-fatal step (a TSO zone, the AI summary) still leaves `outcome: "ok"`
+— it just won't appear in `steps_completed`.
+
 ## Install the schedule (one command, opt-in)
 
 **Mac:**
@@ -62,7 +91,15 @@ This generates the plist from
 repository location and an absolute Python interpreter, both of which
 launchd requires — backs up any previously installed copy to `*.bak`,
 writes it into `~/Library/LaunchAgents` and loads it. The job then runs
-**daily at 07:00 local time**.
+**daily at 07:00 and again at 09:00 local time**. The 09:00 fire is a
+fallback: a 07:00 fire on a just-woken laptop can race a not-yet-connected
+network, and the refresh is incremental/idempotent so a second run the
+same morning is cheap (and the paid AI summary is gated to once per UTC
+day, so 09:00 never re-pays for it).
+
+**Existing installs** predate the second fire time: re-run
+`bash ops/install_schedule.sh` after pulling to regenerate and reload the
+plist with both intervals.
 
 Useful commands afterwards:
 
@@ -102,16 +139,23 @@ with the path replaced by wherever you cloned the repository — is:
 
 ## Honest caveats
 
-- **Sleep**: with launchd the job fires on wake after a missed 07:00, but if
-  the laptop stays asleep all day the dataset simply stays stale — nothing
-  retries in the background of a closed laptop. For guaranteed daily runs,
-  this belongs on an always-on host or a CI schedule (GitHub Actions cron
-  publishing `app/` to static hosting — tracked in the repository's
-  GitHub Issues).
-- **Failures land in the log, not in your face.** Check
-  `ops/logs/` occasionally, or `launchctl list` — a non-zero
-  `LastExitStatus` means the last run failed. The dashboard footer's
-  "Dataset built …" timestamp is the user-visible staleness signal.
+- **Sleep**: with launchd the job fires on wake after a missed 07:00 or
+  09:00, but if the laptop stays asleep past both fire times all day the
+  dataset simply stays stale — nothing retries in the background of a
+  closed laptop, and the in-run retries only cover a network that comes up
+  within a few minutes of waking, not a lid that never opens. For
+  guaranteed daily runs, this belongs on an always-on host or a CI schedule
+  (GitHub Actions cron publishing `app/` to static hosting — tracked in the
+  repository's GitHub Issues).
+- **Failures are surfaced, but not pushed.** Every run writes
+  `app/data/refresh_status.json` and the dashboard header renders it, so a
+  failed core refresh is visible in the app rather than buried — but there
+  is **no push notification**: you still have to open the dashboard (or
+  glance at `ops/logs/`, or `launchctl list` for a non-zero
+  `LastExitStatus`) to notice. A laptop asleep at both fire times means a
+  stale day with no signal at all until it wakes and runs. The dashboard
+  footer's "Dataset built …" timestamp remains the underlying staleness
+  clock.
 - **07:00 rationale**: all upstream sources have published yesterday's data
   well before 07:00 (Elexon and PV_Live publish intraday; gas SAP is D+1;
   carbon/coal/FX are monthly).

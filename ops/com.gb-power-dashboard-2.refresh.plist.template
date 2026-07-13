@@ -19,8 +19,14 @@
     <string>__PROJECT_ROOT__/ops/refresh.py</string>
   </array>
 
-  <!-- Daily at 07:00 local time. launchd runs a missed interval on wake,
-       which is what we want on a laptop that sleeps overnight. -->
+  <!-- Fires daily at 07:00 and again at 09:00 local time. launchd runs a
+       missed interval on wake, which is what we want on a laptop that
+       sleeps overnight. The 09:00 fallback exists because a 07:00 fire on
+       a just-woken laptop can race a not-yet-connected network (DNS fails
+       before Wi-Fi associates); the refresh is incremental and idempotent,
+       so a second run the same morning is cheap — and refresh.py gates the
+       paid AI summary to once per UTC day so the second fire never re-pays
+       for it. -->
   <!-- launchd gives agents a minimal PATH; the EXTRA_PATH placeholder is
        resolved at install time to the directory holding the optional
        claude CLI (empty when not installed), so the AI summary step can
@@ -32,12 +38,20 @@
   </dict>
 
   <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>7</integer>
-    <key>Minute</key>
-    <integer>0</integer>
-  </dict>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>7</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>9</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+  </array>
 
   <!-- refresh.sh does its own dated logging; these catch anything emitted
        before the script's own redirection is in place. -->

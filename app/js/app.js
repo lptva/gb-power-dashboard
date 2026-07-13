@@ -44,9 +44,11 @@
   document.getElementById("foot-built").textContent =
     `Dataset built ${Metrics.fmtDate(Data.meta.built_at, "datetime")} UTC`;
   UI.renderDataAge();
+  UI.renderRefreshStatus(); // zone-neutral; same call site as the age badge
   // Keep the header age honest while a tab stays open (in-memory timer
   // only — no browser storage).
-  setInterval(UI.renderDataAge, 60 * 1000);
+  setInterval(() => { UI.renderDataAge(); UI.renderRefreshStatus(); },
+    60 * 1000);
   // Stress chip: amber when the latest stress day is flagged; clicking it
   // jumps to the System stress tab.
   document.getElementById("stress-chip").addEventListener("click", () =>

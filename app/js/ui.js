@@ -28,8 +28,40 @@ const UI = (() => {
     el.title = `Dataset built ${Metrics.fmtDate(builtAt, "datetime")} UTC. ` +
       (stale
         ? "More than 26 h old — the scheduled daily refresh has not run " +
-          "since; run: python etl/build_dataset.py --incremental"
+          "since; run: python3 ops/refresh.py"
         : "Refreshed daily at 07:00 local by the scheduled ETL run.");
+  }
+
+  /* ---------------- refresh-attempt failure chip ----------------
+     Distinct from #data-age: the age badge can only say how old the
+     dataset is, not whether the daily refresh attempt itself failed. A
+     dataset that still looks fresh can sit next to a pipeline that has
+     been failing for days. Reads app/data/refresh_status.json, written
+     by ops/refresh.py at the end of every run. Quiet on outcome "ok"
+     (the age badge already covers normal freshness), quiet when the
+     file is absent (fresh clones, pre-feature datasets). Zone-neutral:
+     the refresh pipeline is a machine-level run, not a per-zone one, so
+     this renders identically regardless of the active zone. */
+
+  function renderRefreshStatus() {
+    const el = document.getElementById("refresh-status");
+    if (!el) return;
+    const s = Data.refreshStatus;
+    if (!s || s.outcome !== "failed") {
+      el.textContent = "";
+      el.removeAttribute("title");
+      return;
+    }
+    const ageMs = Math.max(0, Date.now() - new Date(s.ts).getTime());
+    const hours = ageMs / 3600000;
+    const label = hours < 1 ? `${Math.floor(ageMs / 60000)}m`
+      : hours < 48 ? `${Math.floor(hours)}h`
+      : `${Math.floor(hours / 24)}d`;
+    const step = s.failed_step || "unknown step";
+    el.textContent = `· ⚠ last refresh attempt failed ${label} ago (${step})`;
+    el.title = `${s.error || "No error detail recorded"}. ` +
+      `Attempt ended ${Metrics.fmtDate(s.ts, "datetime")} UTC. ` +
+      "Recover with python3 ops/refresh.py";
   }
 
   /* ---------------- system-stress header chip ----------------
@@ -1583,7 +1615,8 @@ const UI = (() => {
     URL.revokeObjectURL(a.href);
   }
 
-  return { renderDataAge, renderStressChip, renderWarnings, renderGlossary,
+  return { renderDataAge, renderRefreshStatus, renderStressChip,
+           renderWarnings, renderGlossary,
            renderGlance, renderOvernight, renderKpis, renderAssumptions,
            renderMethodology, jumpToMethodology, exportCsv };
 })();
