@@ -977,6 +977,48 @@ machine, worked through in priority order.
   original flex gap (title↔pill) plus the intro tag's flush alignment
   both return.
 
+### Refresh resilience + pipeline-skip guard (#32, 2026-07-13)
+
+- Root cause 1 (silent partial refreshes): running `build_dataset.py`
+  directly updates the core dataset only — the other four pipeline
+  steps (BMU snapshot, stress metrics, zone data, AI summary) live
+  exclusively in `ops/refresh.py` and were left silently stale
+  (verified: a manual `--days 365` run left all four a day behind).
+  Now `build_dataset.py` prints a standalone-run notice on stderr
+  naming the four skipped steps and pointing at `ops/refresh.py`;
+  the orchestrator suppresses it via a `GB_DASH_ORCHESTRATED` env
+  handshake. The stale-tooltip advice in the header (which
+  recommended exactly the standalone command) and the README's
+  refresh section now lead with `python3 ops/refresh.py`.
+- Root cause 2 (fragile schedule): the 07:00 launchd fire raced a
+  not-yet-connected network on wake (2026-07-13: DNS failure at step
+  1 killed all five steps, no retry, no visible signal). The core
+  dataset step is now retried — 3 attempts, 2- then 5-minute waits —
+  before it is fatal; the plist template gains a 09:00 fallback fire
+  (existing installs: re-run `bash ops/install_schedule.sh`), with
+  the paid AI-summary step gated to once per UTC day so the second
+  fire never re-pays for it.
+- Proactive failure surfacing: every run — success, fatal exit, or
+  unexpected crash (a crashed run must never report ok; covered by a
+  regression test) — atomically writes `app/data/refresh_status.json`
+  (ts, outcome, failed_step, error, steps_completed, attempts). The
+  header renders it as an amber chip next to the age badge — "⚠ last
+  refresh attempt failed Nh ago (step)" with the error and recovery
+  command in the tooltip — quiet on ok and on absent file, zone-
+  neutral, distinct from the age badge (which cannot tell "no attempt
+  yet" from "attempt failed").
+- Diagnosability: a non-zero claude CLI exit in the overnight-summary
+  runner now persists stdout+stderr to a timestamped
+  `ops/logs/overnight.cli-error-*.txt` (the 2026-07-13 incident —
+  exit 1 in under a second, empty stderr — was undiagnosable; the
+  first real dump immediately identified it as a 401 expired CLI
+  session).
+- 16 new unit tests (retry backoff, status-file schema/atomicity,
+  once-per-day gate, main()'s fatal and crash paths); suite 78 green.
+  Execution was delegated (chunk A Opus, B/C/D Sonnet) with
+  orchestrator review; one review fix (crash path wrote "ok") and one
+  cosmetic tooltip fix applied on top.
+
 ## Skipped, with reasons
 
 - **API layer (FastAPI + parquet/DuckDB)** — evaluated and deferred: one

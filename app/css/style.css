@@ -73,7 +73,7 @@ body {
 .brand-sub { color: var(--text-dim); font-size: 12px; }
 /* Dataset freshness — age, not provenance: not one of the quality badges.
    Amber past 26 h (one missed daily refresh), matching .overnight-stale. */
-.data-age.stale { color: #bd9a55; font-weight: 600; }
+.data-age.stale, .refresh-status { color: #bd9a55; font-weight: 600; }
 /* System-stress chip — same amber convention: shown only when the most
    recent stress day is flagged; clicks through to the System stress tab. */
 .stress-chip { color: #bd9a55; font-weight: 600; cursor: pointer; }

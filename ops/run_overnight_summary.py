@@ -114,7 +114,10 @@ def main():
         """Run the agent once; returns validated data or raises
         ValidationError. Rejected raw replies are persisted for
         post-mortem — the first malformed-output incident was
-        undiagnosable because only the first 200 chars survived."""
+        undiagnosable because only the first 200 chars survived. A
+        non-zero CLI exit is persisted the same way (stdout+stderr) — a
+        2026-07-13 incident (exit non-zero in 2.85s, empty stderr) was
+        otherwise undiagnosable since nothing but stderr survived."""
         # --output-format json wraps the agent's final text in a result
         # envelope with error metadata — plain text mode proved unreliable
         # (empty stdout on an otherwise-successful run). A normal run
@@ -136,8 +139,15 @@ def main():
             err.write(result.stderr)
         if result.returncode != 0:
             log_metrics(result.stdout, attempt, "cli_error")
-            sys.exit("claude CLI exited {} (stderr in ops/logs/"
-                     "overnight.err.log)".format(result.returncode))
+            stamp = datetime.datetime.now(datetime.timezone.utc)\
+                .strftime("%Y%m%dT%H%M%SZ")
+            error_dump = log_dir / "overnight.cli-error-{}.txt".format(stamp)
+            error_dump.write_text(
+                "exit code: {}\n=== stdout ===\n{}\n=== stderr ===\n{}\n"
+                .format(result.returncode, result.stdout, result.stderr),
+                encoding="utf-8")
+            sys.exit("claude CLI exited {} — stdout+stderr saved to {}"
+                     .format(result.returncode, error_dump))
         try:
             data = validate_overnight.extract_inner_json(
                 result.stdout.strip())

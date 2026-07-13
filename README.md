@@ -152,25 +152,35 @@ Design rules enforced throughout:
 
 ## Refresh process
 
-Day to day, use the incremental mode — it re-fetches only the last two
-stored days plus anything newer (~10 HTTP calls, seconds instead of
-minutes), merges onto the published dataset atomically behind a
-validation guard, and keeps the window rolling at 365 days:
+Day to day, run the whole pipeline with `python3 ops/refresh.py` — it
+updates the core dataset (incremental mode: ~10 HTTP calls, seconds
+instead of minutes, merged onto the published dataset atomically behind
+a validation guard, window rolling at 365 days), the observed-dispatch
+snapshot, system-stress metrics, the seven European zone appends, and
+the optional AI summary, all in one command:
 
 ```bash
-python3 etl/build_dataset.py --incremental
+python3 ops/refresh.py
+```
+
+Running `python3 etl/build_dataset.py --incremental` on its own only
+updates the core dataset and leaves the other four outputs (BMU
+snapshot, stress metrics, zone data, overnight summary) stale. It is
+still the right command for a one-off full rebuild:
+
+```bash
+python3 etl/build_dataset.py --days 365
 ```
 
 `--days 365` forces a full rebuild (raw responses are cached in
 `data_raw/cache/`, so even that only fetches missing chunks; delete the
-cache or pass `--no-cache` to re-fetch everything). The app reads whatever
-is in `app/data/` at page load — no server restart needed beyond a
-browser refresh.
+cache or pass `--no-cache` to re-fetch everything). Follow a full rebuild
+with `python3 ops/refresh.py` to bring the other four surfaces back in
+sync. The app reads whatever is in `app/data/` at page load — no server
+restart needed beyond a browser refresh.
 
-To run the whole pipeline daily without thinking about it — incremental
-dataset update, the observed-dispatch snapshot, the seven European zone
-appends, and the optional AI summary — install the scheduled job
-(opt-in, one command; details and uninstall in
+To run the whole pipeline daily without thinking about it, install the
+scheduled job (opt-in, one command; details and uninstall in
 [ops/README.md](ops/README.md)):
 
 ```bash

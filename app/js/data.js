@@ -88,6 +88,8 @@ const Data = (() => {
   let overnight = null; // AI overnight summary (optional, GB only)
   let stress = null;    // daily stress metrics + flags (optional, GB only)
   let warnings = null;  // filtered SYSWARN notices (optional, GB only)
+  let refreshStatus = null; // last ops/refresh.py outcome (optional,
+                             // machine-level — same value on every zone)
 
   async function load(requestedZone = "GB") {
     const fetchJson = async (path, opts) => {
@@ -112,6 +114,14 @@ const Data = (() => {
       fetchJson(`${base}series_daily.json${v}`),
       fetchJson(`${base}meta.json${v}`),
     ]);
+    // Refresh-attempt status (optional — written by ops/refresh.py at the
+    // end of every daily run; absent on fresh clones and pre-feature
+    // datasets. Machine-level, not per-zone, so fetched on every load()
+    // call regardless of the requested zone.
+    try {
+      refreshStatus = await fetchJson("data/refresh_status.json",
+        { cache: "no-store" });
+    } catch { refreshStatus = null; }
     // Observed dispatch snapshot (GB only, optional — written by
     // etl/build_bmu_snapshot.py; absent until that script has run)
     bmu = null;
@@ -286,6 +296,7 @@ const Data = (() => {
     get overnight() { return overnight; },
     get stress() { return stress; },
     get warnings() { return warnings; },
+    get refreshStatus() { return refreshStatus; },
     loadEventSlice,
     get zone() { return zone; },
     currency, ZONE_INFO,
