@@ -147,6 +147,15 @@ with the path replaced by wherever you cloned the repository — is:
   guaranteed daily runs, this belongs on an always-on host or a CI schedule
   (GitHub Actions cron publishing `app/` to static hosting — tracked in the
   repository's GitHub Issues).
+- **The 09:00 fallback is not a second attempt at a slow run.** It covers a
+  07:00 run that *fails fast* (e.g. the network is not up yet) and exits
+  before 09:00. It cannot help a 07:00 run that is merely *slow*: when the
+  Mac keeps re-sleeping through the morning the run is suspended and stretched
+  across the 09:00 slot, so launchd has nothing to fire into (observed
+  2026-07-14, issue #35). Reliability within a single run comes from the
+  step's own retries instead — the overnight summary retries once on a
+  transient API error (a server drop mid-response), and fails fast on a
+  permanent one (an expired login) so no paid attempt is wasted.
 - **Failures are surfaced, but not pushed.** Every run writes
   `app/data/refresh_status.json` and the dashboard header renders it, so a
   failed core refresh is visible in the app rather than buried — but there
