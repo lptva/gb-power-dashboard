@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 OPS = Path(__file__).resolve().parent
@@ -34,6 +35,48 @@ sys.path.insert(0, str(OPS))
 from env_flags import ai_summary_enabled  # noqa: E402
 from panel_facts import compute_facts  # noqa: E402
 import validate_overnight  # noqa: E402
+
+# One retry after this pause (seconds) when the CLI fails transiently — a
+# server-side drop mid-response is usually gone by the next attempt. Kept
+# short: the scheduled refresh is already running and each attempt is paid.
+CLI_RETRY_WAIT = 45
+
+
+class TransientCliError(Exception):
+    """A non-zero CLI exit judged worth one retry (see cli_error_is_transient).
+    A permanent failure (auth, or anything unrecognised) is NOT this — it
+    exits immediately so a paid retry is never spent on a request that
+    cannot succeed."""
+
+
+def cli_error_is_transient(stdout):
+    """Classify a non-zero `claude … --output-format json` exit from its
+    result envelope. Transient (retry once): a server-side api_error, a 5xx
+    status, or a known transient message shape. Permanent (fail fast): an
+    auth error, or — deliberately — anything we do not recognise, so an
+    unknown failure never burns a second paid attempt. `stdout` is the raw
+    CLI stdout; unparseable or empty → not transient."""
+    try:
+        env = json.loads(stdout)
+    except (ValueError, TypeError):
+        return False
+    status = env.get("api_error_status")
+    if isinstance(status, int):
+        if status == 401 or status == 403:
+            return False
+        if 500 <= status <= 599:
+            return True
+    reason = str(env.get("terminal_reason") or "")
+    result = str(env.get("result") or "").lower()
+    if "authenticate" in result or "authentication" in result:
+        return False
+    if reason == "api_error":
+        return True
+    transient_markers = ("server error mid-response", "overloaded",
+                         "timeout", "timed out", "try again",
+                         "internal server error", "bad gateway",
+                         "service unavailable")
+    return any(m in result for m in transient_markers)
 
 PROMPT_TEMPLATE = """Write the overnight analysis exactly per your procedure: one section
 per tab (overview, merit_order, spreads, flows), analysis-first. Every
@@ -146,8 +189,15 @@ def main():
                 "exit code: {}\n=== stdout ===\n{}\n=== stderr ===\n{}\n"
                 .format(result.returncode, result.stdout, result.stderr),
                 encoding="utf-8")
-            sys.exit("claude CLI exited {} — stdout+stderr saved to {}"
-                     .format(result.returncode, error_dump))
+            msg = "claude CLI exited {} — stdout+stderr saved to {}".format(
+                result.returncode, error_dump)
+            # A transient server-side error is worth one retry; a permanent
+            # one (auth, or unrecognised) fails fast so no paid attempt is
+            # wasted on a request that cannot succeed.
+            if cli_error_is_transient(result.stdout):
+                print(msg, flush=True)
+                raise TransientCliError(msg)
+            sys.exit(msg)
         try:
             data = validate_overnight.extract_inner_json(
                 result.stdout.strip())
@@ -165,16 +215,26 @@ def main():
         log_metrics(result.stdout, attempt, "published")
         return data
 
-    # Structurally invalid replies happen (observed ~1 in 5 runs), so one
-    # retry is built in; a second failure leaves the previous summary in
-    # place and exits non-zero for the orchestrator's WARNING line.
+    # Two failure modes each get one retry: a structurally invalid reply
+    # (observed ~1 in 5 runs) retries immediately, a transient CLI error (a
+    # server drop mid-response) retries after a short backoff for the server
+    # to recover. A second failure of either leaves the previous summary in
+    # place and exits non-zero for the orchestrator's WARNING line. A
+    # permanent CLI error (auth, unrecognised) never reaches here — one_attempt
+    # exits on the spot.
     try:
         data = one_attempt(1)
-    except validate_overnight.ValidationError:
-        print("retrying once…", flush=True)
+    except (TransientCliError, validate_overnight.ValidationError) as first:
+        if isinstance(first, TransientCliError):
+            print("transient CLI error — retrying in {}s…".format(
+                CLI_RETRY_WAIT), flush=True)
+            time.sleep(CLI_RETRY_WAIT)
+        else:
+            print("retrying once…", flush=True)
         try:
             data = one_attempt(2)
-        except validate_overnight.ValidationError as error:
+        except (TransientCliError,
+                validate_overnight.ValidationError) as error:
             sys.exit("REFUSING TO PUBLISH (both attempts): {}".format(error))
     validate_overnight.publish(data, ROOT / "app" / "data")
 

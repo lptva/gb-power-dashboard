@@ -1019,6 +1019,7 @@ machine, worked through in priority order.
   orchestrator review; one review fix (crash path wrote "ok") and one
   cosmetic tooltip fix applied on top.
 
+<<<<<<< HEAD
 ### Per-tab CSV exports (#31, 2026-07-13)
 
 - What was wrong: the ⤓ CSV button had two paths, not five. Overview,
@@ -1062,6 +1063,33 @@ machine, worked through in priority order.
   and Known limitations, the zone variant's noting that only the market
   file exists off GB, since the GB-only tabs and files behind it are
   hidden for those zones.
+=======
+### Overnight summary: retry transient CLI errors (#35, 2026-07-14)
+
+- Root cause: on 2026-07-14 the scheduled summary failed on a transient
+  Anthropic API error (server drop mid-response, `terminal_reason:
+  api_error`) and was never retried. `run_overnight_summary.py` retried
+  only malformed replies (`ValidationError`); a non-zero CLI exit called
+  `sys.exit` on the spot. The 09:00 fallback fire did not stand in for the
+  missing retry: the Mac slept through the morning, so the 07:00 run was
+  suspended and stretched across the 09:00 slot (finished 09:20 BST), and
+  launchd had nothing to fire into — one attempt total, no second.
+- Fix: a `cli_error_is_transient` classifier reads the CLI result envelope
+  and retries once (45 s backoff) on a transient failure — a 5xx status,
+  `terminal_reason: api_error`, or a known transient message (overloaded,
+  timeout, server error mid-response). A permanent failure (401/403 auth,
+  or anything unrecognised) still fails fast, so no paid attempt is spent
+  on a request that cannot succeed. Mirrors the existing malformed-reply
+  retry; a second failure still leaves the previous summary in place and
+  exits non-zero for the orchestrator's WARNING line.
+- Deliberately no scheduling change: a third fire or later fallback depends
+  on the Mac being awake and does not fix the transient-error root cause.
+  The `ops/README.md` sleep caveat now states the 09:00 fallback's real
+  limitation (it cannot second-attempt a slow, sleep-suspended run).
+- 12 new unit tests pin the classifier against the two real failure
+  envelopes on disk (13 Jul 401 -> no retry, 14 Jul api_error -> retry)
+  plus synthetic transient/permanent/unparseable cases; suite 90 green.
+>>>>>>> 1f966f1 (bug fix: retry transient Claude API errors (#35) + updated screenshot)
 
 ## Skipped, with reasons
 
