@@ -19,7 +19,7 @@ sys.path.insert(0, str(OPS))
 
 from run_overnight_summary import cli_error_is_transient  # noqa: E402
 
-LOGS = OPS / "logs"
+LOGS = Path(__file__).resolve().parent / "fixtures"
 
 
 def _envelope_from_dump(path):
