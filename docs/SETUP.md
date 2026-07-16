@@ -1,5 +1,9 @@
 # Install and run the dashboard — no experience needed
 
+Just want to look at the dashboard? You don't need this guide at all — it
+is live at <https://lptva.github.io/gb-power-dashboard/>, updated daily,
+nothing to install. Everything below is for running your own copy.
+
 This guide assumes you have never used a terminal and have never installed
 Python. Follow your operating system's track from top to bottom; every
 command says where to type it and what you should see. If anything goes

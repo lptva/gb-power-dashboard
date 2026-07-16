@@ -19,7 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "ops"))
 
 from validate_overnight import (  # noqa: E402
     ValidationError, assumption_violations, extract_inner_json,
-    validate_summary,
+    validate_summary, whitelist_summary,
 )
 
 
@@ -145,6 +145,38 @@ class TestValidateSummarySchema(unittest.TestCase):
         for k in self.data["tabs"]["merit_order"]["figures"]:
             self.data["tabs"]["merit_order"]["figures"][k] = None
         validate_summary(self.data, reference)  # now passes
+
+    def test_rejects_non_string_data_quality_items(self):
+        self.data["data_quality"] = [{"note": "structured smuggling"}]
+        with self.assertRaisesRegex(ValidationError, "must all be strings"):
+            validate_summary(self.data, self.reference)
+
+    def test_whitelist_strips_unknown_keys_at_every_level(self):
+        # The publish path must never write model-invented keys: plant
+        # extras at every level of an otherwise-valid summary and confirm
+        # the rebuild drops them all while keeping the intended content.
+        self.data["prompt_debug"] = {"secret": "x"}
+        self.data["tabs"]["overview"]["chain_of_thought"] = "hidden"
+        self.data["tabs"]["overview"]["findings"] = [
+            {"title": "T", "detail": "D", "confidence": 0.9}]
+        self.data["tabs"]["merit_order"]["figures"]["extra_figure"] = 1.0
+        self.data["baseline_days"] = 14
+        clean = whitelist_summary(self.data)
+        self.assertNotIn("prompt_debug", clean)
+        self.assertNotIn("chain_of_thought", clean["tabs"]["overview"])
+        self.assertEqual(clean["tabs"]["overview"]["findings"],
+                         [{"title": "T", "detail": "D"}])
+        self.assertNotIn("extra_figure",
+                         clean["tabs"]["merit_order"]["figures"])
+        # Intended content survives the rebuild untouched.
+        self.assertEqual(clean["baseline_days"], 14)
+        self.assertEqual(clean["window"], self.data["window"])
+        self.assertEqual(clean["tabs"]["overview"]["takeaway"], "t")
+        self.assertEqual(
+            clean["tabs"]["merit_order"]["figures"],
+            self.reference["figures"])
+        # And the rebuilt dict still validates.
+        validate_summary(clean, self.reference)
 
 
 class TestEnvelopeExtraction(unittest.TestCase):
