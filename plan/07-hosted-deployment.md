@@ -156,6 +156,11 @@ it does not, in order of preference: address the release by **ID** via `gh api`
 **pre-release** — at which point the cosmetic cost you just rejected returns to
 the table as the lesser evil.
 
+> **Implemented note (2026-07-16):** the landed code uses by-**ID** `gh api`
+> addressing as the *primary* path for both download and upload, deleting the
+> by-tag unknown instead of gambling on it — see `ops/ci/restore_snapshot.sh`
+> and `.github/workflows/deploy.yml`.
+
 ### D9 — RESOLVED (owner, 2026-07-15): the restore step owns the cold start
 
 **A real gap, found in review.** `ops/refresh.py` **takes no CLI arguments at
@@ -373,6 +378,14 @@ jobs:
       - uses: actions/deploy-pages@v4
 ```
 
+> **Implemented note (2026-07-16):** the landed workflow differs from this
+> sketch in two ways. `<wide>` became `ZONE_DAYS=60` — a single unchunked
+> 365-day A75 request times out (probed live), and 60 covers the accumulated
+> history only until **30 Jul 2026**. And the cold path carries explicit
+> per-step `|| ::warning::` guards — `run_overnight_summary.py` exits non-zero
+> even on a benign skip, and unlike the warm path nothing here inherits
+> `run_non_fatal` from `refresh.py`. See `.github/workflows/deploy.yml`.
+
 **Ordering — RESOLVED (owner, 2026-07-15): snapshot upload stays *before* the
 Pages publish.** If a deploy fails after the snapshot upload, state races
 slightly ahead of what is actually live — but the next successful deploy
@@ -402,6 +415,12 @@ transient-API class of failure would otherwise take the public site's data down
 with it). That property already holds by construction — `ops/refresh.py` runs
 the step via `run_non_fatal`, and `main()` exits non-zero only on the core
 step — so this is a "do not regress it" note, not new work.
+
+> **Implemented note (2026-07-16):** true for the *warm* path only. On the
+> *cold* path (which never calls `refresh.py`) this had to become new work:
+> deploy.yml guards each non-core step explicitly, because
+> `run_overnight_summary.py` exits non-zero even on a benign skip and Actions
+> runs bash with `-e`.
 
 **Free-tier caveats to record:** scheduled workflows can be delayed under
 load, and are auto-disabled after 60 days of repo inactivity. Public repos get

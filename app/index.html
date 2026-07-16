@@ -7,19 +7,27 @@
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="favicon.ico" sizes="16x16">
 <script>
-/* DEV-CACHE-BUSTER — development convenience only; review before any
-   hosted/"sellable" build (grep for DEV-CACHE-BUSTER, this block and the
+/* CACHE-BUSTER — cache-busts the app's own JS/CSS on both the local dev
+   server and a hosted deploy (grep for CACHE-BUSTER, this block and the
    script loader at the end of <body> are the only two sites).
    Why: `python -m http.server` sends no cache headers, so browsers
    heuristically cache the app's JS/CSS and serve STALE code after edits —
    a recurring source of "the fix isn't on screen" review cycles. A <meta
    cache-control> hint cannot fix this (it does not apply to subresources
    in modern browsers), so instead: when served from localhost, a fresh
-   ?v= is appended to the app's own JS/CSS so every load is current. On
-   any other host DEV_CACHE_V is empty — URLs are byte-identical to the
-   plain tags and normal HTTP caching applies untouched. */
+   ?v= is appended to the app's own JS/CSS so every load is current.
+   Hosted arm: on a hosted origin CI stamps the short commit SHA into
+   BUILD_STAMP at deploy time (plan/07-hosted-deployment.md §4), and that
+   stamp becomes the ?v= on every load — this is load-bearing in
+   production, since without it a deploy can serve cached old JS against
+   fresh data until browser caches expire. If the placeholder is never
+   replaced (e.g. a self-hosted clone with no CI), HOSTED_V falls back to
+   "" — URLs are byte-identical to the plain tags and normal HTTP caching
+   applies untouched, exactly as before this block existed. */
+var BUILD_STAMP = "__BUILD_STAMP__";              /* replaced at deploy */
+var HOSTED_V = /^__/.test(BUILD_STAMP) ? "" : "?v=" + BUILD_STAMP;
 var DEV_CACHE_V = (location.hostname === "localhost"
-  || location.hostname === "127.0.0.1") ? "?v=" + Date.now() : "";
+  || location.hostname === "127.0.0.1") ? "?v=" + Date.now() : HOSTED_V;
 document.write('<link rel="stylesheet" href="css/style.css'
   + DEV_CACHE_V + '">');
 </script>
@@ -99,12 +107,26 @@ document.write('<link rel="stylesheet" href="css/style.css'
        here. Collapsed by default — head shows badge, timestamp and the
        one-line takeaway; clicking expands the full analysis. -->
   <section class="card ai-card" id="overnight">
+    <!-- AI-interpretation render switch — default off, in-memory only (no
+         browser storage). A pill switch pinned to the card's top-right in
+         BOTH states, so nothing jumps when it flips: off keeps the card's
+         identity row (title + badge) with a one-line "switch on" affordance
+         where the takeaway normally sits; on restores the collapsed-head/
+         expandable-body behaviour below. GB-only, inherited from the card's
+         own zone gating in renderOvernight. Display switch only: the summary
+         is fetched and published regardless (see the tooltip). -->
+    <label class="ai-switch" id="ai-toggle-row"
+           title="Off by default. The summary is still published at data/overnight_summary.json and can be fetched directly. Why it is Claude-only by design is judgement call 13 in the repository's methodology.md.">
+      <span class="ai-switch-label">AI interpretation</span>
+      <input type="checkbox" id="ai-interpretation-toggle">
+      <span class="ai-switch-track" aria-hidden="true"></span>
+    </label>
     <div class="card-head overnight-head" id="overnight-head" role="button"
          tabindex="0" aria-expanded="false" aria-controls="overnight-body">
-      <h2>Overnight summary <span class="badge ai">✦ AI-generated</span>
-        <span class="info" data-method="overnight">ⓘ</span>
-        <span class="overnight-chev" id="overnight-chev"
-              aria-hidden="true">▸</span></h2>
+      <h2><span class="overnight-chev" id="overnight-chev"
+              aria-hidden="true">▸</span>Overnight summary
+        <span class="badge ai">✦ AI-generated</span>
+        <span class="info" data-method="overnight">ⓘ</span></h2>
       <p class="card-meta" id="overnight-meta"></p>
       <p class="overnight-takeaway" id="overnight-takeaway"></p>
     </div>
@@ -579,12 +601,13 @@ document.write('<link rel="stylesheet" href="css/style.css'
 
 <script src="vendor/echarts.min.js"></script>
 <script>
-/* DEV-CACHE-BUSTER (part 2 of 2 — see the <head> block for the why).
+/* CACHE-BUSTER (part 2 of 2 — see the <head> block for the why).
    document.write keeps these parser-blocking and in-order, exactly like
    the plain tags they replace. The vendor bundle stays static above: it
-   never changes, and staying cached is what we want even in dev. On any
-   non-localhost host DEV_CACHE_V is "" and the emitted tags are
-   byte-identical to the originals. */
+   never changes, and staying cached is what we want on every host. On a
+   hosted deploy DEV_CACHE_V carries the build-stamp version (or "" if the
+   placeholder was never replaced); on localhost it is a fresh Date.now()
+   on every load. */
 ["js/data.js", "js/metrics.js", "js/state.js", "js/terms.js",
  "js/charts.js", "js/ui.js", "js/app.js"].forEach(function (src) {
   document.write('<script src="' + src + DEV_CACHE_V + '"><\/script>');

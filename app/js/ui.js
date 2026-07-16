@@ -403,6 +403,7 @@ const UI = (() => {
     const metaLine = document.getElementById("overnight-meta");
     const takeawayEl = document.getElementById("overnight-takeaway");
     const chev = document.getElementById("overnight-chev");
+    const toggle = document.getElementById("ai-interpretation-toggle");
     if (!body) return;
     // GB-only analysis: hide the card entirely on other zones (and on tabs
     // with no summary section) rather than showing a misleading message.
@@ -410,6 +411,37 @@ const UI = (() => {
     const hidden = State.get().zone !== "GB" || !sectionKey;
     card.classList.toggle("hidden", hidden);
     if (hidden) return;
+
+    // Render switch (state.js flag, default off, in-memory): a second, OUTER
+    // layer above the existing collapse. The card keeps its identity row in
+    // both states; off → chevron/meta/body go away, the head goes inert and
+    // the takeaway line becomes the "switch on" affordance; on → today's
+    // behaviour resumes, overnightOpen untouched. A DISPLAY switch only —
+    // data.js still fetches the summary and it stays published (the switch
+    // tooltip carries D7).
+    const on = State.get().aiInterpretation;
+    toggle.checked = on;
+    card.classList.toggle("overnight-off", !on);
+    if (!on) {
+      // display:none, not a reserved slot: with the switch off there is no
+      // disclosure marker, so the title sits flush with the card edge and
+      // the indent appears only when the toggle is on (owner preference).
+      chev.classList.add("hidden");
+      head.setAttribute("aria-expanded", "false");
+      metaLine.textContent = "";
+      // innerHTML, not textContent: the affordance carries the one-click
+      // link to judgement call 13 (the tooltip names it but a title
+      // attribute cannot hold a hyperlink). Static copy, no data in it.
+      // Styled as a glossary pill, the app's established link treatment.
+      takeawayEl.innerHTML = 'Off by default — switch on to show the '
+        + 'AI-written daily briefing for this tab. '
+        + '<a class="gloss-pill" href="https://github.com/lptva/gb-power-dashboard/blob/main/'
+        + 'methodology.md#judgement-calls-a-reviewer-should-know-about" '
+        + 'target="_blank" rel="noopener">Why it is Claude-only</a>';
+      body.classList.add("hidden");
+      body.innerHTML = "";
+      return;
+    }
 
     const s = Data.overnight;
     const section = s && s.tabs ? s.tabs[sectionKey] : null;
@@ -510,7 +542,14 @@ const UI = (() => {
   (function wireOvernightToggle() {
     const head = document.getElementById("overnight-head");
     if (!head) return;
-    const toggle = () => { overnightOpen = !overnightOpen; renderOvernight(); };
+    const toggle = () => {
+      // Inert while the AI-interpretation render switch is off: there is
+      // nothing to expand, and flipping overnightOpen invisibly would make
+      // the panel spring open later when the switch is turned on.
+      if (!State.get().aiInterpretation) return;
+      overnightOpen = !overnightOpen;
+      renderOvernight();
+    };
     head.addEventListener("click", (event) => {
       if (event.target.closest(".info")) return;
       toggle();
@@ -521,6 +560,16 @@ const UI = (() => {
       event.preventDefault();
       toggle();
     });
+  })();
+
+  /* AI-interpretation render toggle (state.js flag; default off). A display
+     switch only — flipping it re-renders the card via the State subscription;
+     it never touches the summary fetch or the overnightOpen collapse. */
+  (function wireAiInterpretation() {
+    const control = document.getElementById("ai-interpretation-toggle");
+    if (!control) return;
+    control.addEventListener("change", () =>
+      State.setAiInterpretation(control.checked));
   })();
 
   /* ---------------- "At a glance" summary bar ----------------
@@ -798,6 +847,14 @@ const UI = (() => {
          <b>Glossary</b> tab is the plain-language lookup; this page
          explains how this zone's data is sourced and mapped.</i></p>
 
+      <p>The repository's <a class="doc-link" href="https://github.com/lptva/gb-power-dashboard/blob/main/methodology.md"
+         target="_blank" rel="noopener">methodology.md</a> is the
+         companion reviewer document: the canonical schema, the formula
+         register, the data-windows table and the judgement calls, the
+         deliberate modelling choices a reviewer should know about,
+         including why the AI summary is Claude-only (judgement
+         call 13).</p>
+
       <h3 id="m-window">Zone: ${info.label} (${zone})</h3>
       <p>${info.kind === "reference"
         ? "<b>Reference market. Not physically interconnected with "
@@ -994,6 +1051,15 @@ const UI = (() => {
       <p><i>Looking for what a term or abbreviation means? The
          <b>Glossary</b> tab is the plain-language lookup; this page
          explains how things are computed and why.</i></p>
+
+      <p>This tab explains each panel's sourcing and maths. The
+         repository's <a class="doc-link" href="https://github.com/lptva/gb-power-dashboard/blob/main/methodology.md"
+         target="_blank" rel="noopener">methodology.md</a> is the
+         companion reviewer document: the canonical schema, the formula
+         register, the data-windows table and the judgement calls, the
+         deliberate modelling choices a reviewer should know about,
+         including why the AI summary is Claude-only (judgement
+         call 13).</p>
 
       <h3 id="m-window">Data window and coverage</h3>
       <p>Window: <code>${meta.window.start}</code> →
@@ -1507,6 +1573,9 @@ const UI = (() => {
          place. If none exists, the panel says so rather than guessing.
          The panel is collapsed by default (takeaway line only) and
          expands on click.</p>
+      <p>Why the panel is Claude-only by design is judgement call 13 in
+         the repository's <a class="doc-link" href="https://github.com/lptva/gb-power-dashboard/blob/main/methodology.md#judgement-calls-a-reviewer-should-know-about"
+         target="_blank" rel="noopener">methodology.md</a>.</p>
 
       <h3 id="m-refresh">Refresh process</h3>
       <p><code>python etl/build_dataset.py --incremental</code> re-fetches

@@ -26,6 +26,11 @@ const State = (() => {
       efCoal: 0.34, vomCoal: 5,
       coalPrice: null,  // £/MWh thermal — user-supplied assumption only
     },
+    // AI-interpretation render toggle: off on every load, in-memory only (no
+    // browser storage, per the header note) — enable-then-reload returns it to
+    // off. Gates rendering of the overnight summary, never the fetch; the data
+    // stays published at data/overnight_summary.json regardless.
+    aiInterpretation: false,
   };
 
   const listeners = [];
@@ -36,6 +41,10 @@ const State = (() => {
   }
   function setAssumption(key, value) {
     state.assumptions[key] = value;
+    listeners.forEach((fn) => fn(state));
+  }
+  function setAiInterpretation(on) {
+    state.aiInterpretation = on;
     listeners.forEach((fn) => fn(state));
   }
 
@@ -74,6 +83,6 @@ const State = (() => {
     return null;
   }
 
-  return { get: () => state, set, setAssumption, subscribe,
+  return { get: () => state, set, setAssumption, setAiInterpretation, subscribe,
            effectiveResolution, bucketSeconds, window: window_, coalInfo };
 })();

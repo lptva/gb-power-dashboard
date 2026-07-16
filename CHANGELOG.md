@@ -793,6 +793,14 @@ machine, worked through in priority order.
   cache-control>` hint could not do this: it does not apply to
   subresources in modern browsers.) Review/strip before any hosted
   build — grep DEV-CACHE-BUSTER.
+- **Correction, added 2026-07-16**: the "review/strip before any hosted
+  build" instruction above is wrong — per `plan/07-hosted-deployment.md`
+  §4, a hosted deploy needs its own cache-busting story (without it,
+  stale JS/CSS can be served against fresh data after a deploy), so the
+  block is now **load-bearing in production** and must not be stripped.
+  It has also been renamed `CACHE-BUSTER` in `index.html` (both sites —
+  the `<head>` block and the `<body>` script loader); `grep
+  DEV-CACHE-BUSTER` no longer finds it.
 
 ### Glossary + Methodology search (2026-07-12)
 
