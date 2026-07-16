@@ -26,8 +26,15 @@
    applies untouched, exactly as before this block existed. */
 var BUILD_STAMP = "__BUILD_STAMP__";              /* replaced at deploy */
 var HOSTED_V = /^__/.test(BUILD_STAMP) ? "" : "?v=" + BUILD_STAMP;
-var DEV_CACHE_V = (location.hostname === "localhost"
-  || location.hostname === "127.0.0.1") ? "?v=" + Date.now() : HOSTED_V;
+/* Dev-bust on any PRIVATE origin, not just localhost: phone-on-LAN testing
+   (http://192.168.x.x:8872) is a non-localhost origin, so it used to get
+   HOSTED_V = "" — no busting at all — and a phone that had visited before
+   kept serving heuristically-cached old JS/CSS, silently testing stale
+   code (2026-07-16, real-device QA). Private ranges are unreachable from
+   the public internet, so this can never fire on a real deploy. */
+var DEV_HOST = /^(localhost|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|.+\.local)$/
+  .test(location.hostname);
+var DEV_CACHE_V = DEV_HOST ? "?v=" + Date.now() : HOSTED_V;
 document.write('<link rel="stylesheet" href="css/style.css'
   + DEV_CACHE_V + '">');
 </script>
@@ -329,7 +336,7 @@ document.write('<link rel="stylesheet" href="css/style.css'
         </div>
         <div class="chart tall" id="ch-spread-spark"></div>
       </div>
-      <div class="card">
+      <div class="card fill-chart">
         <div class="card-head">
           <h2>CCGT cost decomposition <span class="badge estimated">Estimated</span></h2>
           <p>Daily average price split into implied fuel cost, carbon cost and
@@ -347,6 +354,7 @@ document.write('<link rel="stylesheet" href="css/style.css'
              <span class="info" data-method="dark">ⓘ</span></p>
           <div class="inline-input">
             <label>Override coal price <input type="number" id="coal-price" placeholder="proxy" min="1" max="100" step="0.5"> £/MWh th</label>
+            <span class="coal-stat" id="coal-stat"></span>
           </div>
         </div>
         <div class="chart-wrap">

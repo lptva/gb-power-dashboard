@@ -21,10 +21,42 @@
   // wraps. A ResizeObserver tracks the topbar's own box, so the value
   // stays correct through wraps and font-load reflow even when no window
   // resize event fires (a plain resize listener went stale that way).
+  //
+  // Two offsets are published:
+  //   --topbar-h     = the EFFECTIVE STUCK height content must clear (the
+  //                    scroll-margin-top on jump targets and the rails' top
+  //                    offset consume this).
+  //   --topbar-above = the header chrome ABOVE the tab strip (brand +
+  //                    controls); at ≤980px style.css uses it as the
+  //                    topbar's negative `top` so that once the page scrolls
+  //                    only the tab strip stays pinned. 0 on desktop.
+  // Desktop (>980px): the whole single-row topbar stays stuck, so
+  // --topbar-h is its full offsetHeight (identical to before this change)
+  // and --topbar-above is 0. Compact (≤980px): the header stacks and only
+  // the tab strip pins, so --topbar-h is just the strip's stuck height
+  // (tab row + the topbar's own bottom padding/border) and --topbar-above
+  // is everything above it. Both come from live geometry — rect deltas are
+  // scroll- and stick-invariant — so they stay correct through control
+  // wraps and the single-line brand row at any width.
   const topbar = document.querySelector(".topbar");
+  const tabsRow = topbar.querySelector(".tabs");
+  const rootStyle = document.documentElement.style;
+  const mobileHeader = window.matchMedia("(max-width: 980px)");  // MUST match
+  // the compact-header @media width in style.css — the negative-top shift
+  // and this measurement branch describe the same layout and break apart
+  // if the two widths ever diverge (980 covers landscape phones; see CSS).
   function syncTopbarHeight() {
-    document.documentElement.style.setProperty(
-      "--topbar-h", topbar.offsetHeight + "px");
+    if (mobileHeader.matches && tabsRow) {
+      const tb = topbar.getBoundingClientRect();
+      const nav = tabsRow.getBoundingClientRect();
+      const above = Math.max(0, Math.round(nav.top - tb.top));
+      const stuck = Math.max(0, Math.round(tb.bottom - nav.top));
+      rootStyle.setProperty("--topbar-h", stuck + "px");
+      rootStyle.setProperty("--topbar-above", above + "px");
+    } else {
+      rootStyle.setProperty("--topbar-h", topbar.offsetHeight + "px");
+      rootStyle.setProperty("--topbar-above", "0px");
+    }
   }
   syncTopbarHeight();                       // immediate value
   // The topbar grows on font-load reflow (fallback font wraps to fewer
@@ -66,10 +98,26 @@
     // No live view behind these tabs, so the CSV button is a false
     // affordance there (it would download the market file); hide it.
     document.getElementById("export-btn").classList.toggle("hidden", hide);
+    // Same reasoning for the 7D/1M/3M/… range presets: they act on the
+    // time-series views, and the reference pages have none, so the control
+    // is a false affordance there too.
+    document.getElementById("range-presets").classList.toggle("hidden", hide);
   }
+  // Per-tab scroll memory: the window is the app's ONLY scroll container,
+  // so without this every tab switch inherits whatever offset the previous
+  // tab left. Saved on tab-away, restored on arrival, first visit lands at
+  // the top. In-memory only — resets on reload, same convention as the
+  // assumption sliders. The restore is deliberately SYNCHRONOUS and runs
+  // before this handler returns: the deep-link jumps
+  // (jumpToMethodology/jumpToGlossary) call scrollIntoView AFTER their
+  // tab-button .click() returns, so a jump always lands last and wins over
+  // the restored position. A deferred restore (rAF/setTimeout) would race
+  // them — do not "optimise" this into one.
+  const tabScroll = new Map();
   document.getElementById("tabs").addEventListener("click", (event) => {
     const button = event.target.closest("button");
     if (!button) return;
+    tabScroll.set(State.get().tab, window.scrollY);
     document.querySelectorAll("#tabs button").forEach((b) =>
       b.classList.toggle("active", b === button));
     const tab = button.dataset.tab;
@@ -77,6 +125,9 @@
       panel.classList.toggle("hidden", panel.dataset.panel !== tab));
     applyReferenceTabChrome(tab);
     State.set({ tab });
+    // After State.set: the arriving tab is rendered, so its real height is
+    // in place and an oversized offset clamps against the right document.
+    window.scrollTo(0, tabScroll.get(tab) ?? 0);
   });
 
   /* ---- range presets ---- */

@@ -176,6 +176,62 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
   .controls { margin-left: 0; }
 }
 
+/* ---------- Compact header (≤980px) ----------
+   Wide desktop keeps its single sticky row untouched. On narrow viewports
+   the header stacks vertically (brand → controls → tabs) and only the TAB
+   STRIP stays pinned: the topbar is a sticky element shifted up by
+   --topbar-above (the live-measured height of everything above the tabs,
+   published from app.js), so once the page scrolls the brand line and
+   controls slide off the top and the tab strip alone remains at y=0. The
+   tab strip is the LAST child on purpose — the negative-top shift can only
+   hide what sits above the pinned row, so brand + controls must precede
+   it. --topbar-h tracks the strip's effective stuck height at this width,
+   keeping every scroll-margin-top jump target landing just below the
+   pinned strip.
+   980, not 640 (2026-07-16, real-device QA): phones in LANDSCAPE are
+   700-930 CSS px wide (iPhone Pro Max landscape = 932), so a 640 cutoff
+   left them on the desktop rules, where the 9 tabs wrap onto a second
+   row. 980 aligns with the stylesheet's existing narrow breakpoint family
+   rather than adding a third magic number; windows in the 640-980 band
+   were already wrapping the single-row topbar untidily before this block
+   existed. MUST stay in lockstep with the matchMedia width in app.js's
+   topbar-measurement block. */
+@media (max-width: 980px) {
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    /* Shift up so exactly the tab strip stays visible when stuck. 0 until
+       app.js measures, and 0 on desktop, so this is inert everywhere else. */
+    top: calc(-1 * var(--topbar-above, 0px));
+  }
+  .brand    { order: 1; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+  .controls { order: 2; margin-left: 0; flex-wrap: wrap; }
+  .tabs     { order: 3; }
+
+  /* Brand/date compacted to a single truncating line — the date window is
+     the flexible element that ellipses; the mark and title stay put. Text
+     is untouched (CSS-only), per brief. */
+  .brand-mark, .brand-name { flex: 0 0 auto; }
+  .brand-sub { white-space: nowrap; }
+  #data-window { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Tabs: one non-wrapping, horizontally scrollable strip with momentum
+     scrolling and a visually minimal scrollbar. */
+  .tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .tabs button { flex: 0 0 auto; }
+  .tabs::-webkit-scrollbar { height: 3px; }
+  .tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .tabs::-webkit-scrollbar-track { background: transparent; }
+}
+
 .card {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
@@ -189,6 +245,15 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
 
 .chart { height: 300px; width: 100%; position: relative; }
 .chart.tall { height: 400px; }
+/* Cards in a grid row stretch to the row's tallest card; a card whose
+   chart is its last element can be left with a dead band under the plot
+   when its neighbour has more head content (e.g. CCGT decomposition next
+   to Clean dark spread's override row + stat). .fill-chart lets THAT
+   card's chart absorb the slack instead: flex column, chart grows from
+   its normal 300px basis to the card's real height. Opt-in per card —
+   deliberately not global, so no other panel's layout changes. */
+.card.fill-chart { display: flex; flex-direction: column; }
+.card.fill-chart .chart { flex: 1 1 auto; height: auto; min-height: 300px; }
 .chart-wrap { position: relative; }
 
 /* Quality badges — muted outline chips: legible on inspection, quieter than
@@ -333,6 +398,12 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
   border: 1px solid var(--border); border-radius: 5px; padding: 4px 7px;
   font: inherit; margin: 0 5px;
 }
+/* Coal-in-use stat (Spreads tab, next to the override input): the badge
+   chip reuses .badge.proxy/.badge.assumption as-is and the £ value reuses
+   .mono-dim, so only the line layout needs a rule here. */
+.coal-stat { display: block; margin: 12px 0 10px; font-size: 12px;
+  color: var(--text-dim); }
+.coal-stat .badge { margin-right: 6px; vertical-align: middle; }
 
 /* assumptions panel */
 .assumptions { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));

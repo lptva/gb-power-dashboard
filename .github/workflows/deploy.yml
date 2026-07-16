@@ -1,16 +1,13 @@
 name: deploy
 
-# Milestone A scope (plan/07 §7): MANUAL proof only, no automation yet.
-#
-# The scheduled trigger is deliberately ABSENT at this stage and lands in its
-# own follow-up once Milestone A is proven (Milestone B). When it returns it
-# goes exactly here:
-#
-#   schedule:
-#     - cron: "30 6 * * *"        # 06:30 UTC = 07:30 BST — D5 (approved)
-#
+# Milestone B (plan/07 §7): scheduled daily deploy, restored after the
+# Milestone A manual proof. Not proven until at least one SCHEDULED run
+# (not a manual dispatch) completes green and run 2 restores warm from the
+# snapshot.
 on:
-  workflow_dispatch:               # the only trigger for Milestone A
+  schedule:
+    - cron: "30 6 * * *"           # 06:30 UTC = 07:30 BST — D5 (approved)
+  workflow_dispatch:
     inputs:
       cold_start:
         description: >-

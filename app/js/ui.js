@@ -206,8 +206,7 @@ const UI = (() => {
           const link = event.target.closest("a[data-letter]");
           if (!link) return;
           event.preventDefault();
-          document.getElementById("gl-" + link.dataset.letter)
-            ?.scrollIntoView({ behavior: "auto" });
+          jumpToGlossary("gl-" + link.dataset.letter);
         });
         nav.dataset.wired = "true";
       }
@@ -246,6 +245,18 @@ const UI = (() => {
       input.value = ""; run(); input.focus();
     });
     input.dataset.wired = "true";
+  }
+
+  /* Reset a tab's search filter to empty. A previously-typed query may
+     have hidden the very section a jump is about to land on, so every
+     jump path clears the box first: value, its clear button and the
+     filter fn (run with ""), leaving the target guaranteed visible. */
+  function clearTabSearch(inputId, clearId, apply) {
+    const input = document.getElementById(inputId);
+    if (!input) return;
+    input.value = "";
+    document.getElementById(clearId)?.classList.add("hidden");
+    apply("");
   }
 
   /* Hiding entries shrinks the page. The browser clamps scrollTop so you
@@ -733,17 +744,10 @@ const UI = (() => {
     }));
     }
 
-    const coal = State.coalInfo();
-    if (coal && coal.source === "proxy") {
-      cards.push(kpiCard({
-        label: "Coal proxy", badge: "proxy",
-        value: `£${coal.value.toFixed(1)}`, unit: "/MWh th",
-        note: coal.ffilled
-          ? `carried fwd from ${Metrics.fmtDate(
-              Data.meta.coverage.coal_last_observed_month + "-01", "month")}`
-          : "Newcastle futures, WB monthly avg",
-      }));
-    }
+    // Coal proxy card removed from the strip (owner, 2026-07-16): the value
+    // now lives on the Clean Dark Spread panel itself, beside the override
+    // input — the only place it is acted on. One fewer card keeps the strip
+    // to two rows at common widths.
 
     if (State.get().zone === "GB") {
     // Residual-load definitions are zone-specific (see plan/04) — GB only.
@@ -804,6 +808,40 @@ const UI = (() => {
         });
       });
   }
+
+  /* ---------------- spreads: coal-in-use stat ----------------
+     Small panel-local echo of the header KPI coal card, placed next to the
+     override input so the £ figure actually driving the dark spread is
+     visible without scrolling up to the strip. Value/unit formatting
+     mirrors renderKpis' coal card byte-for-byte (`£${value.toFixed(1)}`
+     + "/MWh th"); the proxy/assumption vocabulary and the "carried fwd
+     from <month>" note mirror the same card and the dark-badge chip in
+     this panel's own header. Kept out of app.js's central render list
+     (deliberately scoped to this one panel) and instead wired to its own
+     State subscription below, alongside a guarded initial call for the
+     (unlikely) case Data is already loaded when this file evaluates. */
+  function renderCoalStat() {
+    const el = document.getElementById("coal-stat");
+    if (!el || !Data.daily) return; // Data.load() has not resolved yet
+    const coal = State.coalInfo();
+    if (!coal) { el.innerHTML = ""; return; }
+    const value = `£${coal.value.toFixed(1)}`;
+    if (coal.source === "manual") {
+      el.innerHTML = `<span class="badge assumption">assumption</span> ` +
+        `In use: <span class="mono-dim">${value} /MWh th</span> ` +
+        `&middot; your override`;
+      return;
+    }
+    const note = coal.ffilled
+      ? `carried fwd from ${Metrics.fmtDate(
+          Data.meta.coverage.coal_last_observed_month + "-01", "month")}`
+      : "Newcastle futures proxy";
+    el.innerHTML = `<span class="badge proxy">proxy</span> ` +
+      `In use: <span class="mono-dim">${value} /MWh th</span> ` +
+      `&middot; ${note}`;
+  }
+  State.subscribe(renderCoalStat);
+  renderCoalStat(); // no-op until Data.load() resolves; see guard above
 
   /* ---------------- methodology ---------------- */
 
@@ -940,10 +978,26 @@ const UI = (() => {
      its top border land at the same gap the Glossary letter dividers do
      (both use scroll-margin-top: var(--topbar-h) + 12px). */
   function jumpToMethodology(id, behavior) {
+    // Own the filter reset: a stale Methodology search could have hidden
+    // the target section, so clear it before scrolling. Every jump into
+    // Methodology (ⓘ deep links, glossary pills, the contents rail) routes
+    // through here and inherits this by construction.
+    clearTabSearch("method-search", "method-search-clear", filterMethodology);
     const el = document.getElementById(id);
     if (!el) return;
     (el.closest(".method-section") || el)
       .scrollIntoView({ block: "start", behavior: behavior || "auto" });
+  }
+
+  /* Jump to a Glossary target by element id — a term entry (#g-<key>) or a
+     letter divider (#gl-<L>). Clears the Glossary search first (a stale
+     filter may have hidden the target), then scrolls it into view. Instant,
+     not smooth: long-page smooth scroll reads as broken (same reasoning as
+     the methodology jumps). The single entry point for every Glossary jump,
+     cross-tab (prose term-links) or same-tab (the A–Z rail). */
+  function jumpToGlossary(id) {
+    clearTabSearch("gloss-search", "gloss-search-clear", filterGlossary);
+    document.getElementById(id)?.scrollIntoView({ behavior: "auto" });
   }
 
   /* Post-render layout pass for the Methodology tab — layout only, the
@@ -965,10 +1019,7 @@ const UI = (() => {
         if (!link) return;
         event.preventDefault();
         document.querySelector('#tabs button[data-tab="glossary"]').click();
-        // Instant, not smooth — same reasoning as the TOC and mini-rail
-        // jumps above: long-page smooth scroll reads as broken.
-        document.getElementById("g-" + link.dataset.term)
-          ?.scrollIntoView({ behavior: "auto" });
+        jumpToGlossary("g-" + link.dataset.term);
       });
       body.dataset.termWired = "true";
     }
