@@ -443,12 +443,14 @@ const UI = (() => {
       // innerHTML, not textContent: the affordance carries the one-click
       // link to judgement call 13 (the tooltip names it but a title
       // attribute cannot hold a hyperlink). Static copy, no data in it.
-      // Styled as a glossary pill, the app's established link treatment.
+      // Inline .doc-link, not a .gloss-pill: inside the violet-tinted AI
+      // card a bordered pill added a second accent colour (owner, 2026-07-16);
+      // the quiet inline treatment matches the Methodology tab's links.
       takeawayEl.innerHTML = 'Off by default — switch on to show the '
         + 'AI-written daily briefing for this tab. '
-        + '<a class="gloss-pill" href="https://github.com/lptva/gb-power-dashboard/blob/main/'
+        + '<a class="doc-link" href="https://github.com/lptva/gb-power-dashboard/blob/main/'
         + 'methodology.md#judgement-calls-a-reviewer-should-know-about" '
-        + 'target="_blank" rel="noopener">Why it is Claude-only</a>';
+        + 'target="_blank" rel="noopener">Why it is Claude-only</a>.';
       body.classList.add("hidden");
       body.innerHTML = "";
       return;

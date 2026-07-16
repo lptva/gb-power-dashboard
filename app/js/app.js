@@ -70,9 +70,23 @@
   }
   window.addEventListener("resize", syncTopbarHeight, { passive: true });
 
-  document.getElementById("data-window").textContent =
-    `${Metrics.fmtDate(Data.meta.window.start, "day")} → ` +
-    `${Metrics.fmtDate(Data.meta.window.end, "day")} · UTC`;
+  // Data-window chip: full form on desktop ("16 Jul 2025 → 15 Jul 2026 ·
+  // UTC"); a genuinely shortened two-digit-year form at ≤980px ("16 Jul 25
+  // → 15 Jul 26"). CSS toggles which span shows by the same media width, so
+  // the compact header always renders a real date instead of ellipsing the
+  // full form to nothing (which left a blank gap + a stray "·" before
+  // "updated Nh ago"). Both forms are rewritten on zone switch.
+  function setDataWindow() {
+    const { start, end } = Data.meta.window;
+    const shortYear = (s) => s.replace(/\b\d{2}(\d{2})\b/, "$1");
+    document.querySelector("#data-window .dw-full").textContent =
+      `${Metrics.fmtDate(start, "day")} → ` +
+      `${Metrics.fmtDate(end, "day")} · UTC`;
+    document.querySelector("#data-window .dw-compact").textContent =
+      `${shortYear(Metrics.fmtDate(start, "day"))} → ` +
+      `${shortYear(Metrics.fmtDate(end, "day"))}`;
+  }
+  setDataWindow();
   document.getElementById("foot-built").textContent =
     `Dataset built ${Metrics.fmtDate(Data.meta.built_at, "datetime")} UTC`;
   UI.renderDataAge();
@@ -190,9 +204,7 @@
     mark.textContent = nextZone;
     mark.title = info.label + (info.kind === "reference"
       ? " — reference market, not interconnected with GB" : "");
-    document.getElementById("data-window").textContent =
-      `${Metrics.fmtDate(Data.meta.window.start, "day")} → ` +
-      `${Metrics.fmtDate(Data.meta.window.end, "day")} · UTC`;
+    setDataWindow();
     // Footer follows the zone: GB keeps its exact original source list;
     // ENTSO-E zones replace it (not append) and restate the build time.
     document.getElementById("foot-sources").textContent = nextZone === "GB"
