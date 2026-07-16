@@ -67,7 +67,7 @@ const Charts = (() => {
       animation: false,
       textStyle: { color: css("--text-dim"), fontSize: 11,
                    fontFamily: MONO },
-      grid: { left: 52, right: 56, top: 30, bottom: 42 },
+      grid: { left: 52, right: 56, top: 48, bottom: 42 },
       tooltip: {
         trigger: "axis",
         backgroundColor: css("--bg-raised"),
@@ -131,6 +131,19 @@ const Charts = (() => {
       textStyle: { color: css("--text-dim"), fontSize: 10 } },
   ];
 
+  /* Shared horizontal legend — single row that SCROLLS (paged arrows)
+     rather than wrapping. Long series labels ("Wind (transmission)",
+     "GB price (MID)", "NSL (NO) flow (+import)") used to wrap to 2-3 rows
+     at phone width and spill over the plot and the y-axis name; a scroll
+     legend keeps them on one row at every width. This is the default for
+     every top-anchored legend; pass extra keys (`data`, `selectedMode`,
+     `itemGap`, `padding`) to specialise. The vertical donut legend and the
+     merit swatch legends opt out by not calling this. */
+  function legendBar(extra = {}) {
+    return { type: "scroll", top: 0,
+             textStyle: { color: css("--text-dim") }, ...extra };
+  }
+
   /* -------------------- panel renderers -------------------- */
 
   function overviewMain() {
@@ -140,8 +153,8 @@ const Charts = (() => {
     const demand = Data.aggregate("demand", fromTs, toTs, sec);
     const ren = Data.aggregate("renewables", fromTs, toTs, sec);
     chart("ch-overview-main").setOption(base({
-      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
-      grid: { left: 52, right: 56, top: 30, bottom: 56 },
+      legend: legendBar(),
+      grid: { left: 52, right: 56, top: 48, bottom: 56 },
       xAxis: timeAxis(),
       yAxis: [valueAxis(`${CUR()}/MWh`), valueAxis("GW", { position: "right",
         splitLine: { show: false } })],
@@ -207,7 +220,7 @@ const Charts = (() => {
     const residual = demand.v.map((d, i) =>
       d == null || wind.v[i] == null ? null : GW(d - wind.v[i]));
     chart("ch-overview-residual").setOption(base({
-      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
+      legend: legendBar(),
       xAxis: timeAxis(),
       yAxis: valueAxis("GW"),
       series: [
@@ -252,8 +265,8 @@ const Charts = (() => {
         { yAxisIndex: 1 }));
     }
     chart("ch-price-main").setOption(base({
-      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
-      grid: { left: 52, right: 56, top: 30, bottom: 56 },
+      legend: legendBar(),
+      grid: { left: 52, right: 56, top: 48, bottom: 56 },
       xAxis: timeAxis(), yAxis: yAxes, dataZoom: zoom(), series,
     }), true);
   }
@@ -286,8 +299,7 @@ const Charts = (() => {
     const labels = shape.map((s) =>
       `${String(Math.floor(s.slot / 2)).padStart(2, "0")}:${s.slot % 2 ? "30" : "00"}`);
     chart("ch-price-shape").setOption(base({
-      legend: { data: ["Mean", "p25–p75"],
-        textStyle: { color: css("--text-dim") }, top: 0 },
+      legend: legendBar({ data: ["Mean", "p25–p75"] }),
       xAxis: { type: "category", data: labels,
         axisLabel: { color: css("--text-dim"), interval: 7 },
         axisLine: { lineStyle: { color: css("--border") } } },
@@ -353,8 +365,7 @@ const Charts = (() => {
       title: { text: r == null ? "" : `Pearson r = ${r.toFixed(2)}`,
         right: 10, top: 0,
         textStyle: { color: css("--text-dim"), fontSize: 11, fontWeight: 400 } },
-      legend: { data: series.map((s) => s.name),
-        textStyle: { color: css("--text-dim") }, top: 0 },
+      legend: legendBar({ data: series.map((s) => s.name) }),
       tooltip: { trigger: "item", backgroundColor: css("--bg-raised"),
         borderColor: css("--border"),
         textStyle: { color: css("--text"), fontSize: 12 }, confine: true,
@@ -421,7 +432,7 @@ const Charts = (() => {
           type: "dashed" } }));
     }
     chart("ch-gen-stack").setOption(base({
-      legend: { type: "scroll", textStyle: { color: css("--text-dim") }, top: 0 },
+      legend: legendBar(),
       grid: { left: 52, right: 24, top: 48, bottom: 56 },
       xAxis: timeAxis(),
       yAxis: valueAxis(st.genPercent ? "%" : "GW",
@@ -449,12 +460,11 @@ const Charts = (() => {
       return total > 0 ? +(100 * low / total).toFixed(1) : null;
     });
     const renderLC = (extraSeries) => chart("ch-gen-lowcarbon").setOption(base({
-      // Two long legend labels wrap to a second row at narrow widths —
-      // reserve grid headroom so neither row collides with the y-axis
-      // "100"/"%" labels.
-      legend: { textStyle: { color: css("--text-dim") }, top: 0,
-        itemGap: 16, padding: [2, 8] },
-      grid: { left: 52, right: 56, top: 58, bottom: 42 },
+      // Two long legend labels (headline + import-aware variant): the shared
+      // scroll legend keeps them on one row at every width, so no extra grid
+      // headroom is needed beyond the standard single-row band.
+      legend: legendBar({ itemGap: 16, padding: [2, 8] }),
+      grid: { left: 52, right: 56, top: 48, bottom: 42 },
       xAxis: timeAxis(),
       yAxis: valueAxis("%", { min: 0, max: 100 }),
       series: [
@@ -558,7 +568,7 @@ const Charts = (() => {
     }
     const hasDemand = dMax > dMin;
     chart("ch-gen-renewables").setOption(base({
-      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
+      legend: legendBar(),
       xAxis: timeAxis(),
       // markArea does not stretch the axis on its own — lift the max so the
       // top of the demand band stays visible.
@@ -700,9 +710,8 @@ const Charts = (() => {
     }
 
     chart("ch-merit-bmu").setOption(base({
-      legend: { data: legendLabels, selectedMode: false,
-        textStyle: { color: css("--text-dim") }, top: 0,
-        itemGap: 14, padding: [2, 8] },
+      legend: legendBar({ data: legendLabels, selectedMode: false,
+        itemGap: 14, padding: [2, 8] }),
       grid: { left: 52, right: 30, top: 64, bottom: 48 },
       tooltip: { trigger: "item", backgroundColor: css("--bg-raised"),
         borderColor: css("--border"), confine: true,
@@ -812,8 +821,7 @@ const Charts = (() => {
     }
 
     chart("ch-merit-curve").setOption(base({
-      legend: { data: legendLabels, selectedMode: false,
-        textStyle: { color: css("--text-dim") }, top: 0 },
+      legend: legendBar({ data: legendLabels, selectedMode: false }),
       grid: { left: 52, right: 30, top: 64, bottom: 48 },
       tooltip: { trigger: "item", backgroundColor: css("--bg-raised"),
         borderColor: css("--border"),
@@ -877,10 +885,9 @@ const Charts = (() => {
     const high = Metrics.ccgtSrmc(d.gas_sap, d.carbon_uka_month,
       a.etaCcgtLow, a.efGas, a.vom);
     chart("ch-merit-time").setOption(baseDay({
-      legend: { data: ["CCGT SRMC range", "Daily avg price"],
-        textStyle: { color: css("--text-dim") }, top: 0 },
+      legend: legendBar({ data: ["CCGT SRMC range", "Daily avg price"] }),
       xAxis: timeAxis(), yAxis: valueAxis("£/MWh"), dataZoom: zoom(),
-      grid: { left: 52, right: 24, top: 30, bottom: 56 },
+      grid: { left: 52, right: 24, top: 48, bottom: 56 },
       series: [
         { name: "CCGT SRMC range", type: "line", stack: "band",
           showSymbol: false, data: ts.map((x, i) => [x, low[i]]),
@@ -908,8 +915,8 @@ const Charts = (() => {
     const spark = Metrics.cleanSparkSpread(d.price, d.gas_sap,
       d.carbon_uka_month, { eta: a.eta, efGas: a.efGas, vom: a.vom });
     chart("ch-spread-spark").setOption(baseDay({
-      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
-      grid: { left: 52, right: 24, top: 30, bottom: 56 },
+      legend: legendBar(),
+      grid: { left: 52, right: 24, top: 48, bottom: 56 },
       xAxis: timeAxis(), yAxis: valueAxis("£/MWh"), dataZoom: zoom(),
       series: [
         { ...line(`Clean spark (η=${a.eta})`, ts, spark, "#3fb68b",
@@ -947,7 +954,7 @@ const Charts = (() => {
       itemStyle: { color: colour },
     });
     chart("ch-spread-decomp").setOption(baseDay({
-      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
+      legend: legendBar(),
       xAxis: timeAxis(), yAxis: valueAxis("£/MWh"),
       series: [
         area("Implied fuel cost", fuel, "#ffa94d"),
@@ -987,7 +994,7 @@ const Charts = (() => {
       ? `Clean dark (manual coal £${coal.value}/MWh th, η=${a.etaCoal})`
       : `Clean dark (Newcastle futures proxy, η=${a.etaCoal})`;
     chart("ch-spread-dark").setOption(baseDay({
-      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
+      legend: legendBar(),
       xAxis: timeAxis(), yAxis: valueAxis("£/MWh"),
       series: [{ ...line(name, ts, dark, "#8d7060",
         { areaStyle: { opacity: 0.12 } }),
@@ -1017,8 +1024,8 @@ const Charts = (() => {
     series.push(line("Net", net.t, net.v.map(GW), css("--text"),
       { lineStyle: { width: 1.4, color: css("--text") } }));
     chart("ch-flows-stack").setOption(base({
-      legend: { type: "scroll", textStyle: { color: css("--text-dim") }, top: 0 },
-      grid: { left: 52, right: 24, top: 30, bottom: 56 },
+      legend: legendBar(),
+      grid: { left: 52, right: 24, top: 48, bottom: 56 },
       xAxis: timeAxis(), yAxis: valueAxis("GW"), dataZoom: zoom(), series,
     }), true);
   }
@@ -1040,7 +1047,12 @@ const Charts = (() => {
       tooltip: { trigger: "item", backgroundColor: css("--bg-raised"),
         borderColor: css("--border"), textStyle: { color: css("--text") },
         formatter: (p) => `${p.value[0]} GW net imports<br>£${p.value[1]}/MWh` },
-      xAxis: valueAxis("Net imports (GW)"),
+      // Centre the axis name under the plot (nameGap into the bottom
+      // margin) so it renders in full — the default "end" anchor pushed
+      // "Net imports (GW)" past the grid's right edge and clipped it at
+      // both phone and desktop widths.
+      xAxis: valueAxis("Net imports (GW)",
+        { nameLocation: "middle", nameGap: 28 }),
       yAxis: valueAxis(`${CUR()}/MWh`),
       series: [{ type: "scatter", symbolSize: 3, data: points,
         itemStyle: { color: css("--accent"), opacity: 0.35 } }],
@@ -1509,8 +1521,8 @@ const Charts = (() => {
 
     const top = chart("ch-flows-context");
     top.setOption(base({
-      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
-      grid: { left: 52, right: 56, top: 30, bottom: 56 },
+      legend: legendBar(),
+      grid: { left: 52, right: 56, top: 48, bottom: 56 },
       dataZoom: zoom(),
       tooltip: { trigger: "axis", backgroundColor: css("--bg-raised"),
         borderColor: css("--border"), confine: true,
@@ -1574,14 +1586,18 @@ const Charts = (() => {
 
     const bottom = chart("ch-flows-context-mix");
     bottom.setOption(base({
-      legend: { type: "scroll",
-        textStyle: { color: css("--text-dim") }, top: 0 },
-      grid: { left: 52, right: 56, top: 30, bottom: 42 },
+      legend: legendBar(),
+      grid: { left: 52, right: 56, top: 48, bottom: 42 },
       // Inside zoom only (no second slider in the card); the group
       // connection keeps it in step with the flow chart's zoom.
       dataZoom: [{ type: "inside", start: 0, end: 100 }],
       xAxis: timeAxis(),
-      yAxis: valueAxis("% of zone generation", { min: 0, max: 100 }),
+      // align: "left" anchors the name's left edge at the axis instead of
+      // centring on it — centred, this long name's leading "%" clipped off
+      // the canvas's left edge at phone width (real-device find, 2026-07-16).
+      yAxis: valueAxis("% of zone generation",
+        { min: 0, max: 100,
+          nameTextStyle: { color: css("--text-dim"), align: "left" } }),
       series: mixKeys.map((k, j) => ({
         name: Data.FUELS[k].label, type: "line", stack: "mix",
         showSymbol: false, sampling: "lttb",
@@ -1715,8 +1731,8 @@ const Charts = (() => {
     });
 
     const opt = baseDay({
-      legend: { textStyle: { color: css("--text-dim") }, top: 0 },
-      grid: { left: 52, right: 56, top: 30, bottom: 56 },
+      legend: legendBar(),
+      grid: { left: 52, right: 56, top: 48, bottom: 56 },
       xAxis: timeAxis(),
       yAxis: [
         // The name is longer than the 52px left gutter, and ECharts
@@ -1888,7 +1904,7 @@ const Charts = (() => {
       const data = slice.hz.map((v, i) => [t0 + i * step, v]);
       const entry = (s.days || {})[requested] || {};
       const opt = base({
-        grid: { left: 52, right: 24, top: 30, bottom: 56 },
+        grid: { left: 52, right: 24, top: 48, bottom: 56 },
         xAxis: { ...timeAxis(), axisLabel: { color: css("--text-dim"),
           fontFamily: MONO, hideOverlap: true,
           formatter: (val) => new Date(val).toISOString().slice(11, 16) } },

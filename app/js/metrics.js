@@ -31,11 +31,22 @@ const Metrics = (() => {
     }
   }
 
-  /* Axis tick label for a time axis, adapted to the window length. */
+  /* Axis tick label for a time axis, adapted to the window length.
+     Midnight ticks carry the date; sub-day ticks carry the time. On
+     multi-day windows (2 < rangeDays ≤ 14) ECharts often spaces the ticks
+     roughly a day apart but OFF midnight, so a bare "HH:mm" repeats
+     identically on every tick with no date anywhere — at phone width the
+     whole axis read "23:00 · 23:00 · 23:00". Anchor those off-midnight
+     ticks with the date (two-line label: date over time) so each is
+     unambiguous; keep the short bare time only on genuinely intraday
+     windows (≤2 days), where ticks are hours apart and already distinct. */
   function fmtAxisTick(ms, rangeDays) {
     if (rangeDays >= 270) return fmtDate(ms, "month");
     if (rangeDays > 14) return fmtDate(ms, "axisDay");
-    return ms % 86400000 === 0 ? fmtDate(ms, "axisDay") : fmtDate(ms, "time");
+    if (ms % 86400000 === 0) return fmtDate(ms, "axisDay");
+    return rangeDays > 2
+      ? `${fmtDate(ms, "axisDay")}\n${fmtDate(ms, "time")}`
+      : fmtDate(ms, "time");
   }
 
   /* Clean spark spread (£/MWh): margin of a reference CCGT.

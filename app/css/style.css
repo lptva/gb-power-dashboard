@@ -49,6 +49,11 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+/* Disable iOS Safari's automatic text inflation — on rotation (and
+   sometimes portrait) it enlarges paragraph blocks like the footer and the
+   overnight summary far beyond the design size (real-device iOS, 2026-07-16).
+   Both the prefixed and standard forms, per current browser support. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -71,6 +76,9 @@ body {
 }
 .brand-name { font-weight: 700; font-size: 15px; white-space: nowrap; }
 .brand-sub { color: var(--text-dim); font-size: 12px; }
+/* Data-window renders two forms (see setDataWindow in app.js); width picks
+   one. Desktop: the full "16 Jul 2025 → 15 Jul 2026 · UTC". */
+.dw-compact { display: none; }
 /* Dataset freshness — age, not provenance: not one of the quality badges.
    Amber past 26 h (one missed daily refresh), matching .overnight-stale. */
 .data-age.stale, .refresh-status { color: #bd9a55; font-weight: 600; }
@@ -205,16 +213,40 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
        app.js measures, and 0 on desktop, so this is inert everywhere else. */
     top: calc(-1 * var(--topbar-above, 0px));
   }
-  .brand    { order: 1; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
-  .controls { order: 2; margin-left: 0; flex-wrap: wrap; }
-  .tabs     { order: 3; }
+  /* max-width: 100% on all three stacked children is load-bearing, not
+     belt-and-braces: align-items: stretch clamps a column flex child at
+     its MIN-CONTENT floor, so the nowrap tab strip (~709px of buttons)
+     and the nowrap brand chips propagated their content width straight
+     through their own overflow rules — the whole header rendered 709px
+     wide inside a 390px viewport and dragged the page into horizontal
+     scroll (measured in real WebKit, 2026-07-16; every overflow offender
+     on a fresh phone load was one of these three rows). */
+  .brand    { order: 1; min-width: 0; max-width: 100%;
+              flex-wrap: nowrap; overflow: hidden; }
+  .controls { order: 2; min-width: 0; max-width: 100%;
+              margin-left: 0; flex-wrap: wrap; }
+  .tabs     { order: 3; min-width: 0; max-width: 100%; }
 
   /* Brand/date compacted to a single truncating line — the date window is
      the flexible element that ellipses; the mark and title stay put. Text
      is untouched (CSS-only), per brief. */
   .brand-mark, .brand-name { flex: 0 0 auto; }
   .brand-sub { white-space: nowrap; }
-  #data-window { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* Compact header: swap to the short two-digit-year date form so the chip
+     shows a real, complete date instead of ellipsing the long form to
+     nothing (which left a blank gap + a stray separator dot). The short
+     form is flex-fixed so it renders in full rather than being the row's
+     shrink victim. */
+  /* Freshness beats the fixed window on a phone (owner, 2026-07-16): the
+     "updated Nh ago" chip is what a link-clicking visitor needs, the date
+     range is decoration — so the date is the element that yields (min-width
+     0 absorbs all the shrinkage, ellipsing cleanly) while the chips stay
+     fixed-size and visible. */
+  #data-window { flex: 0 1 auto; min-width: 0; white-space: nowrap;
+                 overflow: hidden; text-overflow: ellipsis; }
+  .data-age, .refresh-status, .stress-chip { flex: 0 0 auto; }
+  .dw-full { display: none; }
+  .dw-compact { display: inline; }
 
   /* Tabs: one non-wrapping, horizontally scrollable strip with momentum
      scrolling and a visually minimal scrollbar. */
@@ -245,6 +277,12 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
 
 .chart { height: 300px; width: 100%; position: relative; }
 .chart.tall { height: 400px; }
+/* Containment backstop: ECharts writes fixed inline pixel widths on its
+   wrapper and canvas at init, and a stale (too-wide) value would otherwise
+   drag the whole page into horizontal scroll until the next resize. Capped
+   here so a mis-sized canvas squishes inside its card instead of widening
+   the document — resizeAll() then corrects it on the next tick/resize. */
+.chart > div, .chart canvas { max-width: 100%; }
 /* Cards in a grid row stretch to the row's tallest card; a card whose
    chart is its last element can be left with a dead band under the plot
    when its neighbour has more head content (e.g. CCGT decomposition next
@@ -446,7 +484,15 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
 
 /* methodology */
 .method-body h3 { font-size: 14px; margin: 18px 0 6px; }
-.method-body table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+/* The wide multi-column source / fuel-map tables render ~681px unclipped
+   and dragged the whole Methodology tab into 328px of horizontal page
+   scroll at phone width. Make each table its own contained scroll region
+   (same treatment as #util-table on the Flows tab): display:block turns the
+   table into a scroll container so overflow-x stays inside the card. */
+.method-body table {
+  display: block; overflow-x: auto; max-width: 100%;
+  border-collapse: collapse; width: 100%; font-size: 12.5px;
+}
 .method-body th, .method-body td {
   text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border);
   vertical-align: top;
