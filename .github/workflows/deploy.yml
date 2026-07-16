@@ -1,0 +1,204 @@
+name: deploy
+
+# Milestone A scope (plan/07 §7): MANUAL proof only, no automation yet.
+#
+# The scheduled trigger is deliberately ABSENT at this stage and lands in its
+# own follow-up once Milestone A is proven (Milestone B). When it returns it
+# goes exactly here:
+#
+#   schedule:
+#     - cron: "30 6 * * *"        # 06:30 UTC = 07:30 BST — D5 (approved)
+#
+on:
+  workflow_dispatch:               # the only trigger for Milestone A
+    inputs:
+      cold_start:
+        description: >-
+          Marks an INTENTIONAL rebuild, suppressing the state-loss warning
+          (plan/07 §0). Leave false for a normal run; set true only when you
+          expect no snapshot to exist (e.g. the very first run).
+        type: boolean
+        default: false
+
+concurrency:
+  group: pages
+  cancel-in-progress: false        # never interrupt a half-published deploy
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write              # snapshot restore + --clobber upload only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The ETL needs certifi (the test suite does not — tests.yml stays
+      # stdlib-only; these two workflows deliberately differ here).
+      - run: pip install certifi
+
+      # Install the claude CLI — needed because ENABLE_AI_SUMMARY=true (D3, §5).
+      # ubuntu-latest ships node, so the documented non-interactive install is
+      # a plain global npm install.
+      - run: npm install -g @anthropic-ai/claude-code
+
+      # Restore + validate the state snapshot (3 gates, plan/07 §0 D8/D9). The
+      # script sets warm=true|false, always records the path taken to the step
+      # summary, and emits ::warning:: on an UNREQUESTED cold start. It NEVER
+      # aborts the job on a cold outcome — a cold start is a valid result, not
+      # an error. (This step and the snapshot-upload step are the ONLY places
+      # GITHUB_TOKEN appears.)
+      - id: restore
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}    # gh CLI auth — this step only
+          REQUESTED_COLD: ${{ inputs.cold_start }} # "true" only when asked for;
+                                                   # empty on a future schedule:
+                                                   # trigger → treated as not
+                                                   # requested (state-loss warn)
+        run: bash ops/ci/restore_snapshot.sh
+
+      # WARM path: the orchestrator, exactly as it runs locally (D9). refresh.py
+      # owns its own non-fatal handling (run_non_fatal) and exits non-zero only
+      # on the core step, so no extra guarding is needed here.
+      - if: steps.restore.outputs.warm == 'true'
+        env:
+          ENTSOE_TOKEN: ${{ secrets.ENTSOE_TOKEN }}
+          ENABLE_AI_SUMMARY: "true"                # D3 = yes (§5)
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # No GITHUB_TOKEN here: this step spawns an LLM with Bash access, so
+          # repo-write creds stay out of it. Nothing in ops/ or etl/ reads
+          # GITHUB_TOKEN or calls gh (verified).
+        run: python3 ops/refresh.py
+
+      # COLD path: run the builders DIRECTLY. refresh.py takes NO CLI args and
+      # is structurally incapable of a cold start (D9), so we must not call it
+      # (doing so after the builders would re-run the whole pipeline twice).
+      #
+      # WHY the explicit non-fatal handling below: the warm path inherits
+      # run_non_fatal from refresh.py; the cold path does NOT, and Actions runs
+      # bash with `-eo pipefail`. In particular run_overnight_summary.py exits
+      # NON-ZERO even on a benign skip (flag off / claude CLI missing), so every
+      # non-fatal command is written as `cmd || echo "::warning::…"` — a
+      # non-zero exit can then never kill the job. Only build_dataset.py is
+      # fatal (the core step), matching refresh.py's semantics.
+      - if: steps.restore.outputs.warm != 'true'
+        env:
+          ENTSOE_TOKEN: ${{ secrets.ENTSOE_TOKEN }}
+          ENABLE_AI_SUMMARY: "true"                # D3 = yes (§5)
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # No GITHUB_TOKEN — same reason as the warm step (LLM with Bash).
+          ZONE_DAYS: "60"   # 60, not 365: a single unchunked 365-day A75 request
+                            # times out (probed live 2026-07-16). Zone history
+                            # accumulates from 31 May 2026, so a 60-day window
+                            # covers it in full only until 30 Jul 2026 (31 May
+                            # + 60 d). From 31 Jul a COLD start silently drops
+                            # the earliest days; warm runs are unaffected (the
+                            # snapshot carries full history). REVISIT BY
+                            # 30 Jul 2026 (see plan/07 §2).
+        run: |
+          # Core dataset — FATAL if it fails (the core step; matches refresh.py,
+          # where only the core step exits non-zero). No guard: let -e stop here.
+          python3 etl/build_dataset.py --days 365
+
+          # System-stress history — NON-FATAL.
+          python3 etl/fetch_stress.py --backfill 365 \
+            || echo "::warning::stress backfill failed — system-stress history degraded"
+
+          # ENTSO-E zones — NON-FATAL per zone, naming the zone on failure.
+          for Z in FR NL BE NO_2 DK_1 IE DE_LU; do
+            python3 etl/fetch_entsoe.py --zone "$Z" --days "$ZONE_DAYS" \
+              || echo "::warning::zone $Z refresh failed — switcher may drop $Z"
+          done
+
+          # AI overnight summary — NON-FATAL. Exits non-zero even on a benign
+          # skip, so it MUST be guarded or -e kills the job.
+          python3 ops/run_overnight_summary.py \
+            || echo "::warning::overnight summary failed or skipped — AI panel not updated"
+
+      # CI would otherwise run blind: refresh.py sends every step's output to
+      # ops/logs/refresh_<date>.log, which is gitignored and outside app/, so it
+      # is neither published nor snapshotted. Surface it in the run log.
+      - if: always()
+        run: cat ops/logs/refresh_*.log || true
+
+      # Bake the build stamp into the EPHEMERAL checkout only — never committed,
+      # so the repo and the working tree keep the literal placeholder (§4). This
+      # matches the literal __BUILD_STAMP__ that the index.html change (a
+      # parallel task) introduces.
+      - run: sed -i "s/__BUILD_STAMP__/${GITHUB_SHA::7}/" app/index.html
+
+      # Persist ETL state as a rolling snapshot on the data-snapshot DRAFT
+      # release (plan/07 §0 D1). This sits BEFORE the Pages publish by design
+      # (§2 ordering): if a later deploy fails, state races slightly ahead and
+      # the next successful deploy catches the site up — no data lost, nothing
+      # silent. The data work above is already done, so failing here loses none
+      # of it. Upload failures here fail the job LOUDLY (this is the
+      # state-persistence step; a silent failure would strand the next run).
+      #
+      # Draft releases may not resolve by tag via `gh release` (unverified
+      # upstream — plan/07 §0), so the release is addressed BY ID via `gh api`.
+      # Deterministic-by-ID is the PRIMARY path by design (plan/07 §0): resolve
+      # (or create) the draft by ID, delete any existing asset by ID to emulate
+      # --clobber, then POST the new asset. Tarball FIRST, then the checksum.
+      - name: Upload state snapshot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}    # gh CLI auth — this step only
+        run: |
+          set -euo pipefail
+          tar czf app-data.tar.gz app/data
+          sha256sum app-data.tar.gz > app-data.tar.gz.sha256
+          repo="${GITHUB_REPOSITORY}"
+
+          # Resolve the data-snapshot DRAFT release by ID; create it if absent
+          # (it does not exist on run 1). It is created as a DRAFT (never
+          # published) so this internal ETL state stays off the public Releases
+          # page.
+          rid="$(gh api "/repos/${repo}/releases?per_page=100" \
+                 --jq '[.[] | select(.tag_name=="data-snapshot" and .draft==true)][0].id // empty')"
+          if [ -z "$rid" ]; then
+            echo "no data-snapshot draft release yet — creating it (run 1)"
+            rid="$(gh api -X POST "/repos/${repo}/releases" \
+                     -f tag_name=data-snapshot \
+                     -f name='ETL state snapshot (internal)' \
+                     -F draft=true \
+                     -f body='Internal CI state for the hosted dashboard — the rolling app/data snapshot (tarball + checksum) that lets each run start warm instead of rebuilding from scratch. This is NOT a release of the software; it is machine-managed pipeline state (plan/07 §0), kept as a draft so it stays off the public Releases page.' \
+                     --jq '.id')"
+          fi
+          echo "data-snapshot draft release id=${rid}"
+
+          # Emulate --clobber by ID: delete any existing asset of this name,
+          # then upload. (The uploads host differs from the API host.)
+          upload_asset() {
+            local f="$1" existing aid
+            existing="$(gh api "/repos/${repo}/releases/${rid}/assets?per_page=100" \
+                        --jq ".[] | select(.name==\"${f}\") | .id")"
+            for aid in ${existing}; do
+              echo "deleting existing asset ${f} (id=${aid})"
+              gh api -X DELETE "/repos/${repo}/releases/assets/${aid}"
+            done
+            echo "uploading ${f}"
+            gh api -X POST \
+              "https://uploads.github.com/repos/${repo}/releases/${rid}/assets?name=${f}" \
+              -H "Content-Type: application/octet-stream" \
+              --input "${f}"
+          }
+
+          # Tarball FIRST, then the checksum (plan/07 §0 ordering).
+          upload_asset app-data.tar.gz
+          upload_asset app-data.tar.gz.sha256
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app
+
+  deploy:
+    needs: build
+    environment: github-pages
+    runs-on: ubuntu-latest
+    permissions:                   # deliberately NO contents: key — the Pages
+      pages: write                 # credentials and the repo-write credentials
+      id-token: write              # never coexist in one job (plan/07 §0)
+    steps:
+      - uses: actions/deploy-pages@v4
