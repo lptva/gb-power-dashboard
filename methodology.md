@@ -1,6 +1,6 @@
 # Methodology
 
-This file mirrors the in-app Methodology tab. The app builds its tab from ETL metadata at runtime, so if the two ever disagree, trust the app. All timestamps are UTC. Half-hourly values are stamped with the start of their settlement interval.
+This file and the in-app Methodology tab split the documentation deliberately. The tab explains each panel's sourcing and maths next to the panels themselves, and its source and coverage tables render from live ETL metadata at runtime, so for what the dashboard is currently doing, trust the tab. This file is the reviewer document: the canonical schema, the formula register, the data windows and the judgement calls live here, and the judgement calls exist nowhere else. Where the two overlap in hand-written prose (utilisation ranking, low-carbon share, the spreads) each copy is maintained separately, so treat the tab as current for behaviour and this file as canonical for rationale. All timestamps are UTC. Half-hourly values are stamped with the start of their settlement interval.
 
 ## Canonical schema
 
@@ -52,6 +52,24 @@ A day is flagged when any of four rules fires. `frequency` fires when seconds be
 
 `events/<date>/freq.json` (optional, same pipeline) stores grid-aligned 15 s frequency for **every flagged day**, any flag type: `start_utc`, `step_seconds`, `hz[5760]` with `null` gaps. The app fetches slices lazily, one per view. Each is ~40 kB on disk and none of it joins the eager page payload.
 
+## Data windows
+
+Every day-count in this project is one of three kinds, and they behave differently by design: a rolling analytical window moves forward daily and data leaving it is intended; accumulating history grows monotonically and never truncates, so anything that shortened it would be a bug; an infrastructure constraint bounds rare rebuild operations and is not an analytical choice at all. The table maps every documented day-count to its kind.
+
+| Day-count | Applies to | Kind | Defined in |
+|---|---|---|---|
+| 365 d rolling | core GB dataset, every tab's charts | rolling analytical window | `etl/build_dataset.py` |
+| trailing 90 d, sustained ≥ 2 h | utilisation ceiling (Flows ranking) | rolling analytical window | `app/js/metrics.js`, rules in this file |
+| up to 365 d, point-in-time, strictly before each day | stress flag baselines | rolling analytical window | `etl/fetch_stress.py` |
+| at least 90 d of history | stress percentile bands, else `insufficient history` | floor on the stress baselines, not a window itself | `etl/fetch_stress.py` |
+| trailing 14 d | overnight AI summary z-score baselines | rolling analytical window | `ops/panel_facts.py` |
+| append-only since 31 May 2026 | zone history: low-carbon import attribution, Flows differential, zone switcher | accumulating history; hosted snapshot-loss caveat in the utilisation ranking section | `etl/fetch_entsoe.py` |
+| append-only, at least 400 d retained | `stress_daily.json` | accumulating history, independent of the core window | `etl/fetch_stress.py` |
+| `--days 365` full rebuild, `--backfill 365` stress seed | first install and disaster recovery | infrastructure constraint | README, `.github/workflows/deploy.yml` |
+| `--days 7` zone top-up | daily scheduled refresh | infrastructure constraint | `ops/refresh.py` |
+| `ZONE_DAYS=60` | hosted cold start only; covers the accumulated zone history only until 30 Jul 2026 | infrastructure constraint | `.github/workflows/deploy.yml` |
+| `--days 30` | manual zone-fetch default | infrastructure constraint | `etl/fetch_entsoe.py` |
+
 ## Formulas
 
 **Clean spark spread** (£/MWh, daily, Estimated):
@@ -96,11 +114,11 @@ Solar is deliberately **not** subtracted. INDO is transmission-level demand, so 
 
 Observed half-hourly price scattered against derived net load, with an optional overlay of the median per 2 GW bin (bins with fewer than 12 half-hours are dropped). Same reasoning as residual load: INDO already nets off embedded solar, so PV_Live solar appears in the tooltip as context but not in the formula.
 
-**Import-aware low-carbon share** (Estimated, GB Overview): per half-hour, `(GB low-carbon + Σ import_flow × zone_low_carbon_fraction) / (GB generation + Σ import_flow)`. Each importing cable is attributed at its counterparty zone's own low-carbon generation fraction from the ENTSO-E zone datasets. This is first-order counterparty-mix attribution only: no flow tracing, and the zone's own imports are not re-attributed. It exists only over the accumulated zone history (append-only from 31 May 2026, extended by the daily refresh, no backfill). Where zone data is missing at a timestamp, that cable reverts to denominator-only. The line is shown beside the unbroken headline metric, never spliced into it.
+**Import-aware low-carbon share** (Estimated, GB Overview): per half-hour, `(GB low-carbon + Σ import_flow × zone_low_carbon_fraction) / (GB generation + Σ import_flow)`. Each importing cable is attributed at its counterparty zone's own low-carbon generation fraction from the ENTSO-E zone datasets. This is first-order counterparty-mix attribution only: no flow tracing, and the zone's own imports are not re-attributed. It exists only over the accumulated zone history (append-only from 31 May 2026, extended by the daily refresh, no backfill; the 31 May start date is subject to the same hosted snapshot-loss exception as the utilisation ranking's; see that section's note). Where zone data is missing at a timestamp, that cable reverts to denominator-only. The line is shown beside the unbroken headline metric, never spliced into it.
 
 **Counterparty context** (Flows tab): a selected cable's flow (Observed) alongside the counterparty zone's day-ahead price and generation mix. The price converts at the daily BoE EUR/GBP rate (`fx_eur_per_gbp`, series XUDLERS) and is Derived, indicative only: a day-ahead auction price against GB's within-day MID. The mix is zone-wide context, not attribution of the cable's electrons. Zone history accumulates append-only at ~6 kB/day/zone (`--retain-days` can trim it if size ever matters). Longer ranges clip to the overlap, which deepens over time. DE_LU is a reference market with no GB cable and is excluded here. The flow chart overlays the cable's per-direction operational ceilings (dashed) and cited nameplate (dotted). The flow axis is fixed to the design envelope, ±1.05 × max(nameplate, ceilings), so the gap between design and practice stays visible instead of being autoscaled away. Congestion-proxy half-hours are shaded amber, with definitions identical to the Utilisation ranking and Congestion proxy entries below (the code paths are shared): an approximation, not a shadow price. The axis tooltip repeats that label over shaded periods, and the caption counts the shaded half-hours in view.
 
-**Utilisation ranking** (Flows tab, flows Observed, ceilings and differential Proxy / Derived). Per cable and direction, the operational ceiling is the highest flow sustained for at least 2 hours over the trailing 90 days. That means 4 half-hours, not necessarily consecutive, in other words the 4th-largest reading. The window rolls forward with each refresh. A plain max is not robust here: the FUELHH interconnector columns carry occasional single-half-hour spike artefacts well above anything the cable sustains, and an unfiltered max would lift a pegged cable's ceiling above its true plateau and zero its utilisation count. A nameplate-based plausibility cap fails the other way, because cables can genuinely sustain flows somewhat above their published rating. The sustained rule drops isolated artefacts and keeps genuine plateaus without consulting nameplate. Dated examples of both failure modes are in the CHANGELOG entry for this panel. GB interconnectors sit outside any flow-based capacity-calculation region (capacity is allocated per cable), so no technical limit or shadow price is published. The observed ceiling self-adjusts to de-ratings and phased ramp-ups. A direction whose ceiling falls below 5% of nameplate is treated as offline rather than flagging noise as utilisation. Near-capacity means |flow| ≥ 90% of that ceiling, tested per half-hour over the selected range. The table ranks cables by near-capacity share and shows the mean GB MID − counterparty day-ahead differential over exactly those half-hours (daily BoE EUR/GBP conversion, indicative only, since the two prices come from different market segments). The two dates in the panel caption differ in kind, not by typo. The ceiling window is rolling, trailing 90 days, and shifts daily. 31 May 2026 is a fixed start date, the day zone price collection began (append-only, no backfill), and it never moves. Three cables share one counterparty price series: Moyle lands in Northern Ireland and East-West/Greenlink in the Republic of Ireland, but all three connect GB to the same all-island SEM bidding zone, so their differentials use the same SEM day-ahead series. The rows stay distinct because each differential is averaged over that cable's own near-capacity half-hours. A view toggle offers the flat ranking (default) or grouping by counterparty market, with groups ordered by each market's best near-capacity share and the within-group order keeping the ranking. The toggle is presentation only, the metrics are identical in both views.
+**Utilisation ranking** (Flows tab, flows Observed, ceilings and differential Proxy / Derived). Per cable and direction, the operational ceiling is the highest flow sustained for at least 2 hours over the trailing 90 days. That means 4 half-hours, not necessarily consecutive, in other words the 4th-largest reading. The window rolls forward with each refresh. A plain max is not robust here: the FUELHH interconnector columns carry occasional single-half-hour spike artefacts well above anything the cable sustains, and an unfiltered max would lift a pegged cable's ceiling above its true plateau and zero its utilisation count. A nameplate-based plausibility cap fails the other way, because cables can genuinely sustain flows somewhat above their published rating. The sustained rule drops isolated artefacts and keeps genuine plateaus without consulting nameplate. Dated examples of both failure modes are in the CHANGELOG entry for this panel. GB interconnectors sit outside any flow-based capacity-calculation region (capacity is allocated per cable), so no technical limit or shadow price is published. The observed ceiling self-adjusts to de-ratings and phased ramp-ups. A direction whose ceiling falls below 5% of nameplate is treated as offline rather than flagging noise as utilisation. Near-capacity means |flow| ≥ 90% of that ceiling, tested per half-hour over the selected range. The table ranks cables by near-capacity share and shows the mean GB MID − counterparty day-ahead differential over exactly those half-hours (daily BoE EUR/GBP conversion, indicative only, since the two prices come from different market segments). The two dates in the panel caption differ in kind, not by typo. The ceiling window is rolling, trailing 90 days, and shifts daily. 31 May 2026 is a fixed start date, the day zone price collection began (append-only, no backfill), and it never moves under normal operation; the one exception is a full loss of the hosted deploy's state snapshot after 30 Jul 2026, whose automatic cold rebuild refetches only a 60-day zone window and would start the series later until a manual backfill restores the older history (see `.github/workflows/deploy.yml`). Three cables share one counterparty price series: Moyle lands in Northern Ireland and East-West/Greenlink in the Republic of Ireland, but all three connect GB to the same all-island SEM bidding zone, so their differentials use the same SEM day-ahead series. The rows stay distinct because each differential is averaged over that cable's own near-capacity half-hours. A view toggle offers the flat ranking (default) or grouping by counterparty market, with groups ordered by each market's best near-capacity share and the within-group order keeping the ranking. The toggle is presentation only, the metrics are identical in both views.
 
 Nameplate reference capacities are shown for context and never used in the near-capacity test. They are operator-published design ratings, cross-checked 2026-07-10 against DESNZ, "Electricity interconnectors' contribution to security of supply" (October 2025, capacity-market derating annex, assets.publishing.service.gov.uk) and Elexon's interconnector register (elexon.co.uk/bsc/about/interconnectors/): IFA 2,000 MW · IFA2 1,000 MW · ElecLink 1,000 MW · BritNed 1,000 MW · Nemo Link 1,000 MW · NSL 1,400 MW · Viking Link 1,400 MW · Moyle 500 MW · East-West 500 MW · Greenlink 500 MW. The constants live in `app/js/data.js` (`INTERCONNECTORS.nameplate_mw`).
 
@@ -108,10 +126,7 @@ Nameplate reference capacities are shown for context and never used in the near-
 
 ## CSV downloads
 
-The ⤓ CSV button downloads the data behind the active tab. The filename
-encodes the tab, the date window and, where the tab has one, the selected
-resolution. The button is hidden on Glossary and Methodology, since neither
-view has data behind it.
+The ⤓ CSV button downloads the data behind the active tab. The filename encodes the tab, the date window and, where the tab has one, the selected resolution. The button is hidden on Glossary and Methodology, since neither view has data behind it.
 
 **`<zone>_market_<from>_<to>_<res>.csv`** (Overview, Prices, Generation).
 Observed data, net imports derived.
@@ -126,51 +141,22 @@ Observed data, net imports derived.
 
 Values are bucket means at the selected resolution.
 
-**`gb_spreads_<from>_<to>.csv`** (Spreads). Observed inputs, Estimated
-spreads, coal Proxy or Assumption depending on source. Existing daily
-columns, including `carbon_is_ffill` and `coal_is_ffill`. The coal trio
-(`coal_proxy_gbp_mwh_th`, `coal_is_ffill`, `clean_dark_gbp_mwh`) appears
-only when a coal price exists. A manual coal entry overrides the ETL proxy
-and leaves `coal_is_ffill` blank for that row.
+**`gb_spreads_<from>_<to>.csv`** (Spreads). Observed inputs, Estimated spreads, coal Proxy or Assumption depending on source. Existing daily columns, including `carbon_is_ffill` and `coal_is_ffill`. The coal trio
+(`coal_proxy_gbp_mwh_th`, `coal_is_ffill`, `clean_dark_gbp_mwh`) appears only when a coal price exists. A manual coal entry overrides the ETL proxy and leaves `coal_is_ffill` blank for that row.
 
-**`gb_flows_<from>_<to>_<res>.csv`** (Flows). `timestamp`, `net_imports_mw`,
-and one signed MW column per cable, positive for import. Two honesty notes:
+**`gb_flows_<from>_<to>_<res>.csv`** (Flows). `timestamp`, `net_imports_mw`, and one signed MW column per cable, positive for import. Two honest notes:
 
-- Per-cable cells keep gaps as gaps, but `net_imports_mw` counts a missing
-  cable reading as zero. A row with a gap in one cable therefore does not
-  sum exactly across the row. This is existing behaviour, stated here, not
-  fixed.
-- Utilisation and congestion columns are deliberately absent. They are
-  window-level derived views, not per-row quantities (see the Utilisation
-  ranking and Congestion proxy entries above): the ceilings come from a
-  trailing 90-day window, so a per-row percentage would be a metric the
-  tab never computes. To reproduce the ranking table's ceilings and
-  near-capacity shares from an export, take a 30-minute export covering
-  the trailing 90 days (the 3M preset or longer) and apply the documented
-  rules: the 4th-largest reading per direction, the 90% near-capacity
-  threshold, and the 5% nameplate floor for treating a direction as
-  offline. The congestion proxy is NOT reproducible from exports alone.
-  It also needs the counterparty day-ahead price series, which is not in
-  this file.
+- Per-cable cells keep gaps as gaps, but `net_imports_mw` counts a missing cable reading as zero. A row with a gap in one cable, therefore, does not sum exactly across the row. This is existing behaviour, stated here, not fixed.
+- Utilisation and congestion columns are deliberately absent. They are window-level derived views, not per-row quantities (see the Utilisation ranking and Congestion proxy entries above): the ceilings come from a  trailing 90-day window, so a per-row percentage would be a metric the tab never computes. To reproduce the ranking table's ceilings and near-capacity shares from an export, take a 30-minute export covering the trailing 90 days (the 3M preset or longer) and apply the documented rules: the 4th-largest reading per direction, the 90% near-capacity threshold, and the 5% nameplate floor for treating a direction as offline. The congestion proxy is NOT reproducible from exports alone. It also needs the counterparty day-ahead price series, which is not in this file.
 
-**`gb_stress_<from>_<to>.csv`** (System stress, daily). The metric columns
-mirror the `stress_daily.json` fields already tabled in the System stress
-section above, so they are not repeated here, plus `emn_count` and `flags`.
+**`gb_stress_<from>_<to>.csv`** (System stress, daily). The metric columns mirror the `stress_daily.json` fields already tabulated in the System stress section above, so they are not repeated here, plus `emn_count` and `flags`.
 
-`emn_count` is the number of Electricity Margin Notices issued that day,
-observed from Elexon SYSWARN with publish-date attribution and
-cancellation notices excluded. 0 means no EMN was issued that day. In the
-underlying `stress_daily.json` the key is present only on days with at
-least one issuance, and the CSV writes the zero explicitly.
+`emn_count` is the number of Electricity Margin Notices issued that day, observed from Elexon SYSWARN with publish-date attribution and cancellation notices excluded. 0 means no EMN was issued that day. In the
+underlying `stress_daily.json` the key is present only on days with at least one issuance, and the CSV writes the zero explicitly.
 
-`flags` is the day's fired flag types joined with a `+` sign, empty when
-none fired. Per-flag values and thresholds, and the display-only `pctl`
-percentile context, stay in `stress_daily.json`, which this file points at
-rather than duplicating.
+`flags` is the day's fired flag types joined with a `+` sign, empty when none are fired. Per-flag values and thresholds and the display-only `pctl` percentile context stay in `stress_daily.json`, which this file points at rather than duplicating.
 
-**`gb_merit_<date>.csv`** (Merit order). One row per plotted tranche of the
-modelled curve, sorted SRMC ascending. Estimated throughout. It is a
-snapshot at the latest observed inputs, dated by the window end, not a
+**`gb_merit_<date>.csv`** (Merit order). One row per plotted tranche of the modelled curve, sorted SRMC ascending. Estimated throughout. It is a snapshot of the latest observed inputs, dated by the window end, not a
 range series.
 
 | Column | Meaning |
@@ -179,21 +165,17 @@ range series.
 | `contains_assumptions` | true where the technology's SRMC range is a broad estimate (see Formulas above) |
 | `gas_sap_gbp_mwh_th`, `carbon_uka_gbp_t`, `coal_gbp_mwh_th` (when present) | the constant inputs held fixed across every row, so the file is self-reproducing against the SRMC formulas above |
 
-Two related exports live elsewhere, not in this file: the observed-dispatch
-panel's raw per-unit data is already a served file at
-`data/bmu_snapshot.json` (schema documented above), and the SRMC-vs-price
-time series is reproducible from the spreads CSV plus the CCGT SRMC
-formula above.
+Two related exports live elsewhere, not in this file: the observed-dispatch panel's raw per-unit data is already a served file at `data/bmu_snapshot.json` (schema documented above), and the SRMC-vs-price time series is reproducible from the spreads CSV + the CCGT SRMC formula above.
 
-No export contains free text. Every value is a number, an ISO date or
-timestamp, a boolean, or a value from a fixed token set, because the CSV
-writer does no comma-escaping.
+No export contains free text. Every value is a number, an ISO date or timestamp, a boolean, or a value from a fixed token set, because the CSV writer does no comma-escaping.
 
 ## Zone set (Europe extension)
 
 Two inclusion rules, never mixed silently. *Interconnected* zones are GB's physical counterparty bidding zones, one per cable landing market: FR (IFA, IFA2, ElecLink), NL (BritNed), BE (Nemo), NO_2 (North Sea Link), DK_1 (Viking Link) and IE/SEM (Moyle, EWIC, Greenlink). DE_LU has **no direct GB cable**. It is included as a *reference market* only, the European price anchor, labelled "· ref" in the switcher and flagged on the Methodology tab so it is never read as a flow counterparty. Settlement currency is read from each zone's A44 response (EUR for all current zones, NO_2 included), never assumed. Merit order, Spreads and Flows stay GB-only: there are no per-zone SRMC assumptions, ENTSO-E data has no CCGT/OCGT split, and cross-border flows are not fetched per zone. Those tabs therefore hide off-GB, and the in-app Methodology tab says why. IE quirk: ENTSO-E publishes each document type against a specific area type. Day-ahead prices sit under the SEM bidding-zone EIC, and load sits under the Ireland control-area EIC. Both codes are current, and the fetcher handles the split automatically, confirmed by probing the API directly and against ENTSO-E's published area-code documentation.
 
 ## Judgement calls a reviewer should know about
+
+Several of these choices turn on day-counts; the Data windows table above states which kind of window each one is.
 
 1. **MID, not day-ahead.** The dashboard's "price" is the Market Index Data price. It tracks the day-ahead auction closely in normal conditions but diverges in stressed periods. Chosen because it is the only free, half-hourly, officially published GB price series.
 2. **UKA forward-fill.** CCM monthly averages lag by one to two months. Spreads in the most recent weeks therefore use a carried-forward carbon price, flagged in the KPI and via `carbon_ffill`. The alternative, dropping recent spreads entirely, was judged less useful than a flagged estimate.
@@ -207,4 +189,4 @@ Two inclusion rules, never mixed silently. *Interconnected* zones are GB's physi
 10. **Interconnector ceilings are observed, not published.** The utilisation panel's per-direction ceiling is the highest flow sustained ≥2 h over the trailing 90 days, deliberately preferred to nameplate. Nameplate overstates cables in de-rating or phased ramp-up (Moyle chronically, Viking Link at launch), while an observed ceiling mislabels nothing that actually flowed. The sustained-2h rule (the 4th-largest reading) exists because both simpler candidates fail on real data. A raw max is broken by isolated single-period metering spikes, which would lift a pegged cable's ceiling above its true plateau and zero its utilisation count. A nameplate plausibility cap clips genuine operation, because cables can sustain flows somewhat above their published rating. Dated examples of both failure modes are in the CHANGELOG entry for this panel. Known costs, accepted and stated: a persistent de-rating reads as "capacity", a 90-day window lags a recovery, a rarely-used direction's ceiling reflects use rather than capability (a cable that mostly flows one way has an unrevealing ceiling in the other direction), and 4 or more isolated spikes at the same level within a window would still set a false ceiling. Nameplate is retained as a cited reference column so the gap between design and practice stays visible. The near-capacity threshold (90%), ceiling window (90 days) and sustain length (2 h) are presentation choices, stated in the UI.
 11. **The congestion flag is a two-condition proxy, conservative by design.** Requiring BOTH at-ceiling flow AND a direction-consistent wide spread means the flag under-counts congestion when thresholds miss borderline periods. It also deliberately refuses two tempting over-counts: wide spreads with slack flow (outages and ramp limits look like that) and counter-price at-limit flows (emergency actions look like that, and 23 Jun 2026 is the canonical example). The tail (p75/p25), the floor (£5/MWh) and the fixed spread population (the full accumulated zone window) are presentation choices, stated in the UI. None of it is a shadow price. GB's explicitly allocated cables publish nothing of the kind, which is also why the flag is named a proxy everywhere it appears.
 12. **Stress flags use two complementary signal families, and the FREQ feed needs a plausibility band.** The Elexon FREQ dataset carries occasional literal-0.0 Hz samples: 18 days of the first 365-day backfill were affected, the worst carrying 404 such samples. A live grid cannot read 0.0 Hz, and unfiltered each sample counts as 15 s of fake excursion below both the 49.8 and 49.5 Hz thresholds. Samples outside 45–55 Hz are therefore gaps, never readings (the modern GB record has never left 48.8–50.5). On the rules themselves: LoLP and de-rated margin are *leading margin* indicators, and they stayed near zero through the year's worst delivery event (23 Jun 2026, max LoLP 0.0017). Frequency, price and EMNs are *outcome* indicators, and they stayed quiet through the year's clearest managed adequacy squeeze (8 Jan 2026: zero excursion seconds, no EMN, LoLP 0.036). Neither family may be dropped in favour of the other. The flag set is their union, and each flag carries the value and the exact point-in-time threshold it fired against.
-13. **The overnight AI summary is Claude-only by design, not an oversight.** The panel is generated by invoking the Claude Code CLI as a version-controlled agent (`.claude/agents/dashboard-watcher.md`), authenticated against a Claude subscription rather than a metered API key, and the publish validator, the cost/turn logging and the transient-error retry all parse that CLI's own JSON result envelope. Supporting another provider is therefore not a swapped API key: it needs a second auth model, a second envelope format, and the publish guards re-validated against a different model's failure modes — assessed in [issue #29](https://github.com/lptva/gb-power-dashboard/issues/29) and judged not worth the ongoing maintenance for an optional panel that is off by default. Nothing else on the dashboard depends on it.
+13. **The overnight AI summary is Claude-only by design, not an oversight.** The panel is generated by invoking the Claude Code CLI as a version-controlled agent (`.claude/agents/dashboard-watcher.md`), authenticated against a Claude subscription rather than a metered API key, and the publish validator, the cost/turn logging and the transient-error retry all parse that CLI's own JSON result envelope. Supporting another provider is therefore not a swapped API key: it needs a second auth model, a second envelope format, and the publish guards re-validated against a different model's failure modes, assessed in [issue #29](https://github.com/lptva/gb-power-dashboard/issues/29) and judged not worth the ongoing maintenance for an optional panel that is off by default. Nothing else on the dashboard depends on it.
