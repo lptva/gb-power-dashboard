@@ -176,18 +176,27 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
   .controls { margin-left: 0; }
 }
 
-/* ---------- Mobile header (≤640px) ----------
-   Desktop keeps its single sticky row untouched. On phones the header
-   stacks vertically (brand → controls → tabs) and only the TAB STRIP stays
-   pinned: the topbar is a sticky element shifted up by --topbar-above (the
-   live-measured height of everything above the tabs, published from
-   app.js), so once the page scrolls the brand line and controls slide off
-   the top and the tab strip alone remains at y=0. The tab strip is the LAST
-   child on purpose — the negative-top shift can only hide what sits above
-   the pinned row, so brand + controls must precede it. --topbar-h tracks
-   the strip's effective stuck height at this width, keeping every
-   scroll-margin-top jump target landing just below the pinned strip. */
-@media (max-width: 640px) {
+/* ---------- Compact header (≤980px) ----------
+   Wide desktop keeps its single sticky row untouched. On narrow viewports
+   the header stacks vertically (brand → controls → tabs) and only the TAB
+   STRIP stays pinned: the topbar is a sticky element shifted up by
+   --topbar-above (the live-measured height of everything above the tabs,
+   published from app.js), so once the page scrolls the brand line and
+   controls slide off the top and the tab strip alone remains at y=0. The
+   tab strip is the LAST child on purpose — the negative-top shift can only
+   hide what sits above the pinned row, so brand + controls must precede
+   it. --topbar-h tracks the strip's effective stuck height at this width,
+   keeping every scroll-margin-top jump target landing just below the
+   pinned strip.
+   980, not 640 (2026-07-16, real-device QA): phones in LANDSCAPE are
+   700-930 CSS px wide (iPhone Pro Max landscape = 932), so a 640 cutoff
+   left them on the desktop rules, where the 9 tabs wrap onto a second
+   row. 980 aligns with the stylesheet's existing narrow breakpoint family
+   rather than adding a third magic number; windows in the 640-980 band
+   were already wrapping the single-row topbar untidily before this block
+   existed. MUST stay in lockstep with the matchMedia width in app.js's
+   topbar-measurement block. */
+@media (max-width: 980px) {
   .topbar {
     flex-direction: column;
     align-items: stretch;

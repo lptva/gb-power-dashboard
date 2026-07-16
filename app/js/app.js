@@ -27,12 +27,12 @@
   //                    scroll-margin-top on jump targets and the rails' top
   //                    offset consume this).
   //   --topbar-above = the header chrome ABOVE the tab strip (brand +
-  //                    controls); at ≤640px style.css uses it as the
+  //                    controls); at ≤980px style.css uses it as the
   //                    topbar's negative `top` so that once the page scrolls
   //                    only the tab strip stays pinned. 0 on desktop.
-  // Desktop (>640px): the whole single-row topbar stays stuck, so
+  // Desktop (>980px): the whole single-row topbar stays stuck, so
   // --topbar-h is its full offsetHeight (identical to before this change)
-  // and --topbar-above is 0. Mobile (≤640px): the header stacks and only
+  // and --topbar-above is 0. Compact (≤980px): the header stacks and only
   // the tab strip pins, so --topbar-h is just the strip's stuck height
   // (tab row + the topbar's own bottom padding/border) and --topbar-above
   // is everything above it. Both come from live geometry — rect deltas are
@@ -41,7 +41,10 @@
   const topbar = document.querySelector(".topbar");
   const tabsRow = topbar.querySelector(".tabs");
   const rootStyle = document.documentElement.style;
-  const mobileHeader = window.matchMedia("(max-width: 640px)");
+  const mobileHeader = window.matchMedia("(max-width: 980px)");  // MUST match
+  // the compact-header @media width in style.css — the negative-top shift
+  // and this measurement branch describe the same layout and break apart
+  // if the two widths ever diverge (980 covers landscape phones; see CSS).
   function syncTopbarHeight() {
     if (mobileHeader.matches && tabsRow) {
       const tb = topbar.getBoundingClientRect();
