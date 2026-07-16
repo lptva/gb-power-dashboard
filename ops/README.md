@@ -144,9 +144,10 @@ with the path replaced by wherever you cloned the repository — is:
   dataset simply stays stale — nothing retries in the background of a
   closed laptop, and the in-run retries only cover a network that comes up
   within a few minutes of waking, not a lid that never opens. For
-  guaranteed daily runs, this belongs on an always-on host or a CI schedule
-  (GitHub Actions cron publishing `app/` to static hosting — tracked in the
-  repository's GitHub Issues).
+  guaranteed daily runs this belongs on an always-on host or a CI schedule —
+  which now exists: `.github/workflows/deploy.yml` rebuilds and publishes the
+  hosted dashboard daily at 06:30 UTC, independent of this laptop. The local
+  job now only keeps your own copy fresh.
 - **The 09:00 fallback is not a second attempt at a slow run.** It covers a
   07:00 run that *fails fast* (e.g. the network is not up yet) and exits
   before 09:00. It cannot help a 07:00 run that is merely *slow*: when the

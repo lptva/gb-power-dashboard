@@ -621,5 +621,23 @@ document.write('<link rel="stylesheet" href="css/style.css'
   document.write('<script src="' + src + DEV_CACHE_V + '"><\/script>');
 });
 </script>
+
+<script>
+/* Cloudflare Web Analytics — cookieless (the no-browser-storage rule holds)
+   and the app's FIRST third-party runtime request, disclosed in the
+   README's design rules (plan/07 §6, D4/D10). Gated off dev origins via
+   DEV_HOST (computed in the CACHE-BUSTER block above): localhost/LAN loads
+   never fire the beacon, so the owner's own refreshes don't count as
+   visits. The token is a public site tag, sent to every visitor by design —
+   it is not a secret. */
+if (!DEV_HOST) {
+  var cfBeacon = document.createElement("script");
+  cfBeacon.defer = true;
+  cfBeacon.src = "https://static.cloudflareinsights.com/beacon.min.js";
+  cfBeacon.setAttribute("data-cf-beacon",
+    '{"token": "20f32919ce37424291922f382dd61134"}');
+  document.body.appendChild(cfBeacon);
+}
+</script>
 </body>
 </html>
