@@ -329,7 +329,7 @@ document.write('<link rel="stylesheet" href="css/style.css'
         </div>
         <div class="chart tall" id="ch-spread-spark"></div>
       </div>
-      <div class="card">
+      <div class="card fill-chart">
         <div class="card-head">
           <h2>CCGT cost decomposition <span class="badge estimated">Estimated</span></h2>
           <p>Daily average price split into implied fuel cost, carbon cost and
@@ -347,6 +347,7 @@ document.write('<link rel="stylesheet" href="css/style.css'
              <span class="info" data-method="dark">ⓘ</span></p>
           <div class="inline-input">
             <label>Override coal price <input type="number" id="coal-price" placeholder="proxy" min="1" max="100" step="0.5"> £/MWh th</label>
+            <span class="coal-stat" id="coal-stat"></span>
           </div>
         </div>
         <div class="chart-wrap">

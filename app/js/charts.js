@@ -928,9 +928,18 @@ const Charts = (() => {
     const d = Data.dailySlice(fromIso, toIso,
       ["price", "gas_sap", "carbon_uka_month"]);
     const ts = d.d.map((day) => Date.parse(day + "T12:00Z"));
-    const fuel = d.gas_sap.map((g) => (g == null ? null : +(g / a.eta).toFixed(2)));
-    const carbon = d.carbon_uka_month.map((c) =>
-      c == null ? null : +((a.efGas / a.eta) * c).toFixed(2));
+    // The decomposition exists only on days where BOTH components are
+    // published: SAP lags a day behind price, and stacking carbon alone on
+    // a fuel-less day draws a misleading near-baseline tail at the right
+    // edge (the stack's layers must share exactly the same day set). Days
+    // missing either input are gaps, never zeros — SAP is deliberately not
+    // forward-filled (unlike carbon, which carries its own ffill flag).
+    const both = (i) =>
+      d.gas_sap[i] != null && d.carbon_uka_month[i] != null;
+    const fuel = d.gas_sap.map((g, i) =>
+      (both(i) ? +(g / a.eta).toFixed(2) : null));
+    const carbon = d.carbon_uka_month.map((c, i) =>
+      (both(i) ? +((a.efGas / a.eta) * c).toFixed(2) : null));
     const area = (name, data, colour) => ({
       name, type: "line", stack: "cost", showSymbol: false,
       data: ts.map((x, i) => [x, data[i]]),
