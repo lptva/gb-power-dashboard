@@ -122,6 +122,8 @@ def validate_summary(data, reference, expected_window=None):
             f"window {expected_window!r} — it must be copied verbatim")
     if not isinstance(data["data_quality"], list):
         raise ValidationError("data_quality is not a list")
+    if not all(isinstance(item, str) for item in data["data_quality"]):
+        raise ValidationError("data_quality items must all be strings")
     for tab in TABS:
         section = data["tabs"].get(tab)
         if not isinstance(section, dict):
@@ -187,9 +189,46 @@ def render_markdown(data):
     return "\n".join(lines) + "\n"
 
 
+def whitelist_summary(data):
+    """Rebuild the summary against an explicit whitelist of expected keys.
+
+    validate_summary() proves the REQUIRED shape is present and correct;
+    this is the complementary guarantee: nothing BEYOND that shape gets
+    published. The model's dict used to be written verbatim, so any extra
+    key it emitted — at any level — would have shipped straight into
+    app/data/overnight_summary.json, which is public on the hosted site.
+    Rebuilding rather than merely checking makes "only what's intended
+    gets published" structural (security audit N4, 2026-07-16). Assumes
+    validate_summary() has already passed; both call sites publish only
+    after validation.
+    """
+    out = {
+        "window": {"from": data["window"]["from"],
+                   "to": data["window"]["to"]},
+        "tabs": {},
+        "data_quality": list(data["data_quality"]),
+    }
+    if isinstance(data.get("baseline_days"), int):
+        out["baseline_days"] = data["baseline_days"]
+    for tab in TABS:
+        section = data["tabs"][tab]
+        rebuilt = {"takeaway": section["takeaway"],
+                   "analysis": section["analysis"]}
+        findings = [{"title": str(f.get("title", "")),
+                     "detail": str(f.get("detail", ""))}
+                    for f in section.get("findings", [])]
+        if findings:
+            rebuilt["findings"] = findings
+        if tab == "merit_order":
+            rebuilt["figures"] = {k: section["figures"][k] for k in FIG_KEYS}
+        out["tabs"][tab] = rebuilt
+    return out
+
+
 def publish(data, out_dir):
-    """Stamp publication time and write json + md atomically."""
+    """Whitelist-rebuild, stamp publication time, write json + md atomically."""
     out_dir = Path(out_dir)
+    data = whitelist_summary(data)
     # Publication metadata, not model content: always stamp the real time
     # (the model has no reliable clock).
     data["generated_at"] = datetime.now(timezone.utc).isoformat(
