@@ -6,7 +6,12 @@ name: deploy
 # snapshot.
 on:
   schedule:
-    - cron: "30 6 * * *"           # 06:30 UTC = 07:30 BST — D5 (approved)
+    # 06:43 UTC, deliberately an odd minute: the original 06:30 (D5) sat on
+    # a round half-hour, where GitHub's scheduler is at its most loaded and
+    # documented to delay or drop occurrences — the first-ever 06:30 fire
+    # (2026-07-17) never ran at all despite an active workflow and a correct
+    # cron on main. Odd minutes dodge the herd. D5 amendment, owner review.
+    - cron: "43 6 * * *"           # 06:43 UTC = 07:43 BST
   workflow_dispatch:
     inputs:
       cold_start:
