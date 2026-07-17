@@ -986,7 +986,18 @@ const UI = (() => {
     // through here and inherits this by construction.
     clearTabSearch("method-search", "method-search-clear", filterMethodology);
     const el = document.getElementById(id);
-    if (!el) return;
+    if (!el) {
+      // Loud, not silent: a missing target means a data-method attribute
+      // (hand-written in index.html) points at a section id that does not
+      // exist in the methodology template — a dangling deep link. The
+      // silent return here hid exactly that for the Interconnector flows
+      // ⓘ ("flows" vs the merged "generation" section) until a user
+      // noticed the jump going nowhere (2026-07-17). Warn so the next one
+      // shows up in dev-console testing instead of shipping quiet.
+      console.warn('jumpToMethodology: no element "#' + id
+        + '" — dangling deep link');
+      return;
+    }
     (el.closest(".method-section") || el)
       .scrollIntoView({ block: "start", behavior: behavior || "auto" });
   }
