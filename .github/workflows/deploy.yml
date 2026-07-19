@@ -6,11 +6,19 @@ name: deploy
 # snapshot.
 on:
   schedule:
-    # 06:43 UTC, deliberately an odd minute: the original 06:30 (D5) sat on
-    # a round half-hour, where GitHub's scheduler is at its most loaded and
-    # documented to delay or drop occurrences — the first-ever 06:30 fire
-    # (2026-07-17) never ran at all despite an active workflow and a correct
-    # cron on main. Odd minutes dodge the herd. D5 amendment, owner review.
+    # 06:43 UTC, deliberately an odd minute (round half-hours are GitHub's
+    # most-loaded scheduler slots — D5 amendment, owner review).
+    #
+    # Schedule-registration history: the cron never fired on 17, 18 or
+    # 19 Jul 2026 (two different minutes, workflow "active", dispatch runs
+    # fine) — the schedule had silently desynced from GitHub's registration,
+    # a documented backend failure mode. A disable/enable toggle (18 Jul)
+    # did NOT fix it; per GitHub's own guidance the resync trigger is a
+    # commit to the default branch touching this file — which is what this
+    # comment's commit is. If the schedule ever goes quiet again (site
+    # stale, `gh run list --workflow=deploy.yml` shows no event=schedule
+    # runs), repeat exactly that: any direct-to-main commit editing this
+    # file.
     - cron: "43 6 * * *"           # 06:43 UTC = 07:43 BST
   workflow_dispatch:
     inputs:
