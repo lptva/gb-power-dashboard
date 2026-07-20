@@ -6,20 +6,26 @@ name: deploy
 # snapshot.
 on:
   schedule:
-    # 06:43 UTC, deliberately an odd minute (round half-hours are GitHub's
-    # most-loaded scheduler slots — D5 amendment, owner review).
+    # 00:43 UTC, deliberately an odd minute (round half-hours are GitHub's
+    # most-loaded scheduler slots — D5 amendment, owner review). Set this
+    # early ON PURPOSE: this repo's scheduler queue delivers HOURS late
+    # (observed 06:43 cron → 11:00 and 13:29 UTC actual, 19-20 Jul 2026),
+    # so the cron time is a floor, not a delivery time. From 00:43 even the
+    # worst observed delay (~7 h) lands the refresh before ~08:45 BST. The
+    # trade-off, accepted at owner review (20 Jul): on a fast day the AI
+    # overnight summary generates just after midnight UTC, closing its
+    # window earlier than the old 06:43 slot did.
     #
-    # Schedule-registration history: the cron never fired on 17, 18 or
-    # 19 Jul 2026 (two different minutes, workflow "active", dispatch runs
-    # fine) — the schedule had silently desynced from GitHub's registration,
-    # a documented backend failure mode. A disable/enable toggle (18 Jul)
-    # did NOT fix it; per GitHub's own guidance the resync trigger is a
-    # commit to the default branch touching this file — which is what this
-    # comment's commit is. If the schedule ever goes quiet again (site
+    # Schedule-registration history: the cron never fired on 17-19 Jul 2026
+    # (two different minutes, workflow "active", dispatch runs fine) — the
+    # schedule had silently desynced from GitHub's registration, a
+    # documented backend failure mode. A disable/enable toggle (18 Jul) did
+    # NOT fix it; a direct-to-main commit touching this file did (per
+    # GitHub's own guidance). If the schedule ever goes quiet again (site
     # stale, `gh run list --workflow=deploy.yml` shows no event=schedule
     # runs), repeat exactly that: any direct-to-main commit editing this
     # file.
-    - cron: "43 6 * * *"           # 06:43 UTC = 07:43 BST
+    - cron: "43 0 * * *"           # 00:43 UTC = 01:43 BST (delivery is late; see above)
   workflow_dispatch:
     inputs:
       cold_start:
