@@ -146,8 +146,10 @@ with the path replaced by wherever you cloned the repository — is:
   within a few minutes of waking, not a lid that never opens. For
   guaranteed daily runs this belongs on an always-on host or a CI schedule —
   which now exists: `.github/workflows/deploy.yml` rebuilds and publishes the
-  hosted dashboard daily at 06:30 UTC, independent of this laptop. The local
-  job now only keeps your own copy fresh.
+  hosted dashboard daily, independent of this laptop — triggered by a
+  Cloudflare Worker cron at 05:30 UTC, since GitHub's own scheduler proved
+  unreliable for this repo (see `ops/cloudflare/README.md`). The local job
+  now only keeps your own copy fresh.
 - **The 09:00 fallback is not a second attempt at a slow run.** It covers a
   07:00 run that *fails fast* (e.g. the network is not up yet) and exits
   before 09:00. It cannot help a 07:00 run that is merely *slow*: when the
