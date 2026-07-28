@@ -55,10 +55,14 @@ The Worker's page → **Settings** → **Variables and secrets** → add:
 ### 4. Add the cron trigger
 
 The Worker's page → **Settings** → **Triggers** → **Cron Triggers** →
-add: `30 5 * * *` (05:30 UTC = 06:30 BST — upstream sources have all
-published yesterday's data well before then, per ops/README's 07:00
-rationale, and the build lands ~10 minutes later, comfortably before a
-morning check).
+add both:
+
+- `30 5 * * *` (05:30 UTC = 06:30 BST — upstream sources have all
+  published yesterday's data well before then, per ops/README's 07:00
+  rationale, and the build lands ~10 minutes later, comfortably before a
+  morning check)
+- `30 12 * * *` (12:30 UTC = 13:30 BST — the midday top-up; see the
+  decision record below)
 
 ### 5. Verify
 
@@ -74,23 +78,39 @@ gh run list --workflow=deploy.yml --limit 3
 then on, the real proof is the next morning: the dashboard footer's
 "Dataset built …" stamp should read ~05:4x UTC.
 
-## Trade-off: the GitHub cron stays on (for now)
+## Decision record: the GitHub cron was removed (2026-07-28)
 
-deploy.yml keeps its own `43 0 * * *` cron as a backup. On days when
-GitHub's scheduler does fire, that means **two rebuilds** — harmless for
-correctness (the pipeline is idempotent; the `pages` concurrency group
-serialises deploys) but each extra run costs one AI-summary generation
-(~$0.10). If the Worker proves reliable for a week or two, the owner's
-options are: delete the workflow's `schedule:` block (Worker becomes the
-only scheduler), or keep both and accept ~$3/month of redundancy. Owner
-decision, deliberately not pre-empted here.
+deploy.yml originally kept its own cron as a backup while the Worker
+proved itself. After a 7-day clean streak (22–28 Jul, every fire within
+a minute of the 05:30 slot) against the GitHub cron's 7–12-hour scatter
+over the same week, the owner removed the workflow's `schedule:` block
+entirely. The Worker is now the only scheduler, with **two** cron
+triggers on the one Worker (the free plan allows 3):
+
+- `30 5 * * *` — the morning build (05:30 UTC = 06:30 BST)
+- `30 12 * * *` — midday top-up (12:30 UTC = 13:30 BST): pulls the
+  morning-peak settlement periods into the dataset intraday, and doubles
+  as same-day cover if the 05:30 invocation is ever dropped (free-tier
+  cron has no retry)
+
+Two rebuilds a day is the same total as the redundant-cron era, so the
+AI-summary spend is unchanged. Both triggers share this Worker's code
+and the one `GITHUB_PAT` secret — nothing new to create beyond the
+trigger itself (the Worker's page → Settings → Triggers → Cron
+Triggers).
+
+Remaining failure modes are shared-fate: an expired PAT or a Cloudflare
+outage stops BOTH triggers (a stale site until noticed — the dashboard
+footer's "Dataset built" stamp is the staleness clock). The PAT expiry
+date lives in the owner's calendar; that entry is the mitigation.
 
 ## Failure modes
 
 - **Token expired / revoked**: the dispatch returns 401, the Worker
   throws, the invocation shows as an error under the Worker's Logs, and
   the site goes stale until the token is renewed (step 1 + step 3 again).
-- **Cloudflare cron missed**: not observed in practice; the GitHub-side
-  backup cron covers it (late, but same-day).
+- **Cloudflare cron missed**: not observed in practice; the other daily
+  trigger covers it same-day (a dropped 05:30 fire means the site is a
+  day stale until the 12:30 top-up lands).
 - **Workflow itself fails**: unchanged from before — the run is red in
   GitHub Actions and the dashboard header surfaces the stale state.

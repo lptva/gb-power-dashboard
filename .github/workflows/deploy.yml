@@ -1,31 +1,15 @@
 name: deploy
 
-# Milestone B (plan/07 §7): scheduled daily deploy, restored after the
-# Milestone A manual proof. Not proven until at least one SCHEDULED run
-# (not a manual dispatch) completes green and run 2 restores warm from the
-# snapshot.
+# Milestone B (plan/07 §7): scheduled daily deploy. There is deliberately
+# NO `schedule:` trigger here — GitHub's scheduler proved unreliable for
+# this repo (silent desync 17-19 Jul 2026, then daily fires 7-12 h late,
+# untethered from the cron time). Scheduling lives in a Cloudflare Worker
+# cron instead (twice daily, 05:30 and 12:30 UTC), which calls this
+# workflow via workflow_dispatch — setup, evidence and the removal
+# decision (owner, 2026-07-28 after a 7-day Worker streak) are recorded in
+# ops/cloudflare/README.md. If dispatch runs ever stop appearing, check
+# the Worker's logs and PAT expiry FIRST, not this file.
 on:
-  schedule:
-    # 00:43 UTC, deliberately an odd minute (round half-hours are GitHub's
-    # most-loaded scheduler slots — D5 amendment, owner review). Set this
-    # early ON PURPOSE: this repo's scheduler queue delivers HOURS late
-    # (observed 06:43 cron → 11:00 and 13:29 UTC actual, 19-20 Jul 2026),
-    # so the cron time is a floor, not a delivery time. From 00:43 even the
-    # worst observed delay (~7 h) lands the refresh before ~08:45 BST. The
-    # trade-off, accepted at owner review (20 Jul): on a fast day the AI
-    # overnight summary generates just after midnight UTC, closing its
-    # window earlier than the old 06:43 slot did.
-    #
-    # Schedule-registration history: the cron never fired on 17-19 Jul 2026
-    # (two different minutes, workflow "active", dispatch runs fine) — the
-    # schedule had silently desynced from GitHub's registration, a
-    # documented backend failure mode. A disable/enable toggle (18 Jul) did
-    # NOT fix it; a direct-to-main commit touching this file did (per
-    # GitHub's own guidance). If the schedule ever goes quiet again (site
-    # stale, `gh run list --workflow=deploy.yml` shows no event=schedule
-    # runs), repeat exactly that: any direct-to-main commit editing this
-    # file.
-    - cron: "43 0 * * *"           # 00:43 UTC = 01:43 BST (delivery is late; see above)
   workflow_dispatch:
     inputs:
       cold_start:
@@ -72,9 +56,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}    # gh CLI auth — this step only
           REQUESTED_COLD: ${{ inputs.cold_start }} # "true" only when asked for;
-                                                   # empty on a future schedule:
-                                                   # trigger → treated as not
-                                                   # requested (state-loss warn)
+                                                   # Worker dispatches omit the
+                                                   # input → false → an
+                                                   # unexpected cold start still
+                                                   # warns (state-loss warn)
         run: bash ops/ci/restore_snapshot.sh
 
       # WARM path: the orchestrator, exactly as it runs locally (D9). refresh.py
