@@ -102,13 +102,19 @@
 
   /* ---- tabs ---- */
   // Glossary and Methodology are static reference tabs, not live-data
-  // views: hide the market KPI strip there so it never implies those
-  // pages are time-sensitive. Shown on every other tab.
+  // views: the CSV button and range presets are false affordances there.
   const REFERENCE_TABS = ["glossary", "methodology"];
   function applyReferenceTabChrome(tab) {
     const hide = REFERENCE_TABS.includes(tab);
-    document.getElementById("glance").classList.toggle("hidden", hide);
-    document.getElementById("kpi-strip").classList.toggle("hidden", hide);
+    // The market KPI strip is Overview content, not global chrome. It
+    // used to render on every live tab, and on phones it filled the
+    // first screen of each one, so every tab opened looking identical
+    // (reader feedback, 2026-07). Overview-only since then; the header
+    // keeps the compact ambient signals (data window, freshness, stress
+    // chip) on all tabs.
+    const kpisHidden = tab !== "overview";
+    document.getElementById("glance").classList.toggle("hidden", kpisHidden);
+    document.getElementById("kpi-strip").classList.toggle("hidden", kpisHidden);
     // No live view behind these tabs, so the CSV button is a false
     // affordance there (it would download the market file); hide it.
     document.getElementById("export-btn").classList.toggle("hidden", hide);
@@ -175,7 +181,9 @@
   // Flows joins the list because interconnector data is not fetched for
   // ENTSO-E zones (cross-border flows are a separate document type).
   // System stress joins it because every input is a GB-only Elexon feed.
-  const GB_ONLY_TABS = ["merit", "spreads", "flows", "stress"];
+  // Batteries (bess) joins it for the same reason: the BM acceptance-
+  // volume fleet tracker is Elexon-only, no ENTSO-E equivalent exists.
+  const GB_ONLY_TABS = ["merit", "spreads", "flows", "stress", "bess"];
   function applyZoneTabGating(zone) {
     const away = zone !== "GB";
     GB_ONLY_TABS.forEach((t) => {

@@ -76,6 +76,7 @@ document.write('<link rel="stylesheet" href="css/style.css'
     <button data-tab="spreads">Spreads</button>
     <button data-tab="flows">Flows</button>
     <button data-tab="stress">System stress</button>
+    <button data-tab="bess">Batteries</button>
     <button data-tab="glossary">Glossary</button>
     <button data-tab="methodology">Methodology</button>
   </nav>
@@ -547,6 +548,140 @@ document.write('<link rel="stylesheet" href="css/style.css'
            issuances.</p>
       </div>
       <div id="warnings-list" class="warnings-list"></div>
+    </div>
+  </section>
+
+  <!-- ============ BATTERIES (BESS) ============
+       GB-only (gated via GB_ONLY_TABS in app.js). A column of cards, like
+       System stress above. -->
+  <section class="tab-panel hidden" data-panel="bess">
+    <div class="card span-2">
+      <div class="card-head">
+        <h2>GB battery fleet — accepted BM volumes
+          <span class="badge observed">Observed</span>
+          <span class="badge proxy">Derived ID</span>
+          <span class="badge beta">Beta</span></h2>
+        <p id="bess-desc">Signed stack of accepted Balancing Mechanism
+           volumes for the identified GB battery fleet. <b>Offer</b>
+           acceptances stack upward (the unit is instructed above its
+           notified position, so it discharges more or charges less);
+           <b>bid</b> acceptances stack downward (below the position, so
+           it charges more or discharges less); the line is their net.
+           The series is instructed <em>deviation</em> from each unit's
+           own plan, not delivered energy or state of charge, and can
+           therefore exceed metered throughput. One bar per stored day.
+           <span class="info" data-method="bess">ⓘ</span></p>
+        <p class="card-meta" id="bess-caption"></p>
+        <div class="overlay-toggles">
+          <label><input type="checkbox" id="bess-normalise">
+            Per MW of fleet active to date</label>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart tall" id="ch-bess-activity"></div>
+        <div class="chart-empty hidden" id="bess-empty">
+          No BESS activity dataset available — run
+          <code>python etl/build_bess_activity.py --backfill 400</code> to
+          build the trailing window.
+        </div>
+      </div>
+    </div>
+
+    <div class="card span-2">
+      <div class="card-head">
+        <h2>Observable revenue stack
+          <span class="badge observed">Observed</span>
+          <span class="badge beta">Beta</span></h2>
+        <p id="bess-revenue-desc">Stacked signed £/kW/day for the twelve
+           EAC availability products NESO auctions to the identified
+           battery fleet, one bar per stored day filtered to the selected
+           range (the hh/hour/day resolution toggle is not applied here,
+           only the date range is, same reasoning as the activity chart
+           above). Bands are coloured by service family (Dynamic
+           Containment, Dynamic Moderation, Dynamic Regulation, Balancing
+           Reserve, Quick Reserve, Slow Reserve), light for the
+           low/negative leg and dark for the high/positive leg, and
+           legended by product code. The two legs of a service are never
+           netted into one band: Dynamic Regulation High and Low routinely
+           clear opposite signs on the same day, and collapsing them would
+           hide two large, real, offsetting flows behind a small net
+           figure, so a negative band (commonly DRH) is expected and
+           renders below zero rather than being clipped. The shaded band
+           and its centre line are the p10-p90 spread and median of the
+           same total £/kW/day figure split across identified units, the
+           peer-group comparison, with no unit named.
+           <span class="info" data-method="bess-revenue">ⓘ</span></p>
+        <p class="card-meta" id="bess-revenue-caption"></p>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart tall" id="ch-bess-revenue"></div>
+        <div class="chart-empty hidden" id="bess-revenue-empty">
+          No BESS revenue dataset available — run
+          <code>python etl/build_bess_revenue.py --backfill-days 400</code>
+          to build the trailing window.
+        </div>
+      </div>
+
+      <div class="card-subsection" id="bess-bm-section">
+        <div class="card-head">
+          <h2>Balancing Mechanism cashflow (gross, includes the energy leg)
+            <span class="badge observed">Observed</span></h2>
+          <p id="bess-bm-desc">What the identified fleet was paid (offer)
+             and paid out (bid) in Balancing Mechanism settlement, from
+             Elexon's indicative Bid-Offer Cashflow (EBOCF, the II
+             settlement run), with the net MWh that produced it on the
+             right-hand axis. This is <b>never added to the stack
+             above</b>: it is the energy-purchase leg of BM participation,
+             not margin. Its sign follows whichever way the fleet happened
+             to charge or discharge that day, so a day of heavy charging
+             settles deep negative, and its scale runs to several times
+             the availability stack's. The offsetting wholesale trade is
+             not publicly attributable per unit and stays out of frame.
+             <span class="info" data-method="bess-revenue">ⓘ</span></p>
+          <p class="card-meta" id="bess-bm-caption"></p>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart" id="ch-bess-bm"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card span-2">
+      <div class="card-head">
+        <h2>Identified fleet
+          <span class="badge observed">Observed</span>
+          <span class="badge proxy">Derived ID</span>
+          <span class="badge beta">Beta</span></h2>
+        <p id="bess-fleet-desc">Every BM Unit currently in the identified
+           GB battery fleet, sorted by registered MW descending (see
+           Methodology for the identification rule). Owner is the
+           registered BSC party as of the last refresh and can lag a
+           real-world sale. This table has no CSV export: name and owner
+           are free text, and the house rule keeps every export numeric,
+           dated, or a fixed code, so they never appear there; the
+           numeric columns behind the other Batteries cards do.
+           <span class="info" data-method="bess">ⓘ</span></p>
+        <p class="card-meta" id="bess-fleet-caption"></p>
+      </div>
+      <div class="tab-search bess-fleet-search">
+        <input type="text" id="bess-fleet-search" class="tab-search-input"
+          placeholder="Search unit, name or owner…"
+          autocomplete="off" spellcheck="false"
+          aria-label="Search the identified fleet">
+        <button type="button" id="bess-fleet-search-clear"
+          class="tab-search-clear hidden" aria-label="Clear search">×</button>
+      </div>
+      <div id="bess-fleet-table"></div>
+      <!-- Top-10 default with show-all, the stress tab's EMN-notices
+           pattern; sits outside the table's scroll region so it never
+           scrolls out of reach. -->
+      <button type="button" class="warnings-toggle hidden"
+        id="bess-fleet-toggle"></button>
+      <div class="chart-empty hidden" id="bess-fleet-empty">
+        No BESS activity dataset available — run
+        <code>python etl/build_bess_activity.py --backfill 400</code> to
+        build the fleet list.
+      </div>
     </div>
   </section>
 

@@ -317,6 +317,13 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
 :root[data-theme="light"] .badge.assumption { color: #8b5583; }
 :root[data-theme="light"] .badge.proxy      { color: #2f6c99; }
 
+/* Feature-maturity marker (e.g. the Batteries tab's activity card) —
+   deliberately colourless, unlike the four quality badges above: this says
+   how mature the FEATURE is, not how the data was derived, so it must
+   never borrow a quality hue. */
+.badge.beta { color: var(--text-dim); border-color: var(--border);
+  background: transparent; }
+
 /* ---------- AI-generated panel ----------
    Model-generated interpretation, not a data series: a deliberately
    different trust treatment — dashed violet border and its own badge — so
@@ -329,6 +336,8 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
    excluded in JS). Prose runs the full card width — no max-width, matching
    every other card body. */
 .overnight-head { cursor: pointer; }
+.bess-fleet-search { margin: 0 0 10px; }
+#bess-fleet-toggle { margin-top: 10px; }
 .overnight-head:focus-visible { outline: 2px solid var(--accent-top);
   outline-offset: 2px; border-radius: 6px; }
 /* Leading disclosure marker (▸/▾) — sits before the title, not floating at
@@ -416,6 +425,19 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
   font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .util-table .util-dot { width: 8px; height: 8px; border-radius: 2px;
   display: inline-block; margin-right: 7px; }
+
+/* Batteries tab: the BM cashflow sub-panel (plan/08 D18) lives inside the
+   revenue stack's own card, separated by a rule rather than a new card. */
+.card-subsection { border-top: 1px solid var(--border); margin-top: 16px;
+  padding-top: 14px; }
+
+/* Identified fleet table (Batteries tab) reuses .util-table's cell
+   styling but scrolls internally instead of paginating 100+ rows; the
+   header stays pinned to the top of that scroll region. Scoped to this
+   id only so the Flows tab's own #util-table is unaffected. */
+#bess-fleet-table { max-height: 480px; overflow-y: auto; overflow-x: auto; }
+#bess-fleet-table thead th { position: sticky; top: 0;
+  background: var(--bg-card); z-index: 1; }
 
 .banner {
   border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px;

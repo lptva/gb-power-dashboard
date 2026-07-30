@@ -40,6 +40,13 @@ const Data = (() => {
     OTHER:   { label: "Other",          colour: "#90a4ae" },
     WIND:    { label: "Wind",           colour: "#4fc3f7" },
     solar:   { label: "Solar",          colour: "#ffd54f" },
+    /* Display-only entry (Batteries tab legend/swatch) — deliberately NOT
+       in STACK_ORDER: it must never join the generation stack/mix charts
+       or their CSV (those iterate STACK_ORDER, and Data.hh carries no
+       "BESS" column anyway), and Metrics.meritLadder builds its own fixed
+       row list rather than iterating FUELS, so this can never spawn a
+       merit-ladder tranche — SRMC is deliberately undefined for storage. */
+    BESS:    { label: "Battery storage", colour: "#ec4899" },
   };
 
   // Stack order for generation charts (baseload at the bottom)
@@ -88,6 +95,12 @@ const Data = (() => {
   let overnight = null; // AI overnight summary (optional, GB only)
   let stress = null;    // daily stress metrics + flags (optional, GB only)
   let warnings = null;  // filtered SYSWARN notices (optional, GB only)
+  let bess = null;      // BESS observed BM-activity fleet tracker
+                         // (optional, GB only; etl/build_bess_activity.py)
+  let bessRevenue = null; // BESS EAC availability revenue + BM cashflow
+                           // (optional, GB only; etl/build_bess_revenue.py;
+                           // plan/08 D16 — same secondary payload treatment
+                           // as bess above)
   let refreshStatus = null; // last ops/refresh.py outcome (optional,
                              // machine-level — same value on every zone)
 
@@ -128,6 +141,8 @@ const Data = (() => {
     overnight = null;
     stress = null;
     warnings = null;
+    bess = null;
+    bessRevenue = null;
     if (zone === "GB") {
       try { bmu = await fetchJson(`data/bmu_snapshot.json${v}`); }
       catch { bmu = null; }
@@ -143,6 +158,16 @@ const Data = (() => {
       catch { stress = null; }
       try { warnings = await fetchJson(`data/warnings.json${v}`); }
       catch { warnings = null; }
+      // BESS observed BM-activity fleet tracker (optional — written by
+      // etl/build_bess_activity.py; absent until that pipeline has run).
+      // Same optional/degrade-gracefully treatment as stress/bmu above.
+      try { bess = await fetchJson(`data/bess_activity.json${v}`); }
+      catch { bess = null; }
+      // EAC availability revenue stack + BM cashflow (optional — written
+      // by etl/build_bess_revenue.py; absent until that pipeline has run).
+      // Same optional/degrade-gracefully treatment as bess above.
+      try { bessRevenue = await fetchJson(`data/bess_revenue.json${v}`); }
+      catch { bessRevenue = null; }
     }
     // Derived half-hourly columns (computed once)
     const icKeys = Object.keys(INTERCONNECTORS).filter((k) => hh[k]);
@@ -312,6 +337,8 @@ const Data = (() => {
     get overnight() { return overnight; },
     get stress() { return stress; },
     get warnings() { return warnings; },
+    get bess() { return bess; },
+    get bessRevenue() { return bessRevenue; },
     get refreshStatus() { return refreshStatus; },
     loadEventSlice,
     get zone() { return zone; },

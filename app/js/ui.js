@@ -1090,12 +1090,36 @@ const UI = (() => {
     }
     const meta = Data.meta;
     const cov = meta.coverage;
-    const sourceRows = Object.values(meta.series).map((s) => `
+    // Shared <tr> shape for the "Sources, field mapping, transformations"
+    // table: the core dataset's Data.meta.series (build_dataset.py) plus,
+    // appended after it, the battery payloads' own meta.series entries —
+    // one row from bess_activity.json (a single series) and two from
+    // bess_revenue.json (a dict of two, "eac" and "bm", since that
+    // payload spans two distinct sources — see etl/build_bess_revenue.py's
+    // SOURCE_META). Both battery payloads carry meta.series in the exact
+    // same field vocabulary (name/source/unit/resolution/
+    // update_frequency/quality/transformations/notes) by design, so one
+    // row template covers all of them; this is GB-only (renderMethodology,
+    // not renderZoneMethodology, so the zone view never gets these rows).
+    // Degrades silently: an absent payload, or one built before it carried
+    // meta.series, simply contributes no extra rows.
+    const sourceRow = (s) => `
       <tr><td><b>${s.name}</b></td><td>${s.source}</td>
       <td>${s.unit}</td><td>${s.resolution}</td>
       <td>${s.update_frequency}</td><td>${s.quality}</td>
       <td>${s.transformations}${s.notes ? "<br><i>" + s.notes + "</i>" : ""}</td>
-      </tr>`).join("");
+      </tr>`;
+    const bessActivitySeries = Data.bess && Data.bess.meta
+      && Data.bess.meta.series;
+    const bessRevenueSeries = Data.bessRevenue && Data.bessRevenue.meta
+      && Data.bessRevenue.meta.series;
+    const batterySourceRows = [
+      bessActivitySeries,
+      bessRevenueSeries && bessRevenueSeries.eac,
+      bessRevenueSeries && bessRevenueSeries.bm,
+    ].filter(Boolean).map(sourceRow).join("");
+    const sourceRows = Object.values(meta.series).map(sourceRow).join("")
+      + batterySourceRows;
 
     // Feed-composition context lives here rather than on the warnings
     // panel (not user-verifiable there, and noise for a panel reader);
@@ -1607,6 +1631,189 @@ const UI = (() => {
       </ul>
       ${stressFeedNote}
 
+      <h3 id="m-bess">Battery BM activity (observed volumes, derived
+         fleet, beta)</h3>
+      <p>The Batteries tab tracks how actively NESO dispatches the
+         identified GB <a class="term-link" data-term="bess"
+         href="#g-bess">battery</a>
+         (<a class="term-link" data-term="bmu" href="#g-bmu">BM Unit</a>)
+         fleet in the Balancing Mechanism, refreshed by
+         <code>etl/build_bess_activity.py</code>. Every stored MWh figure
+         is <b>Observed</b>: Elexon's settlement
+         <a class="term-link" data-term="accepted_volume"
+         href="#g-accepted_volume">accepted volume</a>, signed per side
+         (offer positive, bid negative). It is not a re-derivation from
+         <a class="term-link" data-term="boalf" href="#g-boalf">BOALF</a>
+         levels, which would answer a different question (delivered
+         position, not accepted deviation). Fleet identification is
+         <b>derived from observed</b> registry attributes by a
+         deterministic rule, not an asserted list.</p>
+
+      <p>A BM Unit joins the identified fleet if its id starts
+         <code>E_</code> or <code>T_</code>, its registered generation
+         capacity is at least 5 MW, it is not a site-demand BMU (id
+         matching <code>D-\d+$</code> or a name containing "Demand"), and
+         it matches either a structural signature (generation &gt; 0,
+         demand &lt; 0, symmetric within 0.5–1.5×, no fuel type or
+         interconnector flag) or a battery name pattern
+         (<code>batter | bess | energy stor | storage | ess |
+         bat\d?</code> against the unit's own id and name fields, and
+         deliberately not the owning party's name, since parties named
+         "&hellip; Energy Storage Ltd" also own non-battery plant).
+         Virtual Lead Party <code>V_</code> portfolios are excluded: that
+         prefix is the aggregator namespace and its portfolios mix
+         batteries with demand-side response. The rule is recomputed from
+         the registry on every refresh, never hand-maintained.</p>
+      <p>Measured against a manual sample week, the structural leg alone
+         recovered 97% of name-labelled battery BMUs inside the boundary
+         (recall), and 75% of identified MW showed genuine two-sided
+         operation or non-zero accepted BM volume (precision); the
+         residual is dormant or pre-commercial capacity, not
+         misidentification. REPD (the government's planning-consented
+         battery register) is cited as <b>scale context only</b> in the
+         panel's caption: it is site-level, does not enumerate BM Unit
+         ids, and covers a different, overlapping population, so it is
+         never shown as a coverage percentage or used as a divisor.</p>
+
+      <p>Each stored day's accepted offer MWh stacks upward, accepted bid
+         MWh stacks downward, and the line is their net: one bar per
+         stored day, filtered to the selected range (the hh/hour/day
+         resolution toggle is not applied here, only the date range is;
+         see the code comment in <code>charts.js</code>'s
+         <code>bessActivity</code> for why). The series is instructed
+         <em>deviation</em> from each unit's own notified position, not
+         delivered energy: an offer means "go above it" (discharge more or
+         charge less), a bid means "go below it" (charge more or discharge
+         less). Accepted volume can therefore exceed metered throughput.
+         The "per MW of fleet active to date" toggle divides <b>each
+         day</b> by that day's own denominator: the registered capacity
+         of identified units whose first observed non-zero accepted BM
+         volume falls on or before that day
+         (<code>fleet.list[].first_active</code>), not one value for the
+         whole build. The identified cohort's active capacity grew 2,316
+         to 4,276 MW over the stored window, so a constant, build-level
+         divisor was measured to understate the earliest 30 days by 43%
+         and to reverse the sign of the headline utilisation trend, a
+         genuine 15% fall over the window reading instead as a 50% rise.
+         Registered-but-dormant capacity (<code>fleet.mw</code>) is
+         deliberately <b>not</b> used either: it would understate
+         utilisation for units that simply have not traded yet. Nor is
+         each day's own active capacity, despite being the obvious
+         matched choice: it is <b>endogenous</b> to the dispatch being
+         measured, a quiet day shrinks it exactly when the numerator
+         shrinks (correlation +0.355 against the cumulative series'
+         -0.086), which would inflate per-MW intensity precisely when
+         dispatch is low. A unit leaves the denominator only by leaving
+         the BMU registry or the identification rule, never by going
+         quiet, because a quiet-day exit would be exactly that same
+         endogeneity. The revenue card below uses the same construction,
+         on first EAC appearance rather than first BM acceptance, so the
+         two cards are directly comparable.</p>
+      <p>Arbitrage P&amp;L, state of charge and per-unit delivered
+         frequency-response volumes are out of scope for this panel: none
+         of them is published anywhere observable. Metered delivered
+         output (B1610) is not used because it publishes about seven days
+         in arrears, which would leave this tab perpetually behind the
+         near-real-time surfaces elsewhere in the dashboard.
+         VLP/aggregator activity is a possible future, separate
+         tracker.</p>
+      ${bessActivitySeries
+        ? `<p>Series detail, source dataset, unit, resolution, update
+             cadence and transformations, is listed alongside every other
+             series in the "Sources, field mapping, transformations"
+             table above.</p>`
+        : `<p>No BESS activity dataset built on this machine yet — run
+             <code>python etl/build_bess_activity.py --backfill 400</code>.</p>`}
+
+      <h3 id="m-bess-revenue">Battery revenue stack (observed, beta)</h3>
+      <p>The <b>Observable revenue stack</b> card is the publicly
+         observable share of what the identified battery fleet earns:
+         availability payments from NESO's
+         <a class="term-link" data-term="eac" href="#g-eac">Enduring
+         Auction Capability (EAC)</a> platform, stacked by product, plus a
+         Balancing Mechanism cashflow panel below the rule. Wholesale
+         arbitrage, Capacity Market payments and bilateral tolls are not
+         observable per unit anywhere this dashboard can see, and stay out
+         of frame.</p>
+      <p>Cohort: EAC auction units whose NESO <code>technologyType</code>
+         is <code>Batteries</code>, joined on an exact, uppercase
+         <code>auctionUnit</code> to <code>nationalGridBmUnit</code>
+         match, restricted to physical units (<code>elexonBmUnit</code>
+         prefix <code>E_</code> or <code>T_</code>) with a registered
+         generation capacity above zero. Virtual Lead Party
+         (<code>V_</code>) and supplier (<code>2__</code>) portfolios are
+         excluded because they carry no registered nameplate, so a per-kW
+         figure cannot be built for them. Two coverage figures are
+         disclosed, because a revenue metric has a numerator-side gap an
+         activity metric does not: <b>denominator coverage</b> is the
+         cohort's MW against REPD's operational battery total, and
+         <b>numerator coverage</b> is the share of all EAC
+         battery-labelled gross £ the cohort actually earns. That gap is
+         real: aggregator and VLP auction units earn the remainder and sit
+         structurally outside a £/kW metric, which is why both figures sit
+         in the card's caption rather than just the first.</p>
+      <p>The stack keeps all twelve auction products,
+         <a class="term-link" data-term="dc_dm_dr" href="#g-dc_dm_dr">
+         Dynamic Containment, Moderation and Regulation</a> plus Balancing,
+         Quick and Slow Reserve, each split into its low/negative and
+         high/positive leg, rather than collapsing to six service bands.
+         The two legs of a service routinely clear opposite signs on the
+         same day, so netting them would hide two large, real, offsetting
+         flows behind a small number. Revenue is <code>executedQuantity
+         &times; clearingPrice &times; window_h</code>, all three
+         published by NESO per row; clearing prices go negative on some
+         products (Dynamic Regulation High most often), and the stack
+         renders that as a band below zero rather than clipping it. The
+         shaded band and its centre line are the p10 to p90 spread and
+         median of that same total £/kW/day figure split across cohort
+         units, the peer-group comparison, with no unit named.</p>
+      <p>The denominator is <b>time-varying</b>: each day divides by the
+         summed nameplate of cohort units already present in the fetched
+         window on or before that day, not today's fleet size. The
+         identified cohort's active capacity grew substantially across the
+         shipped window, so a constant present-day denominator would
+         understate the earliest days by a wide margin, not a rounding
+         difference. The identified-fleet activity card above uses the
+         same construction, on first observed Balancing Mechanism
+         acceptance rather than first EAC appearance, so the two cards
+         normalise the same way and are directly comparable.</p>
+      <p>Balancing Mechanism cashflow is <b>never added to the stack
+         above</b>. It settles from Elexon's indicative Bid-Offer Cashflow
+         (EBOCF, the II settlement run), pricing the same accepted-volume
+         actions the BM activity chart above already counts in MWh. Its
+         sign follows whichever way the fleet happened to charge or
+         discharge that day, not a trading outcome, and its magnitude runs
+         to several times the whole availability stack (a heavy charging
+         day settles deep negative purely because energy was bought, not
+         lost). Stacked into the total it would both dominate the chart
+         and read as batteries losing money in the Balancing Mechanism, so
+         it renders as its own signed panel with its own heading, and the
+         net MWh companion series on the right-hand axis so the sign of
+         the money can be read directly against the sign of the energy.</p>
+      <p>Wholesale arbitrage revenue is not estimated anywhere on this
+         card, deliberately. The candidate proxy, notified position volume
+         priced at the market index, compounds two separate errors rather
+         than cancelling them: notified position is instructed intent, not
+         metered output, and the market index is a volume-weighted average
+         across the whole market, not the price any one unit transacted
+         at. Both diverge hardest in exactly the stressed periods a
+         battery arbitrage figure would be most sensitive to. Shipping it
+         would put the one Estimated figure inside an otherwise Observed
+         stack, at the point where the total most needs to be trusted, so
+         it stays held rather than shipped. State of charge, cycling depth
+         and per-unit named revenue are out of scope for the same reason
+         as the activity panel above: none of them is published anywhere
+         observable, and a per-unit revenue table would publish named
+         commercial performance the p10/p50/p90 spread already benchmarks
+         without naming anyone.</p>
+      ${bessRevenueSeries
+        ? `<p>Series detail for both legs, the EAC availability revenue
+             and the Balancing Mechanism cashflow, is listed alongside
+             every other series in the "Sources, field mapping,
+             transformations" table above.</p>`
+        : `<p>No BESS revenue dataset built on this machine yet, run
+             <code>python etl/build_bess_revenue.py</code>.</p>`}
+
       <h3 id="m-overnight">Overnight summary (AI-generated)</h3>
       <p>The collapsible panel below the KPI strip is written by an LLM,
          the <code>dashboard-watcher</code> agent, invoked headlessly by
@@ -1728,6 +1935,34 @@ const UI = (() => {
          file, <code>data/bmu_snapshot.json</code>, and the SRMC-vs-price
          time series is reproducible from the spreads CSV plus the CCGT
          SRMC formula.</p>
+      <p><code>gb_bess_activity_&lt;from&gt;_&lt;to&gt;.csv</code>
+         (Batteries): one row per day either optional payload has in the
+         selected range, Observed. <code>offer_mwh</code> (≥0),
+         <code>bid_mwh</code> (≤0) and their <code>net_mwh</code> read each
+         day's always-present daily totals directly (every stored day
+         carries them, regardless of tier). <code>fleet_units</code>/
+         <code>fleet_mw</code> repeat on every row, constant for the whole
+         file (the registered fleet does not vary by day);
+         <code>denominator_mw</code>/<code>denominator_units</code> are the
+         activity side's own per-day divisor, the capacity first
+         dispatched in the Balancing Mechanism on or before that day, so
+         the "per MW of fleet active to date" chart toggle is reproducible
+         from the export row by row without a free-text column. Twelve
+         <code>eac_&lt;product&gt;_gbp_per_kw_day</code> columns carry the
+         EAC availability stack, signed, zero-filled where a product
+         cleared nothing that day; <code>bm_offer_gbp_per_kw_day</code>,
+         <code>bm_bid_gbp_per_kw_day</code>, <code>bm_offer_mwh</code> and
+         <code>bm_bid_mwh</code> carry the BM cashflow sub-panel (never
+         summed with the EAC columns); and <code>denominator_kw</code> is
+         the revenue side's own per-day divisor (in kW, so the unit
+         disambiguates it from the activity side's
+         <code>denominator_mw</code>). The activity and revenue payloads
+         can differ in exactly which days they have fetched, so a row can
+         carry one side and leave the other blank, an honest gap rather
+         than a zero. The fleet's name and owner never appear here: see
+         the Identified fleet table on the tab itself, which has no
+         export. No dataset built yet, or no stored days in range, →
+         header-only file.</p>
       <p>No export contains free text. Every value is a number, an ISO
          date or timestamp, a boolean, or a value from a fixed token set,
          because the CSV writer does no comma-escaping.</p>
@@ -1943,6 +2178,120 @@ const UI = (() => {
     return { columns, name };
   }
 
+  /* Batteries (BESS) daily export. Rows = the UNION of stored days in
+     [fromIso, toIso] across BOTH optional secondary payloads: activity
+     (bess_activity.json, dict keyed by day) and revenue
+     (bess_revenue.json, columnar with a plain `days` array — plan/08 D16).
+     The two payloads cover different windows (activity ships a short
+     rolling backfill, revenue ships the full 400-day retention), so a row
+     can carry one side and leave the other blank — that is a real gap in
+     what has been fetched, not a bug, and is left as an empty cell rather
+     than a zero.
+
+     offer_mwh/bid_mwh/net_mwh read each day's always-present daily totals
+     (offer_mwh_total/bid_mwh_total, addendum §B1) directly — no HH-array
+     summing. denominator_mw/denominator_units are the activity side's
+     PER-DAY normalisation divisor (addendum §A: the capacity first
+     dispatched on or before that day), replacing the old constant
+     window_active_units/window_active_mw columns net-zero — the
+     normalised chart is now reproducible from the file row by row, which
+     the constant columns could only do while the divisor was constant.
+     fleet_units/fleet_mw stay as repeated constants (the Merit CSV
+     precedent: registered fleet size does not vary per day). The twelve
+     EAC product columns, the four BM cashflow/volume columns and
+     denominator_kw (the REVENUE side's own per-day divisor, in kW so the
+     unit disambiguates it from the activity side's denominator_mw) are
+     plan/08 D16's addition; per the HARD RULE no export carries free
+     text, so the fleet identified by name/party (see the Identified
+     fleet table) never appears here.  No dataset, or no days in the
+     window, → header-only (still a valid CSV). */
+  function buildBessCsv(st, win) {
+    const { fromIso, toIso } = win;
+    const PRODUCTS = ["DCL", "DCH", "DML", "DMH", "DRL", "DRH",
+      "PBR", "NBR", "PQR", "NQR", "PSR", "NSR"];
+    const columns = { date: [], offer_mwh: [], bid_mwh: [], net_mwh: [],
+      acceptances: [], active_units: [], active_mw: [],
+      fleet_units: [], fleet_mw: [],
+      denominator_mw: [], denominator_units: [] };
+    PRODUCTS.forEach((p) => {
+      columns[`eac_${p.toLowerCase()}_gbp_per_kw_day`] = [];
+    });
+    columns.bm_offer_gbp_per_kw_day = [];
+    columns.bm_bid_gbp_per_kw_day = [];
+    columns.bm_offer_mwh = [];
+    columns.bm_bid_mwh = [];
+    columns.denominator_kw = [];
+
+    const a = Data.bess;
+    const r = Data.bessRevenue;
+    const aKeys = a && a.days
+      ? Object.keys(a.days).filter((k) => k >= fromIso && k <= toIso) : [];
+    const rIndex = new Map();
+    if (r && Array.isArray(r.days)) {
+      r.days.forEach((d, i) => {
+        if (d >= fromIso && d <= toIso) rIndex.set(d, i);
+      });
+    }
+    const keys = [...new Set([...aKeys, ...rIndex.keys()])].sort();
+    const fleet = a && a.fleet;
+
+    keys.forEach((k) => {
+      columns.date.push(k);
+      const day = a && a.days && a.days[k];
+      if (day) {
+        // Every stored day carries the daily totals regardless of tier
+        // (addendum §B1), so this reads them directly — no HH-array
+        // summing, and no tier branch.
+        const offer = day.offer_mwh_total ?? 0;
+        const bid = day.bid_mwh_total ?? 0;
+        columns.offer_mwh.push(+offer.toFixed(1));
+        columns.bid_mwh.push(+bid.toFixed(1));
+        columns.net_mwh.push(+(offer + bid).toFixed(1));
+        columns.acceptances.push(day.acceptances ?? 0);
+        columns.active_units.push(day.active_units ?? 0);
+        columns.active_mw.push(day.active_mw ?? 0);
+        columns.denominator_mw.push(day.denominator_mw ?? null);
+        columns.denominator_units.push(day.denominator_units ?? null);
+      } else {
+        columns.offer_mwh.push(null);
+        columns.bid_mwh.push(null);
+        columns.net_mwh.push(null);
+        columns.acceptances.push(null);
+        columns.active_units.push(null);
+        columns.active_mw.push(null);
+        columns.denominator_mw.push(null);
+        columns.denominator_units.push(null);
+      }
+      columns.fleet_units.push(fleet ? fleet.units : null);
+      columns.fleet_mw.push(fleet ? fleet.mw : null);
+
+      const ri = rIndex.has(k) ? rIndex.get(k) : null;
+      PRODUCTS.forEach((p) => {
+        const col = `eac_${p.toLowerCase()}_gbp_per_kw_day`;
+        const series = r && r.eac_gbp_per_kw_day && r.eac_gbp_per_kw_day[p];
+        columns[col].push(ri != null && series ? series[ri] ?? null : null);
+      });
+      if (ri != null && r && r.bm) {
+        columns.bm_offer_gbp_per_kw_day.push(
+          r.bm.offer_gbp_per_kw_day[ri] ?? null);
+        columns.bm_bid_gbp_per_kw_day.push(
+          r.bm.bid_gbp_per_kw_day[ri] ?? null);
+        columns.bm_offer_mwh.push(r.bm.offer_mwh[ri] ?? null);
+        columns.bm_bid_mwh.push(r.bm.bid_mwh[ri] ?? null);
+        columns.denominator_kw.push(
+          r.denominator_kw ? r.denominator_kw[ri] ?? null : null);
+      } else {
+        columns.bm_offer_gbp_per_kw_day.push(null);
+        columns.bm_bid_gbp_per_kw_day.push(null);
+        columns.bm_offer_mwh.push(null);
+        columns.bm_bid_mwh.push(null);
+        columns.denominator_kw.push(null);
+      }
+    });
+    const name = `gb_bess_activity_${fromIso}_${toIso}.csv`;
+    return { columns, name };
+  }
+
   // Registry keyed by tab (index.html data-tab). Overview/Prices/
   // Generation share the market builder; unknown tabs fall back to it.
   const CSV_BUILDERS = {
@@ -1953,6 +2302,7 @@ const UI = (() => {
     merit: buildMeritCsv,
     flows: buildFlowsCsv,
     stress: buildStressCsv,
+    bess: buildBessCsv,
   };
 
   function exportCsv() {
