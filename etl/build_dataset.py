@@ -44,6 +44,7 @@ never leave a half-written file behind.
 
 import argparse
 import csv
+import gzip
 import hashlib
 import io
 import json
@@ -95,7 +96,8 @@ def _cache_path(key: str) -> Path:
 
 
 def _http_raw(url: str, *, post_json: dict | None = None, retries: int = 3,
-              ua: str = "gb-power-dashboard-etl/1.0") -> bytes:
+              ua: str = "gb-power-dashboard-etl/1.0",
+              accept_gzip: bool = False) -> bytes:
     last_error = None
     for attempt in range(retries):
         try:
@@ -106,9 +108,19 @@ def _http_raw(url: str, *, post_json: dict | None = None, retries: int = 3,
             else:
                 req = urllib.request.Request(url)
             req.add_header("User-Agent", ua)
+            if accept_gzip:
+                # Off by default: only the BM cashflow/volume backfill
+                # (etl/build_bess_revenue.py, plan/08) opts in — measured
+                # 8.4x on Elexon's EBOCF endpoint, which makes an
+                # otherwise-impractical ~1,600-call backfill practical.
+                req.add_header("Accept-Encoding", "gzip")
             with urllib.request.urlopen(req, timeout=60,
                                         context=SSL_CONTEXT) as resp:
                 data = resp.read()
+                if (accept_gzip
+                        and resp.headers.get("Content-Encoding", "")
+                            .lower() == "gzip"):
+                    data = gzip.decompress(data)
             time.sleep(0.15)  # polite pacing
             return data
         except Exception as error:  # noqa: BLE001 — log and retry
@@ -118,13 +130,15 @@ def _http_raw(url: str, *, post_json: dict | None = None, retries: int = 3,
 
 
 def http(url: str, *, post_json: dict | None = None, retries: int = 3,
-         ua: str = "gb-power-dashboard-etl/1.0") -> str:
+         ua: str = "gb-power-dashboard-etl/1.0",
+         accept_gzip: bool = False) -> str:
     """GET (or POST with JSON body) returning response text, cached on disk."""
     key = url + (json.dumps(post_json, sort_keys=True) if post_json else "")
     cache_file = _cache_path(key)
     if USE_CACHE and cache_file.exists():
         return cache_file.read_text()
-    text = _http_raw(url, post_json=post_json, retries=retries, ua=ua).decode()
+    text = _http_raw(url, post_json=post_json, retries=retries, ua=ua,
+                     accept_gzip=accept_gzip).decode()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_file.write_text(text)
     return text
