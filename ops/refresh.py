@@ -8,10 +8,12 @@ Scheduler on Windows via install_schedule.ps1) or by hand:
 
 Pipeline: incremental dataset update (falls back to a full rebuild when
 no readable dataset exists) → BMU dispatch snapshot (non-fatal) →
-system-stress metrics append (non-fatal) → seven ENTSO-E zone refreshes
-(non-fatal per zone) → AI overnight summary (non-fatal, and OPT-IN:
-skipped unless ENABLE_AI_SUMMARY=true, regardless of whether the claude
-CLI is installed — see ops/env_flags.py). Logs to
+system-stress metrics append (non-fatal) → BESS observable activity
+append (non-fatal, plan/06 workstream C, #24) → BESS revenue stack
+append (non-fatal, plan/08, #47) → seven ENTSO-E zone refreshes
+(non-fatal per zone) → AI overnight summary (non-fatal, and
+OPT-IN: skipped unless ENABLE_AI_SUMMARY=true, regardless of whether the
+claude CLI is installed — see ops/env_flags.py). Logs to
 ops/logs/refresh_YYYY-MM-DD.log and exits non-zero only if the core
 dataset refresh fails, so the scheduler records the run correctly.
 
@@ -203,6 +205,21 @@ def main():
             # `python etl/fetch_stress.py --backfill 365`, run once by hand.
             run_non_fatal([python, str(ROOT / "etl" / "fetch_stress.py")],
                           "stress metrics refresh")
+
+            # BESS observable activity (plan/06 workstream C, #24). Incremental
+            # append; the one-off historical build is
+            # `python etl/build_bess_activity.py --backfill 30`, run once by
+            # hand.
+            run_non_fatal([python, str(ROOT / "etl" / "build_bess_activity.py")],
+                          "bess activity refresh")
+
+            # Observable BESS revenue stack: EAC availability auctions +
+            # BM cashflow (plan/08, issue #47). Incremental append; the
+            # one-off historical BM backfill is
+            # `python etl/build_bess_revenue.py --backfill`, run once by
+            # hand (~1,600 Elexon calls / ~9 GB cache / ~50 min).
+            run_non_fatal([python, str(ROOT / "etl" / "build_bess_revenue.py")],
+                          "bess revenue refresh")
 
             # Counterparty zone context (append-only history, ~6 kB/day/zone).
             # --days 7 keeps runs cheap; the merge handles the overlap.

@@ -125,7 +125,8 @@ class WriteStatusTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_ok_run_schema_round_trips(self):
-        steps = ["core dataset refresh", "bmu snapshot refresh"]
+        steps = ["core dataset refresh", "bmu snapshot refresh",
+                 "bess activity refresh", "bess revenue refresh"]
         returned = write_status(
             self.path, "ok", None, None, steps, 1,
             ts="2026-07-13T09:00:12Z")
@@ -235,6 +236,61 @@ class MainStatusOnFailureTest(unittest.TestCase):
         self.assertEqual(status["failed_step"], "core dataset refresh")
         self.assertEqual(status["attempts"], 3)
         self.assertEqual(status["steps_completed"], [])
+
+
+class BessActivityStepTest(unittest.TestCase):
+    """The BESS observable activity refresh (plan/06 workstream C, #24) is
+    wired as a non-fatal step, same contract as the BMU snapshot / stress
+    metrics steps: a failure must not turn the run's overall outcome into
+    "failed", and the label must not land in steps_completed."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp.name)
+        (tmp / "logs").mkdir()
+        self.status_path = tmp / "refresh_status.json"
+        self._patches = [
+            mock.patch.object(refresh, "OPS", tmp),
+            mock.patch.object(refresh, "STATUS_PATH", self.status_path),
+            mock.patch.object(refresh, "resolve_child_python",
+                              lambda: "python3"),
+            mock.patch.object(refresh.time, "sleep", lambda s: None),
+            # Zone loop and AI summary are irrelevant to this step's
+            # contract — skip both to keep the test focused.
+            mock.patch.object(refresh, "ZONES", []),
+            mock.patch.object(refresh, "ai_summary_enabled",
+                              lambda root: False),
+        ]
+        for p in self._patches:
+            p.start()
+        self._saved_env = os.environ.pop("GB_DASH_ORCHESTRATED", None)
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        os.environ.pop("GB_DASH_ORCHESTRATED", None)
+        if self._saved_env is not None:
+            os.environ["GB_DASH_ORCHESTRATED"] = self._saved_env
+        self._tmp.cleanup()
+
+    def read_status(self):
+        return json.loads(self.status_path.read_text(encoding="utf-8"))
+
+    def test_bess_activity_failure_is_non_fatal(self):
+        def run(args, **kwargs):
+            code = 1 if any("build_bess_activity.py" in str(a)
+                            for a in args) else 0
+            return types.SimpleNamespace(returncode=code)
+
+        with mock.patch.object(refresh.subprocess, "run", run):
+            refresh.main()
+        status = self.read_status()
+        self.assertEqual(status["outcome"], "ok")
+        self.assertIsNone(status["failed_step"])
+        self.assertIn("core dataset refresh", status["steps_completed"])
+        self.assertIn("bmu snapshot refresh", status["steps_completed"])
+        self.assertIn("stress metrics refresh", status["steps_completed"])
+        self.assertNotIn("bess activity refresh", status["steps_completed"])
 
 
 if __name__ == "__main__":
