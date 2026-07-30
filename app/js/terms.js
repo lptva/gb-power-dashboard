@@ -15,6 +15,19 @@
      method  in-app methodology anchor (m-<id>) for the full derivation */
 
 const Terms = {
+  accepted_volume: {
+    label: "Accepted volume (bid/offer)",
+    gb: true,
+    short: "The MWh NESO instructed a unit to deviate from its own " +
+      "notified position in the Balancing Mechanism: an offer acceptance " +
+      "means go above it, a bid means go below it.",
+    extra: "For a battery this is instructed deviation, not delivered " +
+      "energy or state of charge — accepted volume can exceed metered " +
+      "throughput. The Batteries tab sums it signed: offer positive, bid " +
+      "negative.",
+    elexon: "https://www.elexon.co.uk/bsc/glossary/bid-offer-acceptance/",
+    method: "bess",
+  },
   assumption_badge: {
     label: "Assumption (badge)",
     short: "An input you choose rather than a value anyone measured, " +
@@ -30,6 +43,18 @@ const Terms = {
       "accepts the offers it needs.",
     extra: "Everything the System stress tab prices (SSP) or counts " +
       "(acceptances) happens here.",
+  },
+  bess: {
+    label: "BESS (Battery Energy Storage System)",
+    gb: true,
+    short: "A grid-connected battery installation that can charge and " +
+      "discharge on NESO's instruction. The Batteries tab tracks the " +
+      "identified GB fleet's accepted Balancing Mechanism volumes, not " +
+      "revenue or state of charge.",
+    extra: "The identified fleet is derived from public BM Unit registry " +
+      "attributes (a symmetric generation/demand registration or a " +
+      "battery name), not an asserted list — see Methodology.",
+    method: "bess",
   },
   bmu: {
     label: "BM Unit (BMU)",
@@ -88,6 +113,56 @@ const Terms = {
       "dashboard shows MID for GB and true day-ahead prices for the " +
       "ENTSO-E zones.",
     method: "price",
+  },
+  dc_dm_dr: {
+    label: "Dynamic Containment / Moderation / Regulation",
+    gb: true,
+    short: "NESO's three frequency-response services, each split into a " +
+      "low-frequency leg and a high-frequency leg: Containment reacts " +
+      "fastest (within one second), Moderation and Regulation " +
+      "progressively slower and deeper into a frequency deviation.",
+    extra: "For a battery, a low leg means standing ready to inject " +
+      "power when frequency falls (discharge) and a high leg means " +
+      "standing ready to absorb it when frequency rises (charge). " +
+      "Each leg clears its own EAC auction price and can go " +
+      "negative in the revenue stack. The two legs of a service " +
+      "routinely clear opposite signs on the same day, which is why the " +
+      "stack keeps all six bands rather than netting them together.",
+    method: "bess-revenue",
+  },
+  eac: {
+    label: "Enduring Auction Capability (EAC)",
+    gb: true,
+    short: "NESO's platform for auctioning frequency-response and " +
+      "reserve capacity (Dynamic Containment/Moderation/Regulation plus " +
+      "Balancing, Quick and Slow Reserve), publishing accepted volume " +
+      "and clearing price per unit, per product, per delivery window.",
+    extra: "The revenue stack is built entirely from this published, " +
+      "pay-as-clear data: accepted quantity times clearing price times " +
+      "the delivery window length. The twelve stack bands are the six " +
+      "services times their two directions. A single unit rarely holds " +
+      "all of them: the same megawatt cannot carry overlapping " +
+      "obligations in the same delivery window, so a typical battery " +
+      "wins a small portfolio of products per window and the fleet-wide " +
+      "stack averages winners and non-winners together.",
+    method: "bess-revenue",
+  },
+  reserve_products: {
+    label: "Balancing / Quick / Slow Reserve",
+    gb: true,
+    short: "NESO's three reserve services, each bought in a positive " +
+      "direction (extra output held ready) and a negative direction " +
+      "(extra absorption held ready): Quick Reserve activates in " +
+      "minutes for short imbalances, Balancing Reserve backs the " +
+      "Balancing Mechanism through the day, and Slow Reserve covers " +
+      "longer, slower-building shortfalls.",
+    extra: "All three are procured day-ahead through the EAC auctions " +
+      "alongside the frequency-response products, as availability " +
+      "payments per megawatt per delivery window. Batteries bid in all " +
+      "of them but earn most of their reserve revenue where fast " +
+      "activation matters; the revenue stack shows each direction as " +
+      "its own band because the two directions clear separately.",
+    method: "bess-revenue",
   },
   drm: {
     label: "De-rated margin (DRM)",

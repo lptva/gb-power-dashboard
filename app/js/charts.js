@@ -1969,6 +1969,484 @@ const Charts = (() => {
     });
   }
 
+  /* Batteries (BESS) tab — observed accepted BM volumes for the identified
+     GB battery fleet (issue #24 / plan/08 D16). Data: optional secondary
+     payload app/data/bess_activity.json, written by
+     etl/build_bess_activity.py — same optional/degrade-gracefully
+     treatment as stressDaily above (empty-state div, never a broken tab).
+     View-only toggle ("per MW of fleet active to date"), module-local per
+     the utilSortMode/utilSortWired precedent above: no browser storage,
+     no State.js field, resets to absolute MWh on reload. */
+  let bessNormalised = false;
+  let bessNormaliseWired = false;
+
+  function bessActivity() {
+    const el = document.getElementById("ch-bess-activity");
+    if (!el) return;
+    const empty = document.getElementById("bess-empty");
+    const captionEl = document.getElementById("bess-caption");
+    const toggle = document.getElementById("bess-normalise");
+    if (toggle && !bessNormaliseWired) {
+      toggle.checked = bessNormalised;
+      toggle.addEventListener("change", () => {
+        bessNormalised = toggle.checked;
+        bessActivity();
+      });
+      bessNormaliseWired = true;
+    }
+
+    const payload = Data.bess;
+    const ok = !!(payload && payload.fleet && payload.days
+      && Object.keys(payload.days).length);
+    empty.classList.toggle("hidden", ok);
+    el.classList.toggle("hidden", !ok);
+    if (!ok) {
+      if (captionEl) captionEl.textContent = "";
+      const existing = registry.get("ch-bess-activity");
+      if (existing) existing.clear();
+      return;
+    }
+
+    const fleet = payload.fleet;
+    // wa is read only as a fallback (a day missing denominator_mw, or the
+    // empty-payload path) — it is no longer the divisor (addendum §A):
+    // the divisor is now per-day, payload.days[k].denominator_mw.
+    const wa = fleet.window_active || {};
+    const repd = (payload.meta && payload.meta.repd_context) || {};
+    const win = (payload.meta && payload.meta.window) || {};
+
+    // One bar per STORED day, filtered to the selected range window —
+    // same precedent as stressDaily (another day-keyed optional payload):
+    // the hh/hour/day resolution toggle is NOT followed, only the date
+    // range is. Reconstructing exact UK local settlement-period
+    // boundaries from the variable 46/48/50-length SP arrays (clock-change
+    // days shift the BST/GMT transition instant) would need a timezone
+    // database client-side for a sub-day view stress_daily's own JS layer
+    // also avoids; summing SPs into one daily figure is what §4c's own
+    // instruction ("at day resolution sum SPs per day") requires anyway.
+    const allKeys = Object.keys(payload.days).sort();
+
+    // Caption stats: every number comes from the payload, rebuilt on
+    // every render. Compact card-meta idiom (mid-dot separators, like
+    // bmu-meta above); the full reasoning lives in the Methodology tab.
+    // The two divisor figures are the FIRST and LAST stored day's
+    // denominator_mw (addendum §A6) — they describe the stored window,
+    // not the on-screen range, same convention the caption already used
+    // for window_active.
+    const firstDenom = allKeys.length
+      ? (payload.days[allKeys[0]].denominator_mw ?? wa.mw) : wa.mw;
+    const lastDenom = allKeys.length
+      ? (payload.days[allKeys[allKeys.length - 1]].denominator_mw ?? wa.mw)
+      : wa.mw;
+    if (captionEl) {
+      const fmtMw = (v) => v == null ? "?"
+        : Math.round(v).toLocaleString("en-GB");
+      captionEl.textContent =
+        `Identified fleet: ${fleet.units} units, ${fmtMw(fleet.mw)} MW ` +
+        "(derived; see Methodology) · per-MW figures divide each day by " +
+        "the capacity first dispatched in the Balancing Mechanism on or " +
+        `before that day, ${fmtMw(firstDenom)} MW at the start of this ` +
+        `window rising to ${fmtMw(lastDenom)} MW now · stored window ` +
+        `${win.from ?? "?"} → ${win.to ?? "?"} · REPD ` +
+        `${repd.vintage ?? "?"} context: ${repd.sites ?? "?"} sites, ` +
+        `${fmtMw(repd.mw)} MW (site-level, not BMU-mappable)`;
+    }
+
+    const { fromIso, toIso } = State.window();
+    const keys = allKeys.filter((k) => k >= fromIso && k <= toIso);
+    if (!keys.length) {
+      chart("ch-bess-activity").clear();
+      return;
+    }
+    const dayMs = keys.map((k) => Date.parse(k + "T00:00:00Z"));
+
+    // Per-day denominator (addendum §A): the capacity first dispatched on
+    // or before that day. A single build-level divisor understated the
+    // earliest 30 days of a 400-day window by 43% and reversed the sign
+    // of the utilisation trend. Both legs read offer_mwh_total /
+    // bid_mwh_total directly — every day carries the daily totals,
+    // regardless of tier, so there is no tier branch here.
+    const denom = (k) => {
+      const d = payload.days[k].denominator_mw;
+      return d > 0 ? d : null;
+    };
+    const scale = (v, k) => {
+      if (!bessNormalised) return +v.toFixed(1);
+      const d = denom(k);
+      return d ? +(v / d).toFixed(4) : null;
+    };
+    const offer = keys.map((k) => scale(payload.days[k].offer_mwh_total, k));
+    const bid = keys.map((k) => scale(payload.days[k].bid_mwh_total, k));
+    const net = offer.map((o, i) => (o == null || bid[i] == null) ? null
+      : +(o + bid[i]).toFixed(bessNormalised ? 4 : 1));
+
+    const unitLabel = bessNormalised ? "MWh/MW (fleet active to date)" : "MWh";
+    chart("ch-bess-activity").setOption(baseDay({
+      legend: legendBar({ data: ["Offer (accepted)", "Bid (accepted)",
+        "Net accepted"] }),
+      grid: { left: 60, right: 56, top: 48, bottom: 56 },
+      xAxis: timeAxis(),
+      // scale: true (from valueAxis) autoscales across zero rather than
+      // forcing a symmetric ±max — the signed-stack pitfall this panel
+      // exists to avoid is DROPPING negatives (app/js/charts.js:656's
+      // `filter((u) => u.mw > 0)`), not the exact axis symmetry.
+      // Name anchored left (same fix as the stress chart's over-long
+      // "min below 49.8 Hz" axis name): ECharts centres axis names on the
+      // axis line by default, and the normalised label is longer than the
+      // left gutter — centred, half of it clips off the pane.
+      yAxis: valueAxis(unitLabel, { nameTextStyle: {
+        color: css("--text-dim"), align: "left", padding: [0, 0, 0, -56] } }),
+      dataZoom: zoom(),
+      series: [
+        { name: "Offer (accepted)", type: "bar", stack: "bess",
+          data: dayMs.map((t, i) => [t, offer[i]]),
+          itemStyle: { color: Data.FUELS.BESS.colour, opacity: 0.9 },
+          barMaxWidth: 14 },
+        { name: "Bid (accepted)", type: "bar", stack: "bess",
+          data: dayMs.map((t, i) => [t, bid[i]]),
+          itemStyle: { color: Data.FUELS.BESS.colour, opacity: 0.45 },
+          barMaxWidth: 14 },
+        line("Net accepted", dayMs, net, css("--accent"),
+          { lineStyle: { width: 1.6, color: css("--accent") } }),
+      ],
+    }), true);
+  }
+
+  /* Observable revenue stack + BM cashflow sub-panel (issue #47 / plan/08).
+     Data: optional secondary payload app/data/bess_revenue.json, written
+     by etl/build_bess_revenue.py — same optional/degrade-gracefully
+     treatment as bessActivity above. Columnar payload: `days` is a plain
+     array (not a dict keyed by day, unlike bess_activity.json), so every
+     series here is index-aligned to that array rather than looked up by
+     date string.
+
+     D13 (identification): twelve EAC availability products are kept
+     separate, never netted into six service bands — DRH/DRL (and the
+     other high/low pairs) routinely clear opposite signs on the same
+     day, and collapsing them would hide two large, real, offsetting
+     flows behind a small net figure. Coloured by service family (DC/DM/
+     DR/BR/QR/SR), with the low/negative leg of each pair rendered
+     lighter and the high/positive leg darker — the same same-hue,
+     opacity-shaded idiom bessActivity already uses for its offer/bid
+     bars above, applied per family instead of to one BESS colour.
+
+     D18 (BM cashflow): rendered as a separate signed sub-panel within
+     the SAME card, below a rule, never summed into the stack — it is
+     the fleet's energy-purchase leg and runs to several times the
+     availability stack's magnitude; stacking it would both dominate the
+     chart and misread as batteries losing money in the BM. */
+  const BESS_FAMILY_COLOUR = {
+    DC: "#4c86e8", DM: "#20a4a0", DR: "#e8823c",
+    BR: "#9b6bd1", QR: "#d4b23c", SR: "#8a93a6",
+  };
+  const BESS_LIGHT_DIRECTIONS = new Set(["low", "negative"]);
+  const BESS_LEG_LABEL = { structural: "Structural", name: "Name",
+    "structural+name": "Structural + name" };
+
+  function bessRevenueShade(meta) {
+    const base = (meta && BESS_FAMILY_COLOUR[meta.code])
+      || css("--text-dim");
+    return { color: base,
+      opacity: meta && BESS_LIGHT_DIRECTIONS.has(meta.direction)
+        ? 0.55 : 0.95 };
+  }
+
+  function bessRevenue() {
+    const el = document.getElementById("ch-bess-revenue");
+    if (!el) return;
+    const empty = document.getElementById("bess-revenue-empty");
+    const captionEl = document.getElementById("bess-revenue-caption");
+    const bmSection = document.getElementById("bess-bm-section");
+    const bmCaptionEl = document.getElementById("bess-bm-caption");
+
+    const payload = Data.bessRevenue;
+    const ok = !!(payload && Array.isArray(payload.days)
+      && payload.days.length && payload.eac_gbp_per_kw_day && payload.bm);
+    empty.classList.toggle("hidden", ok);
+    el.classList.toggle("hidden", !ok);
+    if (bmSection) bmSection.classList.toggle("hidden", !ok);
+    if (!ok) {
+      if (captionEl) captionEl.textContent = "";
+      if (bmCaptionEl) bmCaptionEl.textContent = "";
+      ["ch-bess-revenue", "ch-bess-bm"].forEach((id) => {
+        const existing = registry.get(id);
+        if (existing) existing.clear();
+      });
+      return;
+    }
+
+    // Caption: every number from the payload, mid-dot card-meta idiom —
+    // the two D13 coverage figures, both disclosed (denominator MW share
+    // AND numerator £ share — the second is the honest one and must not
+    // be buried), plus the payload's own source string.
+    const cohort = payload.cohort || {};
+    const pct1 = (v) => (v == null ? "?" : (100 * v).toFixed(1));
+    const fmtMw = (v) => (v == null ? "?"
+      : Math.round(v).toLocaleString("en-GB"));
+    if (captionEl) {
+      // The denominator clause (addendum §A6) mirrors the activity card's
+      // own caption so the pair reads as one method: both divide by the
+      // capacity first observed active on or before that day, just on
+      // two different sources (EAC auction results here, accepted BM
+      // volumes there).
+      const denomKw = payload.denominator_kw || [];
+      const firstDenomMw = denomKw.length ? denomKw[0] / 1000 : null;
+      const lastDenomMw = denomKw.length ? denomKw[denomKw.length - 1] / 1000
+        : null;
+      captionEl.textContent =
+        `Identified fleet: ${cohort.units ?? "?"} units, ` +
+        `${fmtMw(cohort.mw)} MW (${pct1(cohort.coverage_repd)}% of GB ` +
+        `operational BESS, REPD ${cohort.repd_vintage ?? "?"}) · ` +
+        `captures ${pct1(cohort.coverage_eac_gross)}% of all EAC ` +
+        "battery-labelled £, the remainder earned through aggregator/VLP " +
+        `portfolios with no registered nameplate, out of frame · ` +
+        "per-kW figures divide each day by the capacity first seen in " +
+        `the auction results on or before that day, ${fmtMw(firstDenomMw)} ` +
+        `MW rising to ${fmtMw(lastDenomMw)} MW · ${payload.source || ""}`;
+    }
+
+    const { fromIso, toIso } = State.window();
+    const idx = [];
+    payload.days.forEach((d, i) => {
+      if (d >= fromIso && d <= toIso) idx.push(i);
+    });
+    if (!idx.length) {
+      chart("ch-bess-revenue").clear();
+      chart("ch-bess-bm").clear();
+      if (bmCaptionEl) bmCaptionEl.textContent = "";
+      return;
+    }
+    const dayMs = idx.map((i) => Date.parse(payload.days[i] + "T00:00:00Z"));
+    const round = (v) => (v == null ? null : +v.toFixed(4));
+
+    const productKeys = Object.keys(payload.eac_gbp_per_kw_day);
+    const stackSeries = productKeys.map((k) => {
+      const meta = payload.products && payload.products[k];
+      const shade = bessRevenueShade(meta);
+      const arr = payload.eac_gbp_per_kw_day[k] || [];
+      return {
+        name: k, type: "bar", stack: "revenue",
+        data: idx.map((i, j) => [dayMs[j], round(arr[i])]),
+        itemStyle: { color: shade.color, opacity: shade.opacity },
+        barMaxWidth: 14,
+      };
+    });
+
+    // Peer-group overlay: p10-p90 band + p50 line across cohort units, no
+    // unit named — same stacked-invisible-line band technique as
+    // meritTime's "CCGT SRMC range" above (base series carries the
+    // itemStyle colour for its legend swatch; the delta series is
+    // tooltip/legend-hidden via its trailing-space name).
+    const spread = payload.eac_unit_spread_gbp_per_kw_day || {};
+    const at = (col) => idx.map((i) => (col ? col[i] : null));
+    const p10 = at(spread.p10), p90 = at(spread.p90), p50 = at(spread.p50);
+    const bandSeries = [
+      { name: "Unit spread (p10-p90)", type: "line", stack: "spread",
+        showSymbol: false, data: dayMs.map((t, j) => [t, round(p10[j])]),
+        lineStyle: { opacity: 0 }, itemStyle: { color: css("--text-dim") } },
+      { name: "Unit spread (p10-p90) ", type: "line", stack: "spread",
+        showSymbol: false,
+        data: dayMs.map((t, j) => [t, (p10[j] == null || p90[j] == null)
+          ? null : round(p90[j] - p10[j])]),
+        lineStyle: { opacity: 0 },
+        areaStyle: { color: css("--text-dim"), opacity: 0.18 },
+        itemStyle: { color: css("--text-dim") }, tooltip: { show: false } },
+      line("Unit spread (p50)", dayMs, p50.map(round), css("--accent"),
+        { lineStyle: { width: 1.4, color: css("--accent"), type: "dashed" } }),
+    ];
+
+    chart("ch-bess-revenue").setOption(baseDay({
+      legend: legendBar({ data: [...productKeys, "Unit spread (p10-p90)",
+        "Unit spread (p50)"] }),
+      grid: { left: 60, right: 56, top: 48, bottom: 56 },
+      xAxis: timeAxis(),
+      // scale: true (from valueAxis) autoscales across zero rather than
+      // forcing a symmetric ±max, same rationale as bessActivity's y-axis
+      // above: the pitfall this panel exists to avoid is DROPPING or
+      // clipping negative bands (DRH clears negative most days), not
+      // exact axis symmetry.
+      yAxis: valueAxis("£/kW/day"),
+      dataZoom: zoom(),
+      series: [...stackSeries, ...bandSeries],
+    }), true);
+
+    // D18 sub-panel: gross BM cashflow, own heading, own axis pair, never
+    // summed into the stack above. Offer/bid bars reuse the BESS family
+    // colour and the same opacity-shade idiom bessActivity's own offer/
+    // bid bars use (0.9 received, 0.45 paid) — this is the same
+    // underlying accepted-volume action, priced instead of in MWh. Net
+    // MWh rides a secondary axis so the reader can see the sign of the
+    // money follow the sign of the energy directly.
+    const bmOffer = idx.map((i) => round(payload.bm.offer_gbp_per_kw_day[i]));
+    const bmBid = idx.map((i) => round(payload.bm.bid_gbp_per_kw_day[i]));
+    const offerMwh = idx.map((i) => payload.bm.offer_mwh[i] || 0);
+    const bidMwh = idx.map((i) => payload.bm.bid_mwh[i] || 0);
+    const netMwh = offerMwh.map((o, j) => +(o + bidMwh[j]).toFixed(1));
+
+    if (bmCaptionEl) {
+      const sum = (arr) => arr.reduce((s, v) => s + (v || 0), 0);
+      const n = bmOffer.length || 1;
+      const meanNet = (sum(bmOffer) + sum(bmBid)) / n;
+      const state = payload.state || {};
+      bmCaptionEl.textContent =
+        `Window mean net ${meanNet >= 0 ? "+" : "−"}` +
+        `${Math.abs(meanNet).toFixed(4)} £/kW/day · ` +
+        `${Math.round(sum(offerMwh)).toLocaleString("en-GB")} MWh offer, ` +
+        `${Math.round(sum(bidMwh)).toLocaleString("en-GB")} MWh bid over ` +
+        `the range · EBOCF indicative settlement run, current to ` +
+        `${state.bm_last_day ?? "?"}`;
+    }
+
+    chart("ch-bess-bm").setOption(baseDay({
+      legend: legendBar({ data: ["Offer cashflow (received)",
+        "Bid cashflow (paid)", "Net MWh"] }),
+      grid: { left: 60, right: 60, top: 48, bottom: 56 },
+      xAxis: timeAxis(),
+      yAxis: [valueAxis("£/kW/day"),
+        valueAxis("MWh", { position: "right", splitLine: { show: false } })],
+      dataZoom: zoom(),
+      series: [
+        { name: "Offer cashflow (received)", type: "bar", stack: "bmcf",
+          data: dayMs.map((t, j) => [t, bmOffer[j]]),
+          itemStyle: { color: Data.FUELS.BESS.colour, opacity: 0.9 },
+          barMaxWidth: 14 },
+        { name: "Bid cashflow (paid)", type: "bar", stack: "bmcf",
+          data: dayMs.map((t, j) => [t, bmBid[j]]),
+          itemStyle: { color: Data.FUELS.BESS.colour, opacity: 0.45 },
+          barMaxWidth: 14 },
+        line("Net MWh", dayMs, netMwh, css("--text-dim"),
+          { yAxisIndex: 1, lineStyle: { width: 1.4, color: css("--text-dim"),
+            type: "dashed" } }),
+      ],
+    }), true);
+  }
+
+  /* Identified fleet table (user-requested, Batteries tab). Renders from
+     the ACTIVITY payload's fleet.list (not bess_revenue.json), so it
+     degrades with bessActivity when bess_activity.json is absent — same
+     dependency, same failure mode, deliberately no separate fetch.
+     Top 10 rows by default with a show-all toggle (the stress tab's
+     EMN-notices pattern, in-memory only), plus a substring search over
+     unit id, name and owner. An active search overrides the row limit
+     and shows every match; the search box lives outside the re-rendered
+     table div, so its value survives renders and the visibility pass is
+     re-applied after each one. */
+  let bessFleetExpanded = false;
+  const BESS_FLEET_COLLAPSED_COUNT = 10;
+  let bessFleetWired = false;
+
+  function bessFleetApply() {
+    const container = document.getElementById("bess-fleet-table");
+    const input = document.getElementById("bess-fleet-search");
+    const captionEl = document.getElementById("bess-fleet-caption");
+    const toggleBtn = document.getElementById("bess-fleet-toggle");
+    if (!container || !input) return;
+    const q = input.value.trim().toLowerCase();
+    const rows = [...container.querySelectorAll("tbody tr")];
+    let shown = 0;
+    rows.forEach((tr, i) => {
+      const hit = !q || tr.textContent.toLowerCase().includes(q);
+      const limited = !q && !bessFleetExpanded
+        && i >= BESS_FLEET_COLLAPSED_COUNT;
+      const visible = hit && !limited;
+      tr.classList.toggle("hidden", !visible);
+      if (visible) shown++;
+    });
+    if (toggleBtn) {
+      const hiddenCount = rows.length - BESS_FLEET_COLLAPSED_COUNT;
+      toggleBtn.classList.toggle("hidden", !!q || hiddenCount <= 0);
+      toggleBtn.textContent = bessFleetExpanded
+        ? `▴ Show top ${BESS_FLEET_COLLAPSED_COUNT} only`
+        : `▾ Show all ${rows.length} units (${hiddenCount} more)`;
+    }
+    const fleet = Data.bess && Data.bess.fleet;
+    if (captionEl && fleet) {
+      const mw = fleet.mw == null ? "?"
+        : (+fleet.mw).toLocaleString("en-GB");
+      captionEl.textContent = `${fleet.units} units, ${mw} MW total ` +
+        "identified capacity · sorted by MW descending" +
+        (q ? ` · showing ${shown} of ${rows.length}` : "");
+    }
+  }
+
+  function wireBessFleet() {
+    if (bessFleetWired) return;
+    const input = document.getElementById("bess-fleet-search");
+    const clear = document.getElementById("bess-fleet-search-clear");
+    const toggleBtn = document.getElementById("bess-fleet-toggle");
+    if (!input || !clear || !toggleBtn) return;
+    // Same semantics as ui.js's wireTabSearch (input / Escape / clear),
+    // local because the visibility pass targets rows this module
+    // re-renders.
+    const run = () => {
+      clear.classList.toggle("hidden", !input.value);
+      bessFleetApply();
+    };
+    input.addEventListener("input", run);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { input.value = ""; run(); }
+    });
+    clear.addEventListener("click", () => {
+      input.value = ""; run(); input.focus();
+    });
+    toggleBtn.addEventListener("click", () => {
+      bessFleetExpanded = !bessFleetExpanded;
+      bessFleetApply();
+    });
+    bessFleetWired = true;
+  }
+
+  function bessFleetTable() {
+    const container = document.getElementById("bess-fleet-table");
+    if (!container) return;
+    const empty = document.getElementById("bess-fleet-empty");
+    const captionEl = document.getElementById("bess-fleet-caption");
+    const toggleBtn = document.getElementById("bess-fleet-toggle");
+    wireBessFleet();
+
+    const payload = Data.bess;
+    const fleet = payload && payload.fleet;
+    const list = fleet && Array.isArray(fleet.list) ? fleet.list : null;
+    const ok = !!(list && list.length);
+    empty.classList.toggle("hidden", ok);
+    container.classList.toggle("hidden", !ok);
+    if (!ok) {
+      container.innerHTML = "";
+      if (captionEl) captionEl.textContent = "";
+      if (toggleBtn) toggleBtn.classList.add("hidden");
+      return;
+    }
+
+    const num = (v) => (v == null ? "—"
+      : (+v).toLocaleString("en-GB", { maximumFractionDigits: 1 }));
+    const dateOrDash = (v) => v ?? "—";
+    const rows = list.map((u) => `<tr>
+        <td>${u.id ?? "—"}</td>
+        <td>${u.name ?? "—"}</td>
+        <td>${u.party ?? "—"}</td>
+        <td class="num">${num(u.cap_mw)}</td>
+        <td>${BESS_LEG_LABEL[u.leg] || u.leg || "—"}</td>
+        <td>${dateOrDash(u.first_active)}</td>
+        <td>${dateOrDash(u.last_active)}</td>
+      </tr>`).join("");
+    container.innerHTML = `<table class="util-table">
+      <thead><tr>
+        <th>Unit</th><th>Name</th><th>Owner</th>
+        <th class="num">MW</th>
+        <th title="How the unit joined the identified fleet: a symmetric
+          generation/demand registration (Structural), a battery name
+          pattern (Name), or both">Identified by</th>
+        <th title="Earliest stored day the unit was observed with a
+          non-zero accepted BM volume — the day it enters the per-MW
+          normalisation denominator. An em dash means never observed
+          dispatched in the stored window.">First dispatched</th>
+        <th title="Most recent stored day the unit was observed with a
+          non-zero accepted BM volume.">Last dispatched</th>
+      </tr></thead>
+      <tbody>${rows}</tbody></table>`;
+    bessFleetApply();
+  }
+
   const PANELS = {
     overview: [overviewMain, overviewDonut, overviewResidual],
     prices: [priceMain, priceHist, priceShape, priceNetLoad],
@@ -1978,6 +2456,7 @@ const Charts = (() => {
     flows: [flowsStack, flowsScatter, flowsShare, flowsUtilisation,
             flowsContext],
     stress: [stressDaily, stressEvent],
+    bess: [bessActivity, bessRevenue, bessFleetTable],
     methodology: [],
   };
 
