@@ -221,6 +221,13 @@ def main():
             run_non_fatal([python, str(ROOT / "etl" / "build_bess_revenue.py")],
                           "bess revenue refresh")
 
+            # BESS profitability calculator support payload: cross-unit
+            # percentiles + TNUoS zone tariffs (plan/09, issue #49). Whole-
+            # window rebuild every run (no incremental state — see the
+            # module docstring), cheap (a handful of NESO CKAN calls).
+            run_non_fatal([python, str(ROOT / "etl" / "build_bess_units.py")],
+                          "bess units refresh")
+
             # Counterparty zone context (append-only history, ~6 kB/day/zone).
             # --days 7 keeps runs cheap; the merge handles the overlap.
             for zone in ZONES:
