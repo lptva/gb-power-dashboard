@@ -322,6 +322,475 @@ const Metrics = (() => {
     return { imp, exp };
   }
 
+  /* ================= BESS profitability calculator (plan/09, #49) =====
+     Pure engine functions, mirrored by ops/bess_calculator_figures.py
+     (D32) — a Python module recomputes these same figures from the same
+     inputs, with a parity test pinning JS output as the oracle. Every
+     function here is null-safe and touches neither the DOM nor State:
+     the card (charts.js/ui.js) owns input collection, provenance chips
+     and rendering; this module owns arithmetic only. All arithmetic is
+     real terms, pre-tax, ungeared, with no residual value and no
+     augmentation capex — see the Methodology entry for the four stated
+     simplifications. ==================================================== */
+
+  /* Fraction of a calendar year remaining on/after an ISO date (inclusive
+     of that day) — used to pro-rate year 1 of the cash flow by the
+     fraction of the calendar year left after the commissioning date. No
+     commissioning date supplied → a full year 1 (fraction 1). */
+  function yearFractionRemaining(isoDate) {
+    if (!isoDate) return 1;
+    const d = new Date(isoDate + "T00:00:00Z");
+    if (Number.isNaN(d.getTime())) return 1;
+    const year = d.getUTCFullYear();
+    const start = Date.UTC(year, 0, 1);
+    const end = Date.UTC(year + 1, 0, 1);
+    const totalDays = (end - start) / 86400000;
+    const daysElapsed = (d.getTime() - start) / 86400000;
+    return Math.max(0, Math.min(1, (totalDays - daysElapsed) / totalDays));
+  }
+
+  /* TNUoS zone-level indication (£/kW): z_total(f) = SystemPeak +
+     f x (SharedYearRound + NotSharedYearRound) + Residual. Returns null
+     — NOT zero — for a distribution-connected unit or a missing zone
+     table: "not applicable" and "a zone that nets to zero" must stay
+     distinguishable in the output (test plan item 5). `connType` is the
+     observed registry prefix, "T" (transmission) or "E" (distribution);
+     `zone` is one entry of the payload's tnuos.zones array. */
+  function tnuosCharge(connType, zone, loadFactor) {
+    if (connType !== "T") return null;          // not applicable
+    if (!zone || loadFactor == null) return null;
+    return zone.peak + loadFactor * (zone.yr_shared + zone.yr_notshared)
+      + zone.residual;
+  }
+
+  /* Perfect-foresight arbitrage ceiling (£/MWh): mean top-2d half-hourly
+     price minus the mean bottom-2d price divided by round-trip
+     efficiency — NOT (sHi - sLo) x eta (test plan item 4; the two differ
+     by 1.3% at the measured d=2h figures and the gap widens as
+     efficiency falls). Returns null unless both sHi and sLo are
+     supplied and eta is truthy — bessCashflow's arbitrage term is then
+     zero, matching D31's "arbitrage_gbp ships at zero" behaviour for a
+     card with no capture rate set or no price data loaded. */
+  function arbitrageCeiling(sHi, sLo, eta) {
+    if (sHi == null || sLo == null || !eta) return null;
+    return sHi - sLo / eta;
+  }
+
+  /* D26's observed ceiling, computed over the price series already
+     loaded (v1.5, pulled forward from v2): for each COMPLETE day
+     (>= 46 populated half-hourly periods, D26's measured table) inside
+     [ts[0], ts[last]] — the fixed data window the app has already
+     fetched, never the UI's rolling range presets — take the mean of
+     that day's top `n` half-hourly prices and the mean of its bottom
+     `n`, where `n = round(2 x durationHours)` (a d-hour asset's "top/
+     bottom 2d half-hours"). Average each of those two per-day means
+     across every complete day. Returns null (not zero) when there is
+     no price series, no positive duration, or no complete day at all —
+     "no observed data" and "a zero spread" must stay distinguishable,
+     same discipline as tnuosCharge's null. `ts` is epoch SECONDS
+     (Data.hh.t's unit); days are grouped by UTC calendar day
+     (Math.floor(ts / 86400)), the same bucketing idiom the rest of the
+     app already uses for daily aggregation. */
+  function observedArbitrageSpread(ts, price, durationHours) {
+    if (!ts || !ts.length || !durationHours || durationHours <= 0) return null;
+    const n = Math.max(1, Math.round(2 * durationHours));
+    const days = new Map();
+    for (let i = 0; i < ts.length; i++) {
+      const p = price[i];
+      if (p == null) continue;
+      const day = Math.floor(ts[i] / 86400);
+      if (!days.has(day)) days.set(day, []);
+      days.get(day).push(p);
+    }
+    let sumHi = 0, sumLo = 0, complete = 0;
+    days.forEach((arr) => {
+      if (arr.length < 46) return; // incomplete day (D26's measured table)
+      const sorted = [...arr].sort((a, b) => a - b);
+      const k = Math.min(n, sorted.length);
+      const lo = sorted.slice(0, k);
+      const hi = sorted.slice(sorted.length - k);
+      sumLo += lo.reduce((a, b) => a + b, 0) / k;
+      sumHi += hi.reduce((a, b) => a + b, 0) / k;
+      complete += 1;
+    });
+    if (!complete) return null;
+    return { sHi: sumHi / complete, sLo: sumLo / complete, days: complete };
+  }
+
+  /* Discounting-convention exponent (owner request, 2026-07): the engine
+     supports two stated conventions, chosen by the caller via
+     `discounting` and defaulting to "mid" (mid-year):
+       mid-year (default): year n discounts at (1+r)^(n-0.5).
+       end-of-period:      year n discounts at (1+r)^n — the original,
+                            unconditional behaviour, with no stub
+                            adjustment at all.
+     Year 1's pro-rated commissioning stub (frac1 = the remaining-year
+     fraction from yearFractionRemaining) discounts, under mid-year, at
+     the stub's OWN midpoint: (1-frac1) + frac1/2. This degenerates to
+     the general n-0.5 rule exactly when frac1=1 (no stub, e.g. no
+     commissioning date set): (1-1)+1/2 = 0.5 = 1-0.5. Kept deliberately
+     this simple: later years are not shifted by the stub's own length,
+     only year 1's own exponent changes. Under end-of-period, year 1
+     stays at exponent 1 regardless of frac1 — no stub adjustment either,
+     matching the pre-existing behaviour exactly. */
+  function discountExponent(n, frac1, discounting) {
+    if (discounting === "end") return n;
+    return n === 1 ? (1 - frac1) + frac1 / 2 : n - 0.5;
+  }
+
+  /* Year-by-year cash flow (D32's `bessCashflow`). `inputs`:
+       P power MW, E energy MWh, y0 ISO commissioning date (or null),
+       T calculation period years, C capex £k/MW, O opex £k/MW/yr,
+       r WACC (fraction), c cycles/day, delta degradation (fraction/yr),
+       eta round-trip efficiency (fraction),
+       a availability revenue £/kW/yr (percentile or unit figure),
+       sHi, sLo arbitrage prices £/MWh (v2; null in v1), k capture rate
+       (fraction, default 0 — no UI to set it in v1, so the arbitrage
+       term is zero by construction, matching D31's CSV column),
+       gamma annual cannibalisation (fraction/yr, default 0),
+       zTotal TNUoS £/kW, already resolved to 0 for a distribution unit
+       by the caller via tnuosCharge (default 0),
+       discounting "mid" (default) or "end" — see discountExponent above,
+       opexEsc annual OPEX escalation (fraction/yr, default 0 — D23: no
+       market default ships, blank means flat). Applied ONLY to the
+       operating-cost line: O x 1000 x P x frac x (1+opexEsc)^(n-1), so
+       year 1 is always the unescalated base and later years compound
+       on it (owner request, 2026-08-01). TNUoS is deliberately NOT
+       escalated — it is a published tariff, re-set by NESO each
+       charging year, not an assumption this card indexes — and the
+       augmentation tranche's one-off cost is a typed £/MWh at the time
+       it lands, not a recurring charge, so it has nothing to escalate
+       either. LCOS picks the change up automatically: it already reads
+       this same opex_gbp column via `rows`, not a separate O figure.
+       augYear/augMwh/augCostPerMwh/augDelta one optional augmentation
+       event as a second cell TRANCHE (owner request, 2026-07-31; the
+       vintage revision of the same date replaces the earlier
+       restore-to-nameplate shape, which silently reset the ORIGINAL
+       cells' clock — physically wrong): at the start of year augYear
+       (1..T), augMwh of new cells join (a partial top-up, a full
+       restore, or an outright expansion beyond nameplate — the model
+       does not cap it), costed at augCostPerMwh £k/MWh into that
+       year's net cash flow. The original tranche degrades on its own
+       clock forever, E x (1-delta)^(n-1); the new tranche on its own
+       vintage clock and its OWN rate, augMwh x (1-augDelta)^(n-augYear)
+       (augDelta defaults to delta when the caller passes null). Year,
+       size and cost must all be set or the event is a no-op,
+       rho availability derate (fraction/yr, default 0): the asset's OWN
+       decline in availability-revenue capability (duration eligibility
+       narrowing as energy fades), distinct from gamma, which is a
+       market-wide price view and stays on the calendar clock. rho
+       compounds on the CAPACITY-WEIGHTED cell age across the two
+       tranches, so a fresh tranche partially rejuvenates capability in
+       proportion to its size — full replacement approaches age zero,
+       a small top-up barely moves it, and with no augmentation the
+       weighted age is exactly n-1, the pre-tranche behaviour.
+     Returns null if the inputs required to build a single year are
+     missing or non-finite (D30: "results render only when the required
+     inputs are present"). Otherwise { c0, rows }: rows[0] is the time-
+     zero capex-only row (year 0, never discounted under either
+     convention — the capex outflow IS time zero); rows[1..T] are the
+     operating years, each figure already signed the way the CSV export
+     ships it (costs negative, revenues positive) so net_cashflow_gbp is
+     a plain sum. IRR is deliberately NOT computed from these discounted
+     columns: it is convention-independent, defined on the undiscounted
+     net_cashflow_gbp series (see npv/irr below). Simple payback is also
+     undiscounted, for the same reason, and is unaffected by this choice
+     entirely. */
+  function bessCashflow(inputs) {
+    const {
+      P, E, y0 = null, T, C, O, r, c, delta = 0, eta,
+      a, sHi = null, sLo = null, k = 0, gamma = 0, zTotal = 0,
+      discounting = "mid", augYear = null, augMwh = 0,
+      augCostPerMwh = 0, augDelta = null, rho = 0, opexEsc = 0,
+    } = inputs || {};
+    const finite = (v) => typeof v === "number" && Number.isFinite(v);
+    if (![P, E, T, C, O, r, c, eta, a].every(finite) || T <= 0 || P <= 0) {
+      return null;
+    }
+    const augActive = finite(augYear) && augYear >= 1
+      && augMwh > 0 && augCostPerMwh > 0;
+    const d2 = augDelta == null ? delta : augDelta;
+    const round = (v, dp = 2) => +v.toFixed(dp);
+    const c0 = C * 1000 * P;
+    const frac1 = yearFractionRemaining(y0);
+    const rows = [{
+      year: 0, capex_gbp: round(-c0), availability_gbp: 0,
+      arbitrage_gbp: 0, opex_gbp: 0, tnuos_gbp: 0,
+      net_cashflow_gbp: round(-c0), discounted_cashflow_gbp: round(-c0),
+      cumulative_discounted_gbp: round(-c0), discharged_mwh: 0, usable_mwh: 0,
+    }];
+    let cumDisc = -c0;
+    const ceiling = arbitrageCeiling(sHi, sLo, eta);
+    for (let n = 1; n <= T; n++) {
+      const g = Math.pow(1 - gamma, n - 1);
+      const frac = n === 1 ? frac1 : 1;
+      const t1 = E * Math.pow(1 - delta, n - 1);
+      const t2 = (augActive && n >= augYear)
+        ? augMwh * Math.pow(1 - d2, n - augYear) : 0;
+      const cap = t1 + t2;
+      const age = cap > 0
+        ? (t1 * (n - 1) + t2 * (augActive ? n - augYear : 0)) / cap
+        : n - 1;
+      const usableMwh = cap * frac;
+      const dischargedMwh = 365 * c * cap * frac;
+      const availability = a * 1000 * P * g * frac * Math.pow(1 - rho, age);
+      const arbitrage = (ceiling != null && k)
+        ? dischargedMwh * ceiling * k * g : 0;
+      // Escalated on OPEX alone (owner request, 2026-08-01): TNUoS below
+      // stays on the flat published-tariff figure, and the augmentation
+      // capex line further down is a one-off typed cost, not a
+      // recurring charge either escalation would apply to.
+      const opex = O * 1000 * P * frac * Math.pow(1 + opexEsc, n - 1);
+      const tnuos = (zTotal || 0) * 1000 * P * frac;
+      const capexN = (augActive && n === augYear)
+        ? -(augCostPerMwh * 1000 * augMwh) : 0;
+      const net = availability + arbitrage - opex - tnuos + capexN;
+      const discounted = net / Math.pow(1 + r, discountExponent(n, frac1, discounting));
+      cumDisc += discounted;
+      rows.push({
+        year: n, capex_gbp: round(capexN),
+        availability_gbp: round(availability),
+        arbitrage_gbp: round(arbitrage),
+        opex_gbp: round(-opex),
+        tnuos_gbp: round(-tnuos),
+        net_cashflow_gbp: round(net),
+        discounted_cashflow_gbp: round(discounted),
+        cumulative_discounted_gbp: round(cumDisc),
+        discharged_mwh: round(dischargedMwh, 3),
+        usable_mwh: round(usableMwh, 3),
+      });
+    }
+    return { c0, rows };
+  }
+
+  /* NPV at rate `r` of a capex outflow C0 (time zero) plus a plain array
+     of undiscounted year-1..year-N net cash flows. Kept separate from
+     bessCashflow so IRR's bisection can re-discount without rebuilding
+     the whole cash flow at every trial rate. `discounting`/`frac1` are
+     optional and default to "end"/1 — i.e. unconditional (1+r)^n — so
+     every existing caller (chiefly irr(), below) is completely
+     unaffected by the discounting-convention feature: IRR is defined on
+     undiscounted flows in the usual (annual-compounding) sense
+     regardless of which convention the card is reporting NPV under, and
+     must stay that way (a mid-year toggle changing what "IRR" means
+     would be a second, uninvited behaviour change). The card's headline
+     NPV figure passes its own `discounting`/`frac1` explicitly so it
+     matches bessCashflow's own discounted columns exactly. */
+  function npv(c0, cashflows, r, discounting = "end", frac1 = 1) {
+    return cashflows.reduce((sum, cf, i) =>
+      sum + cf / Math.pow(1 + r, discountExponent(i + 1, frac1, discounting)),
+      -c0);
+  }
+
+  /* IRR by bisection on r in [-0.99, 1.50], 100 iterations, tolerance
+     1e-9. Returns null — never 0 — when NPV does not change sign across
+     the bracket (a cash flow that never repays; the common case, and
+     must not be misreported as a 0% return). */
+  function irr(c0, cashflows) {
+    const f = (r) => npv(c0, cashflows, r);
+    let lo = -0.99, hi = 1.50;
+    let fLo = f(lo), fHi = f(hi);
+    if (fLo === 0) return lo;
+    if (fHi === 0) return hi;
+    if ((fLo > 0) === (fHi > 0)) return null; // no sign change: no IRR
+    for (let i = 0; i < 100; i++) {
+      const mid = (lo + hi) / 2;
+      const fMid = f(mid);
+      if (Math.abs(fMid) < 1e-9) return mid;
+      if ((fMid > 0) === (fLo > 0)) { lo = mid; fLo = fMid; }
+      else { hi = mid; fHi = fMid; }
+    }
+    return (lo + hi) / 2;
+  }
+
+  /* Modified IRR (owner request, 2026-07-31): negative net cash flows
+     (including the year-0 capex) discount to t=0 at the finance rate,
+     positive ones compound to the horizon T at the reinvestment rate,
+     and MIRR = (FV_pos / -PV_neg)^(1/T) - 1. Both rates are the WACC —
+     the standard single-rate reading, stated on the card and the
+     workbook. Exists BESIDE irr(), not instead of it: an augmentation-
+     year outflow gives the cash-flow series a second sign change, and
+     plain IRR then has multiple mathematically-valid roots (which one a
+     solver returns is luck); MIRR is single-valued by construction.
+     End-of-period basis like irr(), unaffected by the mid-year toggle.
+     Null — never a number — when there is no positive flow or no
+     negative flow at all, since the ratio is then undefined. */
+  function mirr(c0, cashflows, r) {
+    const T = cashflows.length;
+    if (!T) return null;
+    let fvPos = 0;
+    let pvNeg = -c0;
+    cashflows.forEach((cf, i) => {
+      const n = i + 1;
+      if (cf > 0) fvPos += cf * Math.pow(1 + r, T - n);
+      else pvNeg += cf / Math.pow(1 + r, n);
+    });
+    if (fvPos <= 0 || pvNeg >= 0) return null;
+    return Math.pow(fvPos / -pvNeg, 1 / T) - 1;
+  }
+
+  /* Simple (undiscounted) payback in years, linearly interpolated inside
+     the year repayment falls in. Null when C0 is never recovered within
+     the supplied cash flows — labelled "simple" because it is
+     deliberately undiscounted, and must render as "no payback", never a
+     zero or the final year. */
+  function simplePayback(c0, cashflows) {
+    let cum = 0;
+    for (let i = 0; i < cashflows.length; i++) {
+      const prevCum = cum;
+      cum += cashflows[i];
+      if (cum >= c0) {
+        const remainder = c0 - prevCum;
+        const frac = cashflows[i] ? remainder / cashflows[i] : 0;
+        return i + frac;
+      }
+    }
+    return null;
+  }
+
+  /* Discounted payback period (DPP) in years, linearly interpolated on
+     DISCOUNTED cash flows — never the undiscounted net_cashflow_gbp
+     column (the mistake the workbook's own draft DPP row made before
+     this function existed to pin it). `rows` is bessCashflow's row
+     array: its cumulative_discounted_gbp column already walks from the
+     year-0 row's own discounted value (-c0), so this function finds
+     the first year the RUNNING total crosses from negative to >= 0 and
+     interpolates inside that year on its own discounted figure:
+       DPP = n - 1 + (dcf_n - cum_n) / dcf_n
+     where dcf_n is year n's discounted_cashflow_gbp and cum_n is the
+     cumulative discounted total INCLUDING year n. Null when the
+     cumulative never crosses within the modelled years — "no payback",
+     never a final-year value or a zero.
+
+     Anchor-invariant: re-anchoring to a different valuation date scales
+     every discounted figure (every dcf_n and every cum_n) by the same
+     one factor, which cancels both in the >= 0 crossing test and in
+     the (dcf_n - cum_n) / dcf_n fraction — DPP must never be passed
+     through Metrics.reanchorNpv, unlike NPV/PVI.
+
+     Convention-aware, the opposite of simplePayback/irr: the
+     discounted_cashflow_gbp column already carries whichever
+     discounting convention (mid-year/end-of-period) and year-1
+     commissioning stub bessCashflow was built with, so DPP moves with
+     that choice. */
+  function discountedPayback(rows) {
+    if (!rows || !rows.length) return null;
+    let cum = rows[0].discounted_cashflow_gbp;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const prevCum = cum;
+      cum += row.discounted_cashflow_gbp;
+      if (prevCum < 0 && cum >= 0) {
+        const dcfN = row.discounted_cashflow_gbp;
+        return dcfN ? (row.year - 1) + (dcfN - cum) / dcfN : row.year - 1;
+      }
+    }
+    return null;
+  }
+
+  /* Present value of investment (PVI) at commissioning: c0 (the
+     positive year-0 capex) plus the discounted value of every later
+     capital outflow (bessCashflow's capex_gbp rows, negative in an
+     augmentation year and zero otherwise), each sign-flipped positive
+     so PVI is itself a positive magnitude — "every pound of capital
+     committed, discounted to commissioning" — not a signed cash flow.
+     Same signature shape as npv(): `discounting`/`frac1` default to
+     "end"/1 for the same reason npv()'s do (a caller that does not
+     pass them explicitly gets the unconditional (1+r)^n basis); the
+     card's own PVI must pass its own discounting/frac1 so it matches
+     bessCashflow's own discounted columns exactly. Re-anchoring PVI to
+     a valuation date uses the identical Metrics.reanchorNpv factor NPV
+     itself uses — DPI is then the ratio of two figures re-anchored by
+     the same factor, so the factor cancels and DPI is itself
+     anchor-invariant, the same discipline as discountedPayback above,
+     by a different route. */
+  function pviAtCommissioning(c0, rows, r, discounting = "end", frac1 = 1) {
+    return rows.reduce((sum, row) => {
+      if (row.year < 1) return sum;
+      return sum + (-row.capex_gbp) /
+        Math.pow(1 + r, discountExponent(row.year, frac1, discounting));
+    }, c0);
+  }
+
+  /* Indicative LCOS (£/MWh): (C0 + discounted opex+TNUoS+charging cost)
+     divided by discounted discharged energy. `rows` is bessCashflow's
+     row array (years 1..T only — the year-0 capex row is excluded here
+     because C0 enters once, undiscounted, as its own term); `sLo`/`eta`
+     price the charging leg (Q_n / eta x sLo) — v1 ships with no
+     wholesale price feed wired into the card, so a null sLo simply drops
+     the charging-cost term (LCOS still renders, just without that
+     component) rather than the function refusing to compute. Null when
+     no energy is ever discharged (LCOS is undefined). */
+  function lcos(c0, rows, r, eta, sLo = null) {
+    let costNum = c0;
+    let energyDenom = 0;
+    rows.forEach((row) => {
+      const n = row.year;
+      if (n < 1) return;
+      const X = -row.opex_gbp;
+      const G = -row.tnuos_gbp;
+      // Augmentation capex (rows carry it signed negative in the year
+      // it lands) is a cost of storage and belongs in the numerator,
+      // discounted on the same end-of-period basis as every other term.
+      const aug = -row.capex_gbp;
+      const Q = row.discharged_mwh;
+      const charging = (sLo != null && eta) ? (Q / eta) * sLo : 0;
+      costNum += (X + G + charging + aug) / Math.pow(1 + r, n);
+      energyDenom += Q / Math.pow(1 + r, n);
+    });
+    return energyDenom > 0 ? costNum / energyDenom : null;
+  }
+
+  /* NPV re-anchoring (owner request, 2026-07): the card's headline NPV is
+     computed at t=0, the commissioning date — silently, before this
+     function existed. An ongoing asset is more often reassessed on some
+     later "today", and a pre-decision appraisal wants t=0 pushed back
+     before commissioning; both are the SAME identity, one exact
+     compounding factor applied either direction:
+
+       reanchorNpv(npvAtCommissioning, r, y0, valuationDate) =
+         npvAtCommissioning x (1 + r) ^ (years from y0 to valuationDate)
+
+     Years use a 365.25-day year, matching the rest of this file's date
+     arithmetic (arbitrage/discounting use whole days; this is the one
+     place a MULTI-YEAR span is measured, so the .25 leap-year correction
+     matters over a period this long). A valuation date AFTER
+     commissioning gives a positive exponent: NPV compounds FORWARD
+     (past cash flows have had time to earn a further return). A
+     valuation date BEFORE commissioning gives a negative exponent: NPV
+     discounts BACK (the whole project is still in the future). No
+     separate branch is needed for the two directions — the same power
+     of (1+r) covers both, which is the point of writing it as one
+     identity rather than two cases.
+
+     Null-safe: a missing/unparseable y0 or valuationDate returns
+     npvAtCommissioning unchanged (factor 1) rather than guessing a
+     reference date — there is no calendar date to measure a span
+     against when either end is absent. The caller resolves "blank
+     valuation date defaults to commissioning" (factor 1, same
+     conclusion by a different route: valuationDate === y0 makes the
+     exponent exactly 0) before calling this, so a caller that always
+     passes c.valuationDate || c.commission never needs a special case
+     for the blank-field default either. IRR, simple payback and LCOS do
+     not call this at all: IRR and payback are anchor-invariant by
+     construction (defined on undiscounted flows), and LCOS scales its
+     numerator and denominator by the identical discounting, so the
+     ratio is unaffected — none of the three needs re-anchoring, and
+     none should be passed through this function. */
+  function reanchorNpv(npvAtCommissioning, r, y0, valuationDate) {
+    if (npvAtCommissioning == null || !Number.isFinite(r)) {
+      return npvAtCommissioning;
+    }
+    if (!y0 || !valuationDate) return npvAtCommissioning;
+    const d0 = new Date(y0 + "T00:00:00Z");
+    const d1 = new Date(valuationDate + "T00:00:00Z");
+    if (Number.isNaN(d0.getTime()) || Number.isNaN(d1.getTime())) {
+      return npvAtCommissioning;
+    }
+    const years = (d1.getTime() - d0.getTime()) / 86400000 / 365.25;
+    return npvAtCommissioning * Math.pow(1 + r, years);
+  }
+
   /* Build a CSV string from {header: array} columns. No comma-escaping —
      do not add free-text columns to any export without revisiting this
      function first: a single stray comma shifts every field on that row
@@ -344,5 +813,9 @@ const Metrics = (() => {
            meritCurveSteps, curveClearing, binnedMedian,
            histogram, intradayShape, pearson, cableUtilisation,
            quantile, congestionFlags, toCsv,
-           fmtDate, fmtAxisTick };
+           fmtDate, fmtAxisTick,
+           yearFractionRemaining, tnuosCharge, arbitrageCeiling,
+           observedArbitrageSpread,
+           bessCashflow, npv, irr, mirr, simplePayback, discountedPayback,
+           pviAtCommissioning, lcos, reanchorNpv };
 })();

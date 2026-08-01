@@ -2447,6 +2447,2956 @@ const Charts = (() => {
     bessFleetApply();
   }
 
+  /* ===================== BESS profitability calculator =====================
+     plan/09, issue #49. v1: hypothetical mode, the engine, the percentile-
+     based availability revenue, the TNUoS zone table and CSV export.
+     "Pick a unit" ships in v2 (D34) — its radio renders now, disabled,
+     with a note, so the card does not silently change shape between
+     releases; the acceptance-rate context table and the `units` block
+     are v2 too.
+
+     v1.5 (D34 amendment): D26's arbitrage ceiling, pulled forward from
+     v2, with its capture rate and manual-spread override
+     (bessCalcArbitrage below); D21's six family toggles, reading the
+     payload's percentiles.families block (bessCalcFamilyToggles/
+     bessCalcAvailabilityGbpPerKwYr); the discounting convention
+     (already wired, above this block).
+
+     Data: optional secondary payload app/data/bess_units.json, LAZILY
+     fetched on this card's first render (D33) via Data.loadBessUnits(),
+     not on page load — the one payload in this app fetched on demand
+     rather than eagerly with Data.load(), following the event-slice
+     precedent (plan/06 D8). Graceful degradation: a missing/failed
+     payload shows this card's own empty state; every other card on the
+     tab is unaffected. The arbitrage ceiling's own inputs (s_hi/s_lo)
+     come from Data.hh (the eagerly-loaded price series), not from this
+     lazy payload, so a missing bess_units.json still blocks the whole
+     card exactly as it did before v1.5 — nothing about the arbitrage
+     line's data dependency is new. */
+
+  const BESS_FAMILY_CODES = ["DC", "DM", "DR", "BR", "QR", "SR"];
+  const BESS_FAMILY_LABELS = {
+    DC: "Dynamic Containment (DC)",
+    DM: "Dynamic Moderation (DM)",
+    DR: "Dynamic Regulation (DR)",
+    BR: "Balancing Reserve (BR)",
+    QR: "Quick Reserve (QR)",
+    SR: "Slow Reserve (SR)",
+  };
+
+  let bessCalcWired = false;
+  let bessUnitsState = "idle"; // idle | loading | ready | error
+  let bessUnitsPayload = null;
+  // View toggles (owner decision, 2026-08-01): which alternative RENDERING
+  // of already-computed figures is on screen, not an assumption — kept out
+  // of State.calc so "Reset to defaults" (which resets assumptions) never
+  // touches what the reader is currently looking at.
+  let bessCalcSensView = "strip"; // strip | matrix
+  let bessCalcChartView = "cashflow"; // cashflow | capacity
+
+  function ensureBessUnitsLoaded() {
+    if (bessUnitsState !== "idle") return;
+    bessUnitsState = "loading";
+    Data.loadBessUnits().then((payload) => {
+      bessUnitsPayload = payload;
+      bessUnitsState = "ready";
+      bessCalculator();
+    }).catch((error) => {
+      console.error("bess_units.json failed to load:", error);
+      bessUnitsState = "error";
+      bessCalculator();
+    });
+  }
+
+  function bessCalcMissingLabels(c) {
+    const missing = [];
+    if (c.power == null) missing.push("power (MW)");
+    if (c.energy == null) missing.push("energy (MWh)");
+    if (c.life == null) missing.push("useful life (years)");
+    if (c.wacc == null) missing.push("WACC (%)");
+    if (c.capex == null) missing.push("CAPEX (£k/MW)");
+    return missing;
+  }
+
+  function bessCalcZoneTariff(payload, zoneNo) {
+    const zones = payload && payload.tnuos && payload.tnuos.zones;
+    if (!zones) return null;
+    return zones.find((z) => z.n === zoneNo) || null;
+  }
+
+  /* D21: this unit's/percentile's family toggle state, keyed by the six
+     service-family codes. A family reads "on" (included) unless the
+     input has EXPLICITLY been unchecked — undefined (never touched,
+     including right after Reset, which drops the key entirely) reads
+     as on, so the feature ships with no state.js change: every family
+     defaults on without a stored default value anywhere. */
+  function bessCalcFamilyToggles(c) {
+    const toggles = {};
+    BESS_FAMILY_CODES.forEach((f) => { toggles[f] = c[`family${f}`] !== false; });
+    return toggles;
+  }
+
+  /* D21's family toggles: subtract the OFF families' £/kW/day
+     components (percentiles.families[percentileKey], the rank-
+     representative additive split — see etl/build_bess_units.py's
+     family_percentile_components docstring) from the percentile total
+     before annualising. With every family on (the default) this is
+     exactly the v1 figure, unchanged. */
+  function bessCalcAvailabilityGbpPerKwYr(payload, percentileKey, toggles) {
+    const p = payload && payload.percentiles;
+    if (!p || p[percentileKey] == null) return null;
+    let perDay = p[percentileKey];
+    const families = p.families && p.families[percentileKey];
+    if (families && toggles) {
+      BESS_FAMILY_CODES.forEach((f) => {
+        if (toggles[f] === false) perDay -= (families[f] || 0);
+      });
+    }
+    return perDay * 365;
+  }
+
+  /* D26's arbitrage ceiling, v1.5 (pulled forward from v2): resolves
+     Metrics.bessCashflow's sHi/sLo/k from the card's own inputs.
+
+     Two mutually exclusive sources for the ceiling itself:
+       - manual override (c.manualSpread, £/MWh): mirrors the coal-
+         price override (app/index.html) exactly — a single flat
+         number REPLACES the observed ceiling entirely, fed to the
+         engine as sHi=manualSpread/sLo=0 so
+         arbitrageCeiling(sHi,sLo,eta) = manualSpread regardless of
+         eta. Provenance flips to Assumption (D26).
+       - observed (default, no manual override entered): sHi/sLo come
+         from Metrics.observedArbitrageSpread over the whole loaded
+         price series (Data.hh), at the asset's own duration. Provenance
+         is Estimated, and ONLY once a capture rate has been entered —
+         D26's honesty constraint 2: no default capture rate ships, so
+         an empty field leaves the arbitrage line at zero rather than
+         silently assuming a rate.
+     `observedFeedActive` (manual override empty AND observed data
+     available) is what LCOS's charging-cost term and the "Estimated"
+     badge condition on — see bessCalculator() below. */
+  function bessCalcArbitrage(c) {
+    const duration = c.power && c.energy != null && c.power > 0
+      ? c.energy / c.power : null;
+    const observed = (Data.hh && Data.hh.t && Data.hh.price && duration)
+      ? Metrics.observedArbitrageSpread(Data.hh.t, Data.hh.price, duration)
+      : null;
+    const manual = c.manualSpread;
+    const observedFeedActive = manual == null && observed != null;
+    let sHi = null, sLo = null, k = 0;
+    if (manual != null) {
+      sHi = manual;
+      sLo = 0;
+      k = c.captureRate != null ? c.captureRate / 100 : 0;
+    } else if (observed != null) {
+      sHi = observed.sHi;
+      sLo = observed.sLo;
+      k = c.captureRate != null ? c.captureRate / 100 : 0;
+    }
+    const contributing = k > 0 && sHi != null;
+    return { sHi, sLo, k, duration, observed, manual, observedFeedActive,
+            contributing,
+            // Estimated only when the observed (not manual) ceiling is
+            // the one actually adding a number to the results — the
+            // house rule "badge only what is active" (never badge a
+            // feature whose capture rate is still blank and whose
+            // contribution is a literal zero).
+            estimatedActive: observedFeedActive && contributing };
+  }
+
+  function bessCalcLoadFactorDefault(c) {
+    const duration = c.power && c.energy != null && c.power > 0
+      ? c.energy / c.power : 0;
+    const cycles = c.cycles != null ? c.cycles : 0;
+    return Math.min(1, (cycles * duration) / 24);
+  }
+
+  function bessCalcLoadFactor(c) {
+    return c.loadFactor != null ? c.loadFactor / 100 : bessCalcLoadFactorDefault(c);
+  }
+
+  /* OPEX escalation's shipped DEFAULT (owner request, 2026-08-01): the
+     last-published ONS CPI 12-month rate, from the lazily-fetched
+     payload's `inflation` block (etl/build_bess_units.py's
+     fetch_inflation()) — the same category as the TNUoS zone tariffs
+     just above, an OBSERVED statistic, not a forecast, so D23's "no
+     INVENTED market default ships" is untouched by this: CPI is not
+     assumed, it is what the ONS most recently, verifiably, published.
+     Null when the payload has no inflation block (ONS unreachable at
+     build time, or the payload predates this feature) — the same
+     "no default, not an error" shape a blank load-factor duration
+     falls back to. PPI is deliberately never used here even when
+     present: the field indexes OPEX, and CPI is the general-goods
+     rate the owner asked for as the primary default. */
+  function bessCalcOpexEscDefault(payload) {
+    return (payload && payload.inflation
+           && payload.inflation.cpi_annual_pct != null)
+      ? payload.inflation.cpi_annual_pct : null;
+  }
+
+  // ONS's own "2026 JUN" period label, reformatted to the house date
+  // idiom ("Jun 2026") for the live line and CSV annotation below.
+  const ONS_MONTH_ABBR = { JAN: "Jan", FEB: "Feb", MAR: "Mar", APR: "Apr",
+    MAY: "May", JUN: "Jun", JUL: "Jul", AUG: "Aug", SEP: "Sep", OCT: "Oct",
+    NOV: "Nov", DEC: "Dec" };
+  function bessCalcOnsPeriodLabel(period) {
+    if (!period) return "";
+    const [year, mon] = period.split(" ");
+    return `${ONS_MONTH_ABBR[mon] || mon} ${year}`;
+  }
+
+  /* Discounting convention (owner request, 2026-07): "mid" (mid-year,
+     Metrics.bessCashflow's default) unless the control is explicitly set
+     to "end" (end-of-period). Unset/null reads as the default, same
+     pattern as every other optional calc field (opex, cycles, etc). */
+  function bessCalcDiscounting(c) {
+    return c.discounting === "end" ? "end" : "mid";
+  }
+
+  /* Owner request, 2026-07: the effective valuation date, resolving
+     D30's stated default ("blank defaults to the commissioning date")
+     to an actual value the engine can reanchor against. Null when
+     neither is set — Metrics.reanchorNpv is null-safe for that case
+     and returns the commissioning-anchored NPV unchanged, which is the
+     only honest answer when there is no date to anchor against at
+     all. */
+  function bessCalcEffectiveValuationDate(c) {
+    return c.valuationDate || c.commission || null;
+  }
+
+  /* The always-visible anchor line (D30-style, mid-dot idiom): states
+     what t=0 means for every figure in the results panel below it, so
+     the headline NPV is never silently "as of commissioning" the way
+     it was before this control existed. Three clauses, each true in
+     every state the card can be in:
+       - "Discounting anchor": the valuation date in use, or the literal
+         word "commissioning" when no valuation date is set (D30's
+         default) and there is nothing more specific to name.
+       - "t=0 at commissioning <date>": always names the actual
+         commissioning date the cash flow itself is built from, or
+         "not set" when the card has no commissioning date at all
+         (year 1 is then a full calendar year, not a stub).
+       - "year 1 = ...": a stub to 31 December of the commissioning
+         year when one exists (frac1 < 1), otherwise a full calendar
+         year — stated either way rather than assuming the reader
+         already knows which applies. */
+  function bessCalcAnchorLine(c) {
+    const valuationDate = c.valuationDate;
+    const commission = c.commission;
+    const anchorText = valuationDate ? Metrics.fmtDate(valuationDate) : "commissioning";
+    const t0Text = commission ? Metrics.fmtDate(commission) : "not set";
+    let year1Text;
+    if (commission) {
+      const frac1 = Metrics.yearFractionRemaining(commission);
+      const year = new Date(commission + "T00:00:00Z").getUTCFullYear();
+      year1Text = frac1 < 1
+        ? `stub to 31 Dec ${year}` : `full calendar year ${year}`;
+    } else {
+      year1Text = "full calendar year (no commissioning date set)";
+    }
+    return `Discounting anchor: ${anchorText} · t=0 at commissioning ` +
+      `${t0Text} · year 1 = ${year1Text}`;
+  }
+
+  /* The ONE place the entered augmentation year is interpreted (owner
+     request, 2026-08-01) — bessCalcEngineInputs, the CSV export and the
+     workbook all call this rather than each re-deriving the same
+     reading. User-reported: a typed "2030" (a calendar year, the
+     natural thing to type) was read as model year 2030, landing nowhere
+     inside a 15-year model, and the tranche zeroed with no explanation.
+     Two defects, both fixed here: calendar years are now accepted and
+     resolved against commissioning, and an unreachable tranche says so
+     rather than silently contributing zero.
+
+     Returns { year: <model year int>|null, note: <string|null>,
+     warn: <bool> }:
+       - blank entry: no event typed, nothing to say.
+       - entry < 1000: read as today, a model year (1..T) — unchanged
+         behaviour for every value this field has ever actually taken
+         before this feature.
+       - entry >= 1000: a calendar year, resolved against the
+         commissioning date (model year = calendar year - commissioning
+         year + 1) and the read-out states the conversion so the
+         reader can check it. Without a commissioning date there is
+         nothing to anchor a calendar year against, so this warns
+         instead of guessing one.
+       - any resolved year outside [1, T] (T derived exactly as
+         bessCalcEngineInputs derives it, capped at the useful life)
+         warns that the tranche never lands — this is also what catches
+         a typed MODEL year beyond T, which used to zero silently. */
+  function bessCalcAugYearResolved(c) {
+    if (c.augYear == null) return { year: null, note: null, warn: false };
+    const raw = Math.floor(c.augYear);
+    // Same T derivation as bessCalcEngineInputs (life capped period);
+    // T is unknown before a useful life is entered, so only the lower
+    // bound (year < 1) is enforceable then — the upper bound joins once
+    // T exists. Computed up front so both warnings below can name the
+    // actual number rather than the letter "T" (owner correction,
+    // 2026-08-01 — the reader must see the number, not the variable).
+    const T = c.life != null
+      ? Math.min(c.period != null ? c.period : c.life, c.life) : null;
+    let year, note;
+    if (raw < 1000) {
+      year = raw;
+      note = null;
+    } else if (!c.commission) {
+      return { year: null, warn: true,
+        note: "a calendar year needs a commissioning date to anchor it " +
+          `— enter the model year (1..${T != null ? T : "calculation period"}) ` +
+          "or set a commissioning date" };
+    } else {
+      const commissionYear =
+        new Date(c.commission + "T00:00:00Z").getUTCFullYear();
+      year = raw - commissionYear + 1;
+      note = `calendar ${raw} → year ${year} of the model`;
+    }
+    if (year < 1 || (T != null && year > T)) {
+      return { year: null, warn: true,
+        note: T != null
+          ? `outside the ${T}-year calculation period — the tranche ` +
+            "never lands"
+          : "before year 1 of the model — the tranche never lands" };
+    }
+    return { year, note, warn: false };
+  }
+
+  /* Assembles Metrics.bessCashflow's input object from State.calc + the
+     lazily-fetched payload. Every field NOT in the required-five list
+     (D30) falls back to a neutral "nothing assumed" default (0, or the
+     calculation period defaulting to the useful life) rather than a
+     fabricated market figure — see D23. */
+  function bessCalcEngineInputs(c, payload) {
+    const P = c.power, E = c.energy, N = c.life, r = c.wacc, C = c.capex;
+    if (P == null || E == null || N == null || r == null || C == null) {
+      return null;
+    }
+    // Capped at the useful life (owner review, 2026-08-01): before this,
+    // an explicit period longer than the life silently modelled revenue
+    // from a decommissioned asset — the life was only ever the DEFAULT
+    // for a blank period, never a bound on a typed one. With the stated
+    // no-residual, no-decommissioning-cost convention, years past the
+    // life are zeros pretending to be analysis, and zeros are not free:
+    // MIRR's horizon exponent stretches with T, so phantom years pull it
+    // toward WACC. The live line under the field says when the cap bit.
+    const T = Math.min(c.period != null ? c.period : N, N);
+    const O = c.opex != null ? c.opex : 0;
+    const cycles = c.cycles != null ? c.cycles : 0;
+    const eta = c.efficiency != null ? c.efficiency / 100 : 0;
+    const delta = c.degradation != null ? c.degradation / 100 : 0;
+    const gamma = c.cannibalisation != null ? c.cannibalisation / 100 : 0;
+    const toggles = bessCalcFamilyToggles(c);
+    const a = bessCalcAvailabilityGbpPerKwYr(payload, c.percentile, toggles);
+    const f = bessCalcLoadFactor(c);
+    let zTotal = 0;
+    if (c.connType === "T") {
+      const zone = bessCalcZoneTariff(payload, c.zone);
+      const z = Metrics.tnuosCharge("T", zone, f);
+      zTotal = z != null ? z : 0;
+    }
+    const arb = bessCalcArbitrage(c);
+    // IC-review pass (owner request, 2026-07-31): one optional
+    // augmentation event and an own-asset availability derate, both
+    // neutral (no-op) when blank — see Metrics.bessCashflow's docstring
+    // for the effective-age clock they share. The typed year goes
+    // through bessCalcAugYearResolved (owner request, 2026-08-01) —
+    // the one place a calendar year is told apart from a model year and
+    // an unreachable tranche is caught — rather than the bare
+    // Math.floor this line used before that helper existed.
+    const augYear = bessCalcAugYearResolved(c).year;
+    const augMwh = c.augMwh != null ? c.augMwh : 0;
+    const augCostPerMwh = c.augCostMwh != null ? c.augCostMwh : 0;
+    const augDelta = c.augDelta != null ? c.augDelta / 100 : null;
+    const rho = c.derate != null ? c.derate / 100 : 0;
+    // OPEX escalation (owner request, 2026-08-01): blank types through
+    // to the shipped ONS CPI default (bessCalcOpexEscDefault) when the
+    // payload has one; blank with no default, or an explicitly typed
+    // 0, reproduces today's flat OPEX exactly.
+    const opexEscDefault = bessCalcOpexEscDefault(payload);
+    const opexEsc = c.opexEsc != null ? c.opexEsc / 100
+      : (opexEscDefault != null ? opexEscDefault / 100 : 0);
+    return { P, E, y0: c.commission || null, T, C, O, r: r / 100, c: cycles,
+             delta, eta, a: a != null ? a : 0, gamma, zTotal,
+             sHi: arb.sHi, sLo: arb.sLo, k: arb.k,
+             discounting: bessCalcDiscounting(c),
+             augYear, augMwh, augCostPerMwh, augDelta, rho, opexEsc };
+  }
+
+  /* One NPV under one perturbed assumption, through the IDENTICAL chain
+     the headline uses: bessCashflow -> npv (same discounting convention,
+     same year-1 stub fraction) -> reanchorNpv. `overrides` is shallow-
+     merged onto the `inputs` object the headline was built from and is
+     never re-derived from State — a second derivation path is a second
+     set of conventions waiting to drift, and this one would drift
+     silently (the useful-life cap, the augmentation tranche and the
+     TNUoS resolution all live in bessCalcEngineInputs). bessCashflow is
+     re-run even for a WACC-only perturbation, where the undiscounted
+     flows are provably unchanged: one code path is worth four extra
+     passes over tens of rows. Null when the perturbed inputs do not
+     build a cash flow at all. */
+  function bessCalcNpvAt(inputs, overrides, valuationDate) {
+    const perturbed = { ...inputs, ...overrides };
+    const cf = Metrics.bessCashflow(perturbed);
+    if (!cf) return null;
+    const cashflows = cf.rows.filter((r) => r.year >= 1)
+      .map((r) => r.net_cashflow_gbp);
+    const frac1 = Metrics.yearFractionRemaining(perturbed.y0);
+    const atCommissioning = Metrics.npv(cf.c0, cashflows, perturbed.r,
+      perturbed.discounting, frac1);
+    // Re-anchored at the PERTURBED rate: the anchor factor is
+    // (1+r)^years, so a WACC case re-anchored at the base rate would be
+    // reporting two different rates inside one figure.
+    return Metrics.reanchorNpv(atCommissioning, perturbed.r, perturbed.y0,
+      valuationDate);
+  }
+
+  /* Owner review, 2026-08-01: the four one-assumption sensitivities the
+     results panel reports beside the headline NPV — WACC ±2pp, capture
+     rate ±10pp. Each is the headline's own inputs object with exactly
+     one field replaced, so a sensitivity cannot disagree with the figure
+     it is a sensitivity OF.
+
+     A case that cannot be perturbed returns `na` with its reason instead
+     of a number, and the reason renders. The arbitrage cases are the
+     ones this bites: with no capture rate (D26 ships no default), no
+     ceiling, or no cycles, the arbitrage term is not in the headline at
+     all, so a chip moving it is a scenario, not a sensitivity — both
+     directions then collapse to one "±10pp" chip carrying the reason.
+     Clamped steps state the step ACTUALLY applied in their label, so
+     "-1.5pp" never masquerades as "-2pp": WACC floors at zero (an
+     undiscounted NPV is a real bound, a negative WACC is not) and
+     capture caps at 100%. A manual spread override needs no special
+     case — the override IS the ceiling the capture rate multiplies. */
+  function bessCalcSensitivities(inputs, valuationDate) {
+    const npvAt = (o) => bessCalcNpvAt(inputs, o, valuationDate);
+    const pp = (v) => String(+v.toFixed(1));
+    const out = [];
+
+    const rStep = inputs.r > 0 ? Math.min(0.02, inputs.r) : 0;
+    out.push(rStep > 0
+      ? { label: `WACC -${pp(rStep * 100)}pp`,
+          value: npvAt({ r: inputs.r - rStep }) }
+      : { label: "WACC -2pp", na: "WACC is not above zero" });
+    out.push({ label: "WACC +2pp", value: npvAt({ r: inputs.r + 0.02 }) });
+
+    const ceiling = Metrics.arbitrageCeiling(inputs.sHi, inputs.sLo, inputs.eta);
+    if (!(inputs.k > 0)) {
+      out.push({ label: "capture ±10pp", na: "no capture rate set" });
+    } else if (ceiling == null) {
+      out.push({ label: "capture ±10pp", na: "no arbitrage ceiling in use" });
+    } else if (!(inputs.c > 0)) {
+      out.push({ label: "capture ±10pp",
+                 na: "no cycles per day set, so nothing is discharged" });
+    } else {
+      const kDown = Math.min(0.10, inputs.k);
+      out.push({ label: `capture -${pp(kDown * 100)}pp`,
+                 value: npvAt({ k: inputs.k - kDown }) });
+      const kUp = inputs.k >= 1 ? 0 : Math.min(0.10, 1 - inputs.k);
+      out.push(kUp > 0
+        ? { label: `capture +${pp(kUp * 100)}pp`,
+            value: npvAt({ k: inputs.k + kUp }) }
+        : { label: "capture +10pp", na: "capture rate is already 100%" });
+    }
+    return out;
+  }
+
+  /* One shared £ scale for a set of figures: the unit is chosen once,
+     from the largest magnitude in the set, and applied to all of them —
+     four chips read against one another must never switch scale
+     mid-row. Compact rather than full pounds because the strip's job is
+     the SHAPE of the response; the tile above it carries the exact
+     number, and the strip's own head restates the base in this same
+     unit so the comparison is direct. */
+  function bessCalcCompactGbp(values) {
+    const max = values.reduce((m, v) =>
+      (v == null ? m : Math.max(m, Math.abs(v))), 0);
+    const unit = max >= 1e6 ? { d: 1e6, s: "m", dp: 2 }
+      : max >= 1e3 ? { d: 1e3, s: "k", dp: 0 }
+      : { d: 1, s: "", dp: 0 };
+    return (v) => (v == null ? "n/a"
+      : (v < 0 ? "-£" : "£")
+        + (Math.abs(v) / unit.d).toLocaleString("en-GB",
+            { minimumFractionDigits: unit.dp, maximumFractionDigits: unit.dp })
+        + unit.s);
+  }
+
+  /* The matrix's own cells, built by the IDENTICAL guard conditions and
+     reason strings bessCalcSensitivities uses for its capture-rate chip
+     (owner decision, 2026-08-01) — the strip and the matrix are two
+     renderings of the same "can the capture rate be perturbed at all"
+     question, and a reader flipping between them must never see the
+     strip say "no cycles per day set" while the matrix says something
+     else about the identical inputs. `na` short-circuits before either
+     axis is built: a table with nothing on its capture axis is a
+     scenario, not a sensitivity, exactly as it is for the chip.
+
+     Axes: WACC floors at zero (an undiscounted NPV is a real bound, a
+     negative WACC is not — the same reason the strip's WACC chip
+     floors); capture clamps to [0,1]. Both axes de-duplicate their five
+     candidate values AFTER clamping, ascending — near a clamp, several
+     offsets collapse onto the same boundary value, and repeating that
+     value under two labels would dress up one case as two. The result
+     is an honestly smaller table (4x5, 3x5) rather than a padded 5x5. */
+  function bessCalcSensMatrix(inputs, valuationDate) {
+    const ceiling = Metrics.arbitrageCeiling(inputs.sHi, inputs.sLo, inputs.eta);
+    const naSentence = (reason) => `The capture-rate axis has nothing to ` +
+      `act on — ${reason}. The strip view's WACC chips still apply.`;
+    if (!(inputs.k > 0)) return { na: naSentence("no capture rate set") };
+    if (ceiling == null) {
+      return { na: naSentence("no arbitrage ceiling in use") };
+    }
+    if (!(inputs.c > 0)) {
+      return { na: naSentence(
+        "no cycles per day set, so nothing is discharged") };
+    }
+    // IC-review pass (2026-08-01): nothing upstream constrains a typed
+    // WACC or capture rate to the input fields' own min/max — parseFloat
+    // takes whatever the reader types, unlike the HTML attributes, which
+    // only affect the spinner and validity styling. A base outside
+    // [0, inf) WACC or [0, 1] capture cannot be clamped onto its axis
+    // and still equal the headline NPV at any cell (findIndex would miss
+    // it entirely), so the matrix guards its own domain rather than
+    // trust the fields to have done it first.
+    if (inputs.r < 0) {
+      return { na: "The WACC axis floors at zero — your typed WACC sits " +
+        "below that, so the base assumption cannot sit on this table. " +
+        "The strip view's WACC chips still apply." };
+    }
+    if (inputs.k > 1) {
+      return { na: "The capture axis caps at 100% — your typed capture " +
+        "rate sits above that, so the base assumption cannot sit on " +
+        "this table. The strip view's WACC chips still apply." };
+    }
+
+    const rVals = [...new Set(
+      [-0.02, -0.01, 0, 0.01, 0.02].map((o) => Math.max(0, inputs.r + o)))]
+      .sort((a, b) => a - b);
+    const kVals = [...new Set(
+      [-0.10, -0.05, 0, 0.05, 0.10].map((o) =>
+        Math.min(1, Math.max(0, inputs.k + o))))]
+      .sort((a, b) => a - b);
+
+    // Same chain as every other figure on this card: bessCalcNpvAt re-runs
+    // bessCashflow per cell, so a cell can never disagree with the chain
+    // the headline NPV is itself built from. The base cell (rv===r,
+    // kv===k) equals the headline NPV by construction, not by a special
+    // case — it is simply the (0, 0) offset like any other cell.
+    const cells = rVals.map((rv) => kVals.map((kv) =>
+      bessCalcNpvAt(inputs, { r: rv, k: kv }, valuationDate)));
+    const fmt = bessCalcCompactGbp(cells.flat());
+    return { rVals, kVals, cells, fmt,
+             baseRIdx: rVals.findIndex((v) => v === inputs.r),
+             baseKIdx: kVals.findIndex((v) => v === inputs.k) };
+  }
+
+  // Percentage cell/header labels: integer unless a .5pp shows up, in
+  // which case one decimal — except the WACC row headers, which always
+  // carry one decimal (D20's own "-1.5pp never masquerades as -2pp"
+  // discipline: an 8.0% row header must not read as a rounder number
+  // than the clamp actually left it).
+  function bessCalcPctLabel(v, forceOneDp) {
+    const rounded = Math.round(v * 1000) / 10;
+    const oneDp = forceOneDp || !Number.isInteger(rounded);
+    return `${rounded.toFixed(oneDp ? 1 : 0)}%`;
+  }
+
+  function bessCalcSensMatrixHtml(m) {
+    const head = m.kVals.map((kv, j) =>
+      `<th class="${j === m.baseKIdx ? "csm-base" : ""}">${
+        bessCalcPctLabel(kv, false)}</th>`).join("");
+    const rows = m.rVals.map((rv, i) => {
+      const cells = m.kVals.map((kv, j) => {
+        const v = m.cells[i][j];
+        const isBase = i === m.baseRIdx && j === m.baseKIdx;
+        const neg = v != null && v < 0;
+        return `<td class="${isBase ? "csm-basecell" : ""}${
+          neg ? " csm-neg" : ""}">${m.fmt(v)}</td>`;
+      }).join("");
+      return `<tr><th class="${i === m.baseRIdx ? "csm-base" : ""}">${
+        bessCalcPctLabel(rv, true)}</th>${cells}</tr>`;
+    }).join("");
+    return `<div class="calc-sens-matrixwrap"><table class="calc-sens-matrix">` +
+      `<thead><tr><th>WACC \\ capture</th>${head}</tr></thead>` +
+      `<tbody>${rows}</tbody></table></div>`;
+  }
+
+  // Shared segmented control markup for BOTH toggles on this card (D20's
+  // .calc-seg) — only the data attribute, the active state and the
+  // group's own accessible name differ. `label` names the role="group"
+  // for assistive tech, which has no visible legend of its own.
+  function bessCalcSegHtml(dataAttr, view, options, label) {
+    return `<span class="calc-seg" role="group" aria-label="${label}">${
+      options.map((o) => {
+      const active = view === o.value;
+      return `<button type="button" data-${dataAttr}="${o.value}"${
+        active ? ' class="active"' : ""
+      } aria-pressed="${active}">${o.label}</button>`;
+    }).join("")}</span>`;
+  }
+
+  /* Built once and never re-rendered (D30). The <details> captions (D47)
+     therefore keep their open state across every subsequent render for
+     free — nothing stores it, the DOM is it. */
+  function bessCalcInputsHtml() {
+    return `
+      <div class="calc-field-group">
+        <h4>The asset</h4>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Power (MW)</span></div>
+          <input type="number" data-calc="power" min="0" step="0.1"
+            placeholder="e.g. 50">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Energy (MWh)</span></div>
+          <input type="number" data-calc="energy" min="0" step="0.1"
+            placeholder="e.g. 100">
+          <div class="calc-live" id="calc-duration-live"></div>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Commissioning date</span></div>
+          <input type="date" data-calc="commission">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Useful life (years)</span></div>
+          <input type="number" data-calc="life" min="1" step="1"
+            placeholder="e.g. 15">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Calculation period (years)</span></div>
+          <input type="number" data-calc="period" min="1" step="1"
+            placeholder="defaults to useful life">
+          <div class="calc-live" id="calc-period-live"></div>
+        </div>
+      </div>
+
+      <div class="calc-field-group">
+        <h4>Costs and finance</h4>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>CAPEX (£k/MW)</span></div>
+          <input type="number" data-calc="capex" min="0" step="1"
+            placeholder="e.g. 450 to 600">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>OPEX (£k/MW/yr)</span></div>
+          <input type="number" data-calc="opex" min="0" step="0.5"
+            placeholder="e.g. 10">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>OPEX escalation
+            (%/yr)</span></div>
+          <input type="number" data-calc="opexEsc" min="0" step="0.1"
+            placeholder="defaults to the ONS CPI rate">
+          <div class="calc-live" id="calc-opexesc-live"></div>
+          <details class="calc-note-d">
+            <summary>What this indexes</summary>
+            <div class="calc-note">OPEX only — never TNUoS (a published
+              tariff, re-set by NESO each charging year, not an
+              assumption this card indexes) and never the augmentation
+              tranche's cost (a one-off typed figure at the time it
+              lands, not a recurring charge). Blank defaults to the
+              last-published ONS CPI 12-month rate (an OBSERVED
+              statistic, the same category as the TNUoS zone tariffs
+              elsewhere on this card, not a forecast — this ships no
+              inflation FORECAST, D23 still holds). Typing any value,
+              including 0, overrides that default outright.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Augmentation year</span></div>
+          <input type="number" data-calc="augYear" min="1" step="1"
+            placeholder="e.g. 5">
+          <div class="calc-live" id="calc-augyear-live"></div>
+          <details class="calc-note-d">
+            <summary>Model year or calendar year?</summary>
+            <div class="calc-note">Counted from commissioning: year 1 is
+              the first modelled year, so "5" lands the tranche at the
+              start of the fifth. A calendar year (say 2030) also works
+              once a commissioning date is set — the line under the
+              field states the conversion in use, and warns when the
+              tranche cannot land at all.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Augmentation size
+            (MWh)</span></div>
+          <input type="number" data-calc="augMwh" min="0" step="0.1"
+            placeholder="none">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Augmentation cost
+            (£k/MWh)</span></div>
+          <input type="number" data-calc="augCostMwh" min="0" step="1"
+            placeholder="e.g. 100 to 200">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>New-cell degradation
+            (%/yr)</span></div>
+          <input type="number" data-calc="augDelta" min="0" max="20"
+            step="0.1" placeholder="defaults to the main rate">
+          <details class="calc-note-d">
+            <summary>How the augmentation tranche is modelled</summary>
+            <div class="calc-note">Optional one-off augmentation, modelled
+              as a second cell tranche: the stated MWh of new cells join at
+              the start of that year (a partial top-up, a full restore, or
+              an expansion beyond nameplate), costed at £k/MWh into that
+              year's cash flow and into LCOS. The original cells keep
+              degrading on their own clock; the new tranche degrades at its
+              own rate, defaulting to the main degradation rate. Year, size
+              and cost must all be set to take effect.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>WACC (%)</span></div>
+          <input type="number" data-calc="wacc" min="0" max="50" step="0.1"
+            placeholder="e.g. 8">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Discounting convention</span></div>
+          <select data-calc="discounting">
+            <option value="mid" selected>Mid-year (default)</option>
+            <option value="end">End-of-period</option>
+          </select>
+          <details class="calc-note-d">
+            <summary>What the two conventions do</summary>
+            <div class="calc-note">Mid-year treats each year's cash flow as
+              landing at the year's midpoint; end-of-period, on its last
+              day. IRR is unaffected; the discounted payback period is not,
+              since it interpolates on the discounted cash-flow row. Full
+              detail in Methodology.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Valuation date</span></div>
+          <input type="date" data-calc="valuationDate">
+          <div class="calc-live" id="calc-valuationdate-live">Blank defaults
+            to the commissioning date.</div>
+          <details class="calc-note-d">
+            <summary>What re-anchoring moves, and what it does not</summary>
+            <div class="calc-note">Re-anchors the NPV to today, or any
+              reassessment date, instead of leaving it silently expressed as
+              of commissioning: useful for reassessing an asset already in
+              the portfolio. A date before commissioning is also allowed (a
+              pre-decision appraisal) and works via the same identity. IRR,
+              the discounted payback period and LCOS do not move: IRR is
+              defined on undiscounted cash flow, payback's crossing test
+              and interpolation fraction cancel the same re-anchoring
+              factor, and LCOS's numerator and denominator scale together.
+              Full detail in Methodology.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Connection type</span></div>
+          <select data-calc="connType">
+            <option value="T">Transmission</option>
+            <option value="E">Distribution</option>
+          </select>
+        </div>
+        <div class="calc-field" id="calc-zone-field">
+          <div class="calc-field-label"><span>TNUoS zone</span>
+            <span class="badge proxy">Reference</span></div>
+          <select data-calc="zone" id="calc-zone">
+            <option value="1">loading…</option>
+          </select>
+          <div class="calc-zone-ref" id="calc-zone-ref"></div>
+        </div>
+        <div class="calc-field calc-field-na" id="calc-notapplicable-field">
+          <div class="calc-field-label"><span>TNUoS</span></div>
+          <div class="calc-live">Not applicable: distribution-connected
+            generation sits outside generation TNUoS post-TCR. The cash
+            flow carries a zero TNUoS line.</div>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>TNUoS load factor (%)</span></div>
+          <input type="number" data-calc="loadFactor" min="0" max="100"
+            step="0.1" placeholder="defaults to cycles x duration / 24">
+          <div class="calc-live" id="calc-loadfactor-live"></div>
+        </div>
+      </div>
+
+      <div class="calc-field-group">
+        <h4>Operation</h4>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Cycles per day</span></div>
+          <input type="number" data-calc="cycles" min="0" max="10" step="0.1"
+            placeholder="e.g. 1">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Round-trip efficiency (%)</span></div>
+          <input type="number" data-calc="efficiency" min="0" max="100" step="1"
+            placeholder="e.g. 85">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Degradation (%/yr)</span></div>
+          <input type="number" data-calc="degradation" min="0" max="20"
+            step="0.1" placeholder="e.g. 2">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Availability derate
+            (%/yr)</span></div>
+          <input type="number" data-calc="derate" min="0" max="20"
+            step="0.1" placeholder="e.g. 0 to 2">
+          <details class="calc-note-d">
+            <summary>What this derate covers</summary>
+            <div class="calc-note">Your asset's own decline in
+              availability-revenue capability as it ages (duration
+              eligibility narrowing as energy fades), distinct from the
+              market-wide cannibalisation below. Default 0%. Compounds on
+              the capacity-weighted cell age, so an augmentation tranche
+              rejuvenates it in proportion to its size.</div>
+          </details>
+        </div>
+      </div>
+
+      <div class="calc-field-group">
+        <h4>Market view</h4>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Availability percentile</span></div>
+          <select data-calc="percentile">
+            <option value="p10">p10 (bottom decile of units)</option>
+            <option value="p25">p25</option>
+            <option value="p50" selected>p50 (median unit, default)</option>
+            <option value="p75">p75</option>
+            <option value="p90">p90 (top decile of units)</option>
+          </select>
+          <div class="calc-live" id="calc-percentile-live"></div>
+          <details class="calc-note-d">
+            <summary>How to read these percentiles</summary>
+            <div class="calc-note">This is the cross-unit distribution of
+              trailing 365-day EAC availability revenue, already averaged over
+              the days a unit won nothing. Do not also multiply by an
+              acceptance or win rate: that removes the zero days a second time
+              and understates the result (measured 58%). These are rank
+              percentiles of that cross-unit distribution, not the exceedance
+              convention some readers know from energy-yield work, where P90
+              means the conservative case: here p90 is the top-decile unit,
+              not the one nine years in ten beat.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Service families included</span></div>
+          <div class="calc-toggle-row">${BESS_FAMILY_CODES.map((f) =>
+            `<label title="${BESS_FAMILY_LABELS[f]}">` +
+            `<input type="checkbox" data-calc="family${f}" checked> ${f} ` +
+            `<span class="fam-value" id="calc-fam-value-${f}"></span>` +
+            `</label>`).join("")}</div>
+          <details class="calc-note-d">
+            <summary>What switching a family off means</summary>
+            <div class="calc-note">Each family can be switched off, which
+              recomputes the £/kW/yr from that percentile's family
+              components. Turning a family off is an assumption about what
+              the asset will contract for, not a claim about the data.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Cannibalisation (%/yr)</span></div>
+          <input type="number" data-calc="cannibalisation" min="0" max="50"
+            step="0.5" value="0">
+          <details class="calc-note-d">
+            <summary>Where this rate is applied</summary>
+            <div class="calc-note">Your own view of future market saturation,
+              applied to the availability and arbitrage revenue lines every
+              year. Default 0%, because the
+              calculator has no forecast and no basis for any particular
+              value.</div>
+          </details>
+        </div>
+      </div>
+
+      <div class="calc-field-group">
+        <h4>Wholesale arbitrage (perfect-foresight ceiling)</h4>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Observed spread</span></div>
+          <div class="calc-live" id="calc-arb-observed-live"></div>
+          <details class="calc-note-d">
+            <summary>How the ceiling is measured</summary>
+            <div class="calc-note">Mean top-2d and bottom-2d half-hourly
+              price per complete day (at least 46 populated half-hours),
+              averaged over every complete day already loaded on this
+              dashboard, at this asset's own duration. Labelled a
+              perfect-foresight ceiling, never arbitrage revenue: a
+              construct that never loses money in a year is not a forecast
+              of anything. MID is a market-wide index, not a transacted
+              price, and diverges from what any single asset actually
+              achieves, especially in stressed periods.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Capture rate (%)</span></div>
+          <input type="number" data-calc="captureRate" min="0" max="100"
+            step="1" placeholder="required for arbitrage to contribute">
+          <details class="calc-note-d">
+            <summary>Why there is no default</summary>
+            <div class="calc-note">Multiplies the ceiling above. Left blank,
+              the arbitrage line stays at zero rather than assuming a rate
+              for you: there is no default capture rate on this card. The
+              rate applies to the net margin (after charging cost), which
+              is generous at low rates: pick a lower figure to be
+              conservative.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Manual spread override
+            (£/MWh)</span></div>
+          <input type="number" data-calc="manualSpread" min="0" step="1"
+            placeholder="replaces the observed ceiling entirely">
+          <details class="calc-note-d">
+            <summary>What the override replaces</summary>
+            <div class="calc-note">Mirrors the coal-price override on the
+              Spreads tab: a single flat spread you enter replaces the
+              observed ceiling entirely, and the capture rate above still
+              applies to it. The provenance flips from Estimated to
+              Assumption while a value is entered here.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Margin in use</span>
+            <span class="badge hidden" id="calc-arb-margin-badge"></span></div>
+          <div class="calc-live" id="calc-arb-margin-live"></div>
+        </div>
+      </div>`;
+  }
+
+  function resetBessCalcForm() {
+    const inputsEl = document.getElementById("bess-calc-inputs");
+    if (!inputsEl) return;
+    const defaults = { connType: "T", zone: "1", percentile: "p50",
+                      cannibalisation: "0", discounting: "mid" };
+    inputsEl.querySelectorAll("[data-calc]").forEach((el) => {
+      const key = el.dataset.calc;
+      if (el.type === "checkbox") {
+        el.checked = true; // every family toggle defaults on (D21)
+        return;
+      }
+      el.value = key in defaults ? defaults[key] : "";
+    });
+  }
+
+  function wireBessCalc() {
+    if (bessCalcWired) return;
+    const inputsEl = document.getElementById("bess-calc-inputs");
+    if (!inputsEl) return;
+    inputsEl.innerHTML = bessCalcInputsHtml();
+
+    inputsEl.addEventListener("input", (event) => {
+      const el = event.target;
+      const key = el.dataset.calc;
+      if (!key) return;
+      let value;
+      if (el.type === "checkbox") {
+        value = el.checked;
+      } else if (el.tagName === "SELECT") {
+        value = key === "zone" ? parseInt(el.value, 10) : el.value;
+      } else if (el.type === "date") {
+        value = el.value || null;
+      } else {
+        value = el.value === "" ? null : parseFloat(el.value);
+        if (value != null && Number.isNaN(value)) value = null;
+      }
+      State.setCalc(key, value);
+    });
+
+    const resetBtn = document.getElementById("bess-calc-reset");
+    if (resetBtn) {
+      resetBtn.addEventListener("click", () => {
+        State.resetCalc();
+        resetBessCalcForm();
+      });
+    }
+    const csvBtn = document.getElementById("bess-calc-csv");
+    if (csvBtn) csvBtn.addEventListener("click", downloadBessCalcCsv);
+    const xlsxBtn = document.getElementById("bess-calc-xlsx");
+    if (xlsxBtn) xlsxBtn.addEventListener("click", downloadBessCalcXlsx);
+
+    // Both toggle rows are rebuilt/synced on every render, never rebuilt
+    // here — delegation on the STATIC parent is what survives that
+    // rebuild (D30's own reason for wiring the input container once).
+    const sensToggleEl = document.getElementById("bess-calc-sens");
+    if (sensToggleEl) {
+      sensToggleEl.addEventListener("click", (event) => {
+        const btn = event.target.closest("[data-sens-view]");
+        if (!btn) return;
+        bessCalcSensView = btn.dataset.sensView;
+        bessCalculator();
+        // bessCalculator() just rebuilt sensToggleEl's innerHTML, which
+        // destroyed the button `btn` pointed at and dropped focus to
+        // <body> — re-focus its freshly rendered replacement.
+        const active = sensToggleEl.querySelector(
+          `[data-sens-view="${bessCalcSensView}"]`);
+        if (active) active.focus();
+      });
+    }
+    const chartToggleEl = document.getElementById("bess-calc-chart-toggle");
+    if (chartToggleEl) {
+      chartToggleEl.addEventListener("click", (event) => {
+        const btn = event.target.closest("[data-chart-view]");
+        if (!btn) return;
+        bessCalcChartView = btn.dataset.chartView;
+        bessCalculator();
+      });
+    }
+
+    bessCalcWired = true;
+  }
+
+  /* Small read-outs beside the inputs that change on every render without
+     touching the input elements themselves (D30's focus-preserving
+     requirement — the input container is built ONCE, in wireBessCalc). */
+  function updateBessCalcLiveFields(c) {
+    const durationEl = document.getElementById("calc-duration-live");
+    if (durationEl) {
+      const duration = c.power && c.energy != null && c.power > 0
+        ? c.energy / c.power : null;
+      durationEl.textContent = duration != null
+        ? `implied duration: ${duration.toFixed(2)} h` : "";
+    }
+
+    // Owner review, 2026-08-01: say when the useful-life cap bit, and —
+    // the mirror case — that a deliberately shorter period leaves the
+    // remaining life uncredited (no residual value exists to stand in
+    // for it). Silence when the period is blank or exactly the life.
+    const periodEl = document.getElementById("calc-period-live");
+    if (periodEl) {
+      let text = "";
+      if (c.period != null && c.life != null) {
+        if (c.period > c.life) {
+          text = `capped at the useful life: ${c.life} years modelled ` +
+            "(no revenue survives decommissioning)";
+        } else if (c.period < c.life) {
+          text = `truncated view: the remaining ${c.life - c.period} ` +
+            "years of life earn nothing here and no residual value " +
+            "stands in for them";
+        }
+      }
+      periodEl.textContent = text;
+    }
+
+    // Owner request, 2026-08-01: the calendar-year conversion (or the
+    // warning when the tranche cannot land) states itself here rather
+    // than only inside the £0 the chart would otherwise show with no
+    // explanation — see bessCalcAugYearResolved, the one place this
+    // reading happens. No dedicated warn class exists among the other
+    // calc-live lines, so a warning is plain calc-live dim text with an
+    // explicit "Warning:" prefix rather than a silent-looking note.
+    const augYearLiveEl = document.getElementById("calc-augyear-live");
+    if (augYearLiveEl) {
+      const resolved = bessCalcAugYearResolved(c);
+      augYearLiveEl.textContent = !resolved.note ? ""
+        : resolved.warn ? `Warning: ${resolved.note}` : resolved.note;
+    }
+
+    const zoneField = document.getElementById("calc-zone-field");
+    const naField = document.getElementById("calc-notapplicable-field");
+    const isTransmission = c.connType !== "E";
+    if (zoneField) zoneField.style.display = isTransmission ? "" : "none";
+    if (naField) naField.style.display = isTransmission ? "none" : "";
+
+    const zoneSelect = document.getElementById("calc-zone");
+    if (zoneSelect && bessUnitsState === "ready" && !zoneSelect.dataset.populated) {
+      const zones = bessUnitsPayload.tnuos.zones;
+      zoneSelect.innerHTML = zones.map((z) =>
+        `<option value="${z.n}">${z.n}. ${z.name}</option>`).join("");
+      zoneSelect.value = String(c.zone);
+      zoneSelect.dataset.populated = "1";
+    }
+
+    const zoneRefEl = document.getElementById("calc-zone-ref");
+    if (zoneRefEl) {
+      if (bessUnitsState === "ready" && isTransmission) {
+        const zone = bessCalcZoneTariff(bessUnitsPayload, c.zone);
+        const f = bessCalcLoadFactor(c);
+        zoneRefEl.textContent = zone
+          ? `SystemPeak £${zone.peak}/kW · SharedYR £${zone.yr_shared}/kW · ` +
+            `NotSharedYR £${zone.yr_notshared}/kW · Residual £${zone.residual}/kW ` +
+            `· load factor in use: ${(f * 100).toFixed(1)}%` +
+            (c.loadFactor == null ? " (default)" : "")
+          : "";
+      } else {
+        zoneRefEl.textContent = "";
+      }
+    }
+
+    const loadFactorLiveEl = document.getElementById("calc-loadfactor-live");
+    if (loadFactorLiveEl) {
+      loadFactorLiveEl.textContent = c.loadFactor == null
+        ? `Default: ${(bessCalcLoadFactorDefault(c) * 100).toFixed(1)}% ` +
+          "(cycles x duration / 24)" : "";
+    }
+
+    /* OPEX escalation's shipped default (owner request, 2026-08-01),
+       same blank-field pattern as the load-factor line just above:
+       silent once typed (any value, including 0, speaks for itself),
+       otherwise either the ONS default with its provenance or the
+       plain statement that none was available this build. */
+    const opexEscLiveEl = document.getElementById("calc-opexesc-live");
+    if (opexEscLiveEl) {
+      if (c.opexEsc != null) {
+        opexEscLiveEl.textContent = "";
+      } else {
+        const payload = bessUnitsState === "ready" ? bessUnitsPayload : null;
+        const cpiDefault = bessCalcOpexEscDefault(payload);
+        if (cpiDefault != null) {
+          const inflation = payload.inflation;
+          const period = bessCalcOnsPeriodLabel(inflation.cpi_period);
+          const ppiPart = inflation.ppi_annual_pct != null
+            ? ` · PPI output ${inflation.ppi_annual_pct}%` : "";
+          opexEscLiveEl.textContent =
+            `Default: ${cpiDefault.toFixed(1)}%/yr — CPI 12-month rate ` +
+            `(ONS, ${period})${ppiPart} · type to override`;
+        } else {
+          opexEscLiveEl.textContent =
+            "No ONS rate available — blank means flat.";
+        }
+      }
+    }
+
+    const percentileLiveEl = document.getElementById("calc-percentile-live");
+    if (percentileLiveEl) {
+      const toggles = bessCalcFamilyToggles(c);
+      const perYr = bessUnitsState === "ready"
+        ? bessCalcAvailabilityGbpPerKwYr(bessUnitsPayload, c.percentile, toggles)
+        : null;
+      percentileLiveEl.innerHTML = perYr != null
+        ? `<span class="badge observed">Observed</span> ` +
+          `${perYr.toFixed(2)} £/kW/yr`
+        : "";
+    }
+
+    /* Owner request, 2026-07: each family toggle's own label carries its
+       current-percentile component, £/kW/yr (component £/kW/day x 365,
+       2dp), so a family that is genuinely zero at every shipped
+       percentile (BR, SR) reads as inert DATA rather than a suspicious
+       blank, and the negative DR at p10 is visible on the toggle itself
+       rather than only inside the aggregate. Reads
+       percentiles.families[percentile] directly (D33/D36's rank-
+       representative additive split, the same source
+       bessCalcFamilyAvailabilityColumns and the workbook's family rows
+       already use), so this always agrees with what turning the toggle
+       off actually subtracts. */
+    const families = bessUnitsState === "ready"
+      ? bessUnitsPayload.percentiles.families
+        && bessUnitsPayload.percentiles.families[c.percentile]
+      : null;
+    BESS_FAMILY_CODES.forEach((f) => {
+      const el = document.getElementById(`calc-fam-value-${f}`);
+      if (!el) return;
+      if (!families) { el.textContent = ""; return; }
+      const perYr = (families[f] || 0) * 365;
+      const isZero = Math.abs(perYr) < 0.005; // rounds to 0.00
+      el.textContent = `${perYr >= 0 ? "" : "-"}£${Math.abs(perYr).toFixed(2)}/kW/yr`;
+      el.classList.toggle("fam-zero", isZero);
+    });
+
+    const valuationDateLiveEl = document.getElementById("calc-valuationdate-live");
+    if (valuationDateLiveEl) {
+      valuationDateLiveEl.textContent = c.valuationDate
+        ? `Anchor in use: ${Metrics.fmtDate(c.valuationDate)}`
+        : "Blank defaults to the commissioning date" +
+          (c.commission ? ` (${Metrics.fmtDate(c.commission)}).` : ".");
+    }
+
+    const arb = bessCalcArbitrage(c);
+    const arbObservedEl = document.getElementById("calc-arb-observed-live");
+    if (arbObservedEl) {
+      arbObservedEl.textContent = arb.observed
+        ? `s_hi £${arb.observed.sHi.toFixed(2)}/MWh · ` +
+          `s_lo £${arb.observed.sLo.toFixed(2)}/MWh · ` +
+          `${arb.observed.days} complete days in the loaded window` +
+          (arb.duration ? ` at ${arb.duration.toFixed(2)} h duration` : "")
+        : (arb.duration
+            ? "No complete day found in the loaded price series."
+            : "Enter power and energy to compute a duration first.");
+    }
+    // Owner direction, 2026-07 (superseding the earlier in-text badge):
+    // the provenance badge for this line lives in the .calc-field-label
+    // row itself, exactly like the TNUoS zone "Reference" badge above —
+    // a flex row with the label on one side and the badge on the other,
+    // never inside the wrapping live-text paragraph. The live text
+    // carries prose only, so it wraps freely with no badge to strand.
+    const arbMarginEl = document.getElementById("calc-arb-margin-live");
+    const arbMarginBadge = document.getElementById("calc-arb-margin-badge");
+    if (arbMarginEl) {
+      const eta = c.efficiency != null ? c.efficiency / 100 : 0;
+      const ceiling = Metrics.arbitrageCeiling(arb.sHi, arb.sLo, eta);
+      if (ceiling == null) {
+        arbMarginEl.textContent = (arb.sHi != null && !eta)
+          ? "Enter round-trip efficiency to compute the margin."
+          : "No ceiling to show yet: enter a manual override above, or " +
+            "wait for the observed spread to compute.";
+        if (arbMarginBadge) arbMarginBadge.classList.add("hidden");
+      } else if (!arb.contributing) {
+        arbMarginEl.textContent =
+          `£${ceiling.toFixed(2)}/MWh ceiling · not contributing: enter a ` +
+          "capture rate above for this line to add anything to the cash flow.";
+        if (arbMarginBadge) arbMarginBadge.classList.add("hidden");
+      } else {
+        const chip = arb.manual != null ? "assumption" : "estimated";
+        arbMarginEl.textContent =
+          `£${ceiling.toFixed(2)}/MWh margin × ` +
+          `${((arb.k || 0) * 100).toFixed(0)}% capture rate` +
+          (arb.manual != null
+            ? " (manual override spread × your capture rate)"
+            : " (observed price spread × your capture rate)");
+        if (arbMarginBadge) {
+          arbMarginBadge.className = `badge ${chip}`;
+          arbMarginBadge.textContent = chip === "assumption" ? "Assumption" : "Estimated";
+        }
+      }
+    }
+    // Card-level badge (unchanged behaviour) and the label-row badge
+    // above are both driven by the SAME `arb` computed once at the top
+    // of this function, so they cannot disagree with one another.
+    const estBadge = document.getElementById("bess-calc-badge-estimated");
+    if (estBadge) estBadge.classList.toggle("hidden", !arb.estimatedActive);
+  }
+
+  /* D21/Part C: per-family availability £, year by year, aligned with
+     cf.rows — the same scaling (degradation-free, cannibalisation g and
+     the year-1 stub frac) the total availability_gbp column already
+     applies, so summing the six family columns on any row reproduces
+     that row's availability_gbp exactly. A toggled-off family reads
+     zero here too (it is genuinely excluded, not merely hidden), and a
+     payload with no percentiles.families block (should not happen once
+     the ETL is rerun, but degrades safely) reads zero for every family
+     rather than throwing. */
+  function bessCalcFamilyAvailabilityColumns(payload, toggles, inputs, rows) {
+    const families = payload.percentiles.families
+      && payload.percentiles.families[State.get().calc.percentile];
+    const gamma = inputs.gamma || 0;
+    const frac1 = Metrics.yearFractionRemaining(inputs.y0);
+    const out = {};
+    BESS_FAMILY_CODES.forEach((f) => { out[f] = []; });
+    rows.forEach((row) => {
+      const n = row.year;
+      if (n === 0 || !families) {
+        BESS_FAMILY_CODES.forEach((f) => out[f].push(0));
+        return;
+      }
+      const g = Math.pow(1 - gamma, n - 1);
+      const frac = n === 1 ? frac1 : 1;
+      BESS_FAMILY_CODES.forEach((f) => {
+        const perYr = toggles[f] ? (families[f] || 0) * 365 : 0;
+        out[f].push(+(perYr * 1000 * inputs.P * g * frac).toFixed(2));
+      });
+    });
+    return out;
+  }
+
+  function downloadBessCalcCsv() {
+    const c = State.get().calc;
+    if (bessCalcMissingLabels(c).length || bessUnitsState !== "ready") return;
+    const inputs = bessCalcEngineInputs(c, bessUnitsPayload);
+    const cf = Metrics.bessCashflow(inputs);
+    if (!cf) return;
+
+    const columns = { year: [], capex_gbp: [], availability_gbp: [],
+      arbitrage_gbp: [], opex_gbp: [], tnuos_gbp: [], net_cashflow_gbp: [],
+      discounted_cashflow_gbp: [], cumulative_discounted_gbp: [],
+      discharged_mwh: [], usable_mwh: [] };
+    cf.rows.forEach((row) => {
+      Object.keys(columns).forEach((key) => columns[key].push(row[key]));
+    });
+    const toggles = bessCalcFamilyToggles(c);
+    const familyCols = bessCalcFamilyAvailabilityColumns(
+      bessUnitsPayload, toggles, inputs, cf.rows);
+    BESS_FAMILY_CODES.forEach((f) => {
+      columns[`availability_${f}_gbp`] = familyCols[f];
+    });
+
+    const arb = bessCalcArbitrage(c);
+    // Owner request, 2026-08-01: the EFFECTIVE OPEX escalation rate —
+    // the typed value verbatim, or the shipped ONS CPI default with its
+    // provenance stated inline (this line is the only place the export
+    // says which one is in force; the workbook's own Source cell does
+    // the equivalent job — see field(A.opexEsc, ...) below).
+    const opexEscDefaultForCsv = bessCalcOpexEscDefault(bessUnitsPayload);
+    const opexEscLine = c.opexEsc != null
+      ? `# opex_escalation_pct_per_yr=${c.opexEsc}`
+      : opexEscDefaultForCsv != null
+        ? `# opex_escalation_pct_per_yr=${opexEscDefaultForCsv.toFixed(1)} ` +
+          `(default: CPI 12-month rate, ONS, ${bessUnitsPayload.inflation.cpi_period})`
+        : "# opex_escalation_pct_per_yr=not_set";
+    // Owner request, 2026-08-01: the RESOLVED model year, through the
+    // one helper the engine inputs and the workbook also call — never
+    // the raw typed value, which may be a calendar year. When a
+    // calendar-year entry actually resolved, the comment line directly
+    // after states what was typed, so the export is checkable against
+    // the field; an unresolvable entry (no commissioning date to anchor
+    // it, or outside the T-year period) exports "not_set" with no such
+    // line, same as a blank field.
+    const augResolved = bessCalcAugYearResolved(c);
+    const augYearIsCalendar = c.augYear != null && Math.floor(c.augYear) >= 1000;
+    const augYearLines = [
+      `# augmentation_year=${augResolved.year != null ? augResolved.year : "not_set"}`,
+    ];
+    if (augResolved.year != null && augYearIsCalendar) {
+      augYearLines.push(`# augmentation_year_entered=${Math.floor(c.augYear)}`);
+    }
+    const header = [
+      "# BESS profitability calculator export. Illustrative economics from",
+      "# the assumptions below, anchored on what comparable units",
+      "# observably earned. Not investment advice, not a valuation, and",
+      "# not a forecast.",
+      `# power_mw=${c.power}`,
+      `# energy_mwh=${c.energy}`,
+      `# commissioning_date=${c.commission || "not_set"}`,
+      `# valuation_date=${c.valuationDate || "commissioning"}`,
+      `# useful_life_years=${c.life}`,
+      `# calculation_period_years=${inputs.T}`,
+      `# capex_gbpk_per_mw=${c.capex}`,
+      `# opex_gbpk_per_mw_yr=${c.opex != null ? c.opex : 0}`,
+      opexEscLine,
+      ...augYearLines,
+      `# augmentation_mwh=${c.augMwh != null ? c.augMwh : "not_set"}`,
+      `# augmentation_cost_gbpk_per_mwh=${c.augCostMwh != null ? c.augCostMwh : "not_set"}`,
+      `# augmentation_degradation_pct_per_yr=${c.augDelta != null
+        ? c.augDelta : "defaults_to_degradation"}`,
+      `# wacc_pct=${c.wacc}`,
+      `# discounting=${bessCalcDiscounting(c)}`,
+      `# connection_type=${c.connType}`,
+      `# tnuos_zone=${c.connType === "T" ? c.zone : "not_applicable"}`,
+      `# tnuos_load_factor_pct=${(bessCalcLoadFactor(c) * 100).toFixed(1)}`,
+      `# cycles_per_day=${c.cycles != null ? c.cycles : 0}`,
+      `# round_trip_efficiency_pct=${c.efficiency != null ? c.efficiency : 0}`,
+      `# degradation_pct_per_yr=${c.degradation != null ? c.degradation : 0}`,
+      `# availability_derate_pct_per_yr=${c.derate != null ? c.derate : 0}`,
+      `# availability_percentile=${c.percentile}`,
+      `# family_toggles=${BESS_FAMILY_CODES.map((f) =>
+        `${f}:${toggles[f] ? "on" : "off"}`).join(",")}`,
+      `# cannibalisation_pct_per_yr=${c.cannibalisation != null ? c.cannibalisation : 0}`,
+      `# s_hi_gbp_per_mwh=${arb.sHi != null ? arb.sHi.toFixed(2) : "not_available"}`,
+      `# s_lo_gbp_per_mwh=${arb.sLo != null ? arb.sLo.toFixed(2) : "not_available"}`,
+      `# capture_rate_pct=${c.captureRate != null ? c.captureRate : "not_set"}`,
+      `# manual_spread_gbp_per_mwh=${c.manualSpread != null ? c.manualSpread : "not_set"}`,
+      `# tnuos_charging_year=FY${bessUnitsPayload.tnuos.year_fy}`,
+      `# tnuos_publication=${bessUnitsPayload.tnuos.publication}`,
+    ].join("\n");
+
+    const csv = header + "\n" + Metrics.toCsv(columns);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `gb_bess_calculator_${c.percentile}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  /* ================= Excel DCF export (plan/09, D35-D40, v1.5) =========
+     A second export, beside the CSV above and never instead of it: a
+     real .xlsx in which every derived cell is an Excel formula over the
+     Assumptions cells, built in memory from the same State.calc/payload
+     the CSV reads and handed straight to a Blob download (D30/D35:
+     session-only, nothing written to browser storage, nothing retained
+     beyond the click). app/js/xlsx.js is the generic writer; everything
+     below is the model: which cells exist, what they say, and how they
+     reference each other, built fresh on every click so a WACC edit
+     between clicks is reflected without any extra wiring.
+
+     Row maps, kept in one object each (per D38's own instruction),
+     because every cross-sheet formula below references these numbers
+     as strings: get one wrong and the formula silently reads the
+     wrong row instead of failing to parse. */
+
+  /* Assumptions-sheet row map. Section header rows carry the section
+     number in column A and the bold grey-banded title in column C; field
+     rows below carry Metric/Units/Input/Source in C/D/E/F. The six
+     family toggles live in column G, not F: F is "Source" for every
+     row on this sheet, and the two would otherwise collide on exactly
+     the family rows (flagged as an open choice in the M3 build spec;
+     this is the "keep Source at F everywhere" branch of it, chosen so
+     a reader never has to remember a sheet-local exception). Capture
+     rate and manual spread override are BOTH always present, mirroring
+     the CSV export's header convention (both `capture_rate_pct=` and
+     `manual_spread_gbp_per_mwh=` always emit, the unused one reading
+     `not_set`): here the unused one's Source cell reads "not set"
+     rather than its Input cell, because an Input cell feeding a live
+     formula has to stay numeric for Excel to compute anything, and 0
+     is the correct "not contributing" value for either field either
+     way (a zero capture rate and a zero override both already mean
+     "this line contributes nothing" in the engine itself). */
+  /* Rows 17-18 (Valuation date, Re-anchoring factor) are new (owner
+     request, 2026-07); every row from the old "Operation" section
+     (18) onward shifts down by 2 to make room, inside the Costs and
+     finance section they belong to. Nothing on the DCF sheet's own row
+     map needs to move for this: DCF references these cells only
+     symbolically, via `Assumptions!$E$${A.xxx}`, never a hardcoded
+     Assumptions row number, so updating the values below is the whole
+     change. */
+  /* IC-review pass (owner request, 2026-07-31): Augmentation year/cost
+     join "Costs and finance" (rows 15-16) and Availability derate joins
+     "Operation" (row 26); every row from WACC onward shifts down by 2
+     and everything from the old Market view onward by 3. As before,
+     the DCF sheet references these cells only symbolically. */
+  /* Named-styles pass (owner's formatted file, 2026-07-31): every row
+     moves down by one (the sheet title sits on row 2, not row 1) and
+     the section number moves from column A to column B on this sheet,
+     both taken from that file. */
+  /* Owner's frame revision (2026-08-01), applied on top of the pass
+     above and to every sheet BESS_AROW and BESS_DROW cover: blank row
+     1 above everything, the section-number gutter at column B (now
+     including the DCF sheet, which had kept it at A until this
+     revision), and column A left a clean, entirely empty margin. */
+  /* OPEX escalation row (owner request, 2026-08-01): joins "Costs and
+     finance" directly under OPEX (row 16), so every row from
+     Augmentation year onward shifts down by 1. As before, the DCF sheet
+     references these cells only symbolically via `Assumptions!$E$${A.xxx}`,
+     so this map is the whole change. */
+  const BESS_AROW = {
+    power: 7, energy: 8, duration: 9, commission: 10, period: 11,
+    capex: 14, opex: 15, opexEsc: 16, augYear: 17, augMwh: 18, augCostMwh: 19,
+    augDelta: 20, wacc: 21, midflag: 22,
+    valuationDate: 23, reanchorFactor: 24,
+    cycles: 27, efficiency: 28, degradation: 29, derate: 30,
+    fam0: 33, fam5: 38,           // DC, DM, DR, BR, QR, SR occupy 33..38
+    famTotal: 40, availRevYr: 41, famPublished: 42, famCheck: 43,
+    cannibalisation: 44,
+    sHi: 47, sLo: 48, captureRate: 49, manualSpread: 50, margin: 51,
+    connType: 54, zone: 55, loadFactor: 56,
+    zPeak: 57, zSharedYr: 58, zNotSharedYr: 59, zResidual: 60, zTotal: 61,
+  };
+
+  /* DCF-sheet row map, taken from the M3 build spec's own object (its
+     section 3) so every formula below is traceable back to it. `gen*`
+     covers the six general-assumptions rows (spec's rows 3-8, which
+     the spec itself puts in column D rather than E, the single block
+     on this sheet that is not part of the year grid).
+
+     Formatting pass, 2026-07-31 (owner request): every section on this
+     sheet now gets a full-width numbered section band (bannerXxx
+     below), with a blank spacer row above each one, matching the
+     reference template's convention (grey since the industry-formatting
+     pass later the same day; navy before it). Four of those banners are NEW rows (revenue,
+     costs, discounting, checks); the other two (general assumptions,
+     headline results) reuse rows that already carried a plain bold
+     label (old rows 3 and 44) and did not need to move. Net effect:
+     every row from the revenue block onwards shifts down, so npv/irr/
+     payback/lcos move from 45-48 to 47-50 and npvAtCommission moves
+     from 50 to 54. This BREAKS the previous "DCF!E45..E49 never move"
+     guarantee the valuation-date feature relied on (see the old
+     comment this replaces) - that guarantee was about not disturbing
+     rows for THAT feature specifically, not a permanent promise; every
+     reference to these rows in this file is symbolic (D.xxx), and
+     tests/test_bess_calculator.py's hardcoded row assertions were
+     updated alongside this row map. */
+  /* IC-review pass (owner request, 2026-07-31): one NEW row, the
+     effective age (years since the later of commissioning and
+     augmentation), inserted after the cannibalisation factor — the
+     degradation and derate exponents both read it, so the piecewise
+     age logic lives in exactly one visible row. Everything from the
+     old usable-energy row onward shifts down by 1: npv/irr/payback/
+     lcos move from 47-50 to 48-51 and npvAtCommission from 54 to 55.
+     tests/test_bess_calculator.py's hardcoded row assertions were
+     updated alongside, as with the formatting pass before it. */
+  /* Vintage revision + MIRR (owner request, 2026-07-31, second pass):
+     the single effective-age row becomes three (original tranche,
+     augmentation tranche, capacity-weighted age), and two MIRR helper
+     rows plus a MIRR headline join — results now sit at 52-56 and the
+     commissioning check at 60. Hardcoded test rows updated alongside,
+     as with each previous layout change. */
+  /* Named-styles pass: +1 throughout, as on the Assumptions sheet. */
+  /* Owner's frame revision (2026-08-01): blank row 1, gutter at column
+     B, margin column A - see BESS_AROW's own comment just above; this
+     sheet's dcfBanner() is the one place that still wrote its section
+     number to column A, and this revision moves it to B alongside. */
+  /* Valuation-date-anchored grid pass (owner decision, 2026-08-01): two
+     new rows push everything from the header row down by 2 (each is
+     documented at its own insertion point below): `genYearsToVal`, a
+     general-assumptions row directly beneath "Fraction of year 1
+     remaining" that the Discount factor row now subtracts so the year
+     grid discounts straight to the valuation date rather than to
+     commissioning (the old re-anchoring-factor multiplication on the
+     headline is retired in favour of this); and `calYear`, a Calendar
+     year row directly beneath the year-number header, styled the same
+     way. Net effect: hdr moves from 11 to 12, and every row from
+     revBanner onward (old 13-62) moves +2 (new 15-64). See also the
+     Total-column insertion in the builder below, which shifts every
+     YEAR COLUMN (not row) by one. */
+  /* DPP/PVI/DPI pass (owner decision, 2026-08-01): the undiscounted
+     `cumcf` row is deleted (the payback flag and headline now test/
+     interpolate on `cumpv`/`pv` instead — a discounted payback needs
+     no undiscounted cumulative line at all), which frees exactly the
+     row a new `pviRow` (the year-by-year present value of investment,
+     inserted directly after the MIRR helper rows) needs, so
+     resultsBanner and every row through mirrChk keep their PREVIOUS
+     absolute row numbers unchanged. Two new headline rows, `pvi` and
+     `dpi`, are inserted into the results block after `payback`
+     (Discounted payback replaces Simple payback in place), pushing
+     `lcos` and everything below it down by 2. */
+  const BESS_DROW = {
+    genBanner: 4,
+    genPeriod: 5, genCommission: 6, genWacc: 7, genMidflag: 8, genFrac1: 9,
+    genYearsToVal: 10,
+    hdr: 12,
+    calYear: 13,
+    revBanner: 15, frac: 16, gamma: 17, tr1: 18, tr2: 19, wage: 20,
+    usable: 21, discharged: 22,
+    avail: 24, arb: 25, rev: 26,
+    costsBanner: 28, opex: 29, tnuos: 30, cost: 31,
+    netop: 33, capex: 34, netcf: 35,
+    discBanner: 37, permid: 38, perend: 39,
+    perapp: 40, factor: 41, pv: 42, cumpv: 43,
+    flag: 45, factorEnd: 46, charge: 47, lcosCost: 48, lcosEnergy: 49,
+    mirrPos: 50, mirrNeg: 51,
+    pviRow: 52,
+    resultsBanner: 54, npv: 55, irr: 56, mirr: 57, payback: 58,
+    pvi: 59, dpi: 60, lcos: 61,
+    checksBanner: 63, npvChk: 64,
+    npvAtCommission: 65,
+    mirrChk: 66,
+  };
+
+  function bessColLetter(n) {
+    let s = "";
+    while (n > 0) {
+      const rem = (n - 1) % 26;
+      s = String.fromCharCode(65 + rem) + s;
+      n = Math.floor((n - 1) / 26);
+    }
+    return s;
+  }
+
+  /* Role -> style index INTO THE VENDORED TABLE in app/js/xlsx.js,
+     which is the owner's own formatted workbook (2026-07-31) verbatim.
+     Names below are the owner's named cell styles; the index is the
+     cellXf that applies that named style with the number format the
+     role needs, read straight off the cells of that file. Change a
+     style HERE, never by editing the vendored table. */
+  const BESS_XF = {
+    title: 1,          // sheet title, bold white on navy
+    titlePad: 14,      // navy band continuing past the title cell
+    comment: 30,       // ![M]Comment - the standing sentence and notes
+    label: 2,          // plain row label (column C)
+    labelBold: 3,      // bold row label (key rows, headline results)
+    unitsDcf: 7,       // units cell (column D) on the DCF sheet
+    unitsAssump: 17,   // units cell (column D) on Assumptions
+    unitsBold: 13,     // units cell beside a bold label
+    source: 49,        // Assumptions "Source" column, italic grey
+    band: 5,           // grey section band
+    bandUnitsDcf: 11,  // band, D column on DCF
+    bandUnitsAssump: 28,
+    bandSource: 11,    // band, F column on Assumptions
+    hdr: 6,            // table header, medium rule under
+    hdrUnitsDcf: 12,
+    hdrUnitsAssump: 27,
+    hdrSource: 12,
+    inputNum: 36,      // ![M]Input, 1 dp
+    inputPct: 37,      // ![M]Input, percent
+    inputDate: 51,     // ![M]Input, date
+    inputText: 35,     // ![M]Input, text (connection-type code)
+    inputYear: 57,     // ![M]Input, integer (appended cellXf) - a year
+                       // number, not a magnitude, so no thousands comma
+                       // and no decimal place: Augmentation year only.
+    hardNum: 39,       // ![M]HardNumber - a hardcoded figure, not typed
+    hardNum4dp: 58,    // ![M]HardNumber, 4 dp (appended cellXf) - the
+                       // family day-rate cells and the published total,
+                       // GBP/kW/day figures too small for 1 dp to show.
+    formulaNum: 50,    // ![M]Formula, 1 dp
+    formulaNum4dp: 59, // ![M]Formula, 4 dp (appended cellXf) - families
+                       // selected, total: same magnitude as hardNum4dp.
+    formula2dp: 52,    // ![M]Formula, 2 dp (factors and periods)
+    // ![M]KeyOutput with the border overridden OFF and the owner's own
+    // key-result grey (appended cellXfs 60-64, owner review 2026-08-01):
+    // the vendored named style carries thin rules top and bottom, which
+    // the owner removed by hand in every results cell. The named-style
+    // link (xfId 11) is kept, so Excel's gallery entry still applies.
+    keyNum: 60,        // ![M]KeyOutput, whole numbers - NPV, PVI, LCOS
+    keyPct: 61,        // ![M]KeyOutput, percent 1 dp - IRR, MIRR
+    keyYears: 62,      // ![M]KeyOutput, 1 dp - DPP, which is in YEARS:
+                       // the owner's draft left it on the percent format
+                       // inherited from the MIRR row above it, which
+                       // would render 6.1 years as "610.0%".
+    keyMult: 63,       // ![M]KeyOutput, x multiple - DPI reads "1.6x"
+    keyRow: 64,        // ![M]KeyOutput, no fill - the net cash flow year
+                       // row, which the owner keeps bold but unfilled:
+                       // the grey marks the results block alone.
+    linkNum: 47,       // ![M]Link, whole numbers
+    linkDate: 53,      // ![M]Link, date
+    link1dp: 55,       // ![M]Link, 1 dp
+    linkPct: 56,       // ![M]Link, percent 1 dp (appended cellXf)
+    percentNamed: 54,  // built-in "Per cent" style (the WACC mirror)
+    check: 26,         // ![M]Check
+    checkAssump: 29,
+    checkMoney: 33,
+    checkPct: 34,
+    // Cover "Cell style map" swatches, in the owner's own order
+    mapHead: 16, mapSub: 19, mapText: 22, mapTextAlt: 23, mapTextKey: 24,
+    mapPad: 4, mapBlue: 8, mapGreen: 9, mapFill: 10, mapFillAlt: 25,
+    formulaMoney: 40, percentFormula: 41, dateFormula: 42,
+    changedFormula: 43, unused: 44, kpi: 45, special: 48, link: 38,
+  };
+
+  const BESS_STANDING_SENTENCE =
+    "Illustrative economics from the assumptions you enter, anchored on " +
+    "what comparable units observably earned. Not investment advice, not " +
+    "a valuation, and not a forecast.";
+
+  /* Builds the plain-object workbook model that Xlsx.build() turns into
+     bytes (D36/D37/D38). `c` is State.get().calc, `inputs` is
+     bessCalcEngineInputs(c, payload), the exact object already handed
+     to Metrics.bessCashflow for the chart/headline above, and `payload`
+     is bessUnitsPayload. Nothing here calls Metrics.bessCashflow itself:
+     every derived cell is an Excel formula, never a value computed in
+     JS and printed in (D38's "a cached value is a second source of
+     truth" reasoning). */
+  function bessCalcWorkbookModel(c, inputs, payload) {
+    const S = (v, s = 0) => ({ t: "s", v, s });
+    const N = (v, s = 0) => ({ t: "n", v, s });
+    const F = (v, s = 0) => ({ t: "f", v, s });
+
+    const A = BESS_AROW, D = BESS_DROW;
+    const T = Math.max(1, Math.floor(inputs.T));
+    const lastCol = bessColLetter(6 + T);
+    const g1 = bessColLetter(7); // first year column, "G" (F is year 0)
+    const toggles = bessCalcFamilyToggles(c);
+    const arb = bessCalcArbitrage(c);
+    const families = payload.percentiles.families
+      && payload.percentiles.families[c.percentile];
+    const publishedTotal = payload.percentiles[c.percentile];
+    const loadFactor = bessCalcLoadFactor(c);
+    const zone = c.connType === "T" ? bessCalcZoneTariff(payload, c.zone) : null;
+
+    /* ---------------------------------------------------------- Cover */
+    /* Layout and styling are the owner's formatted file (2026-07-31)
+       cell for cell: title on row 2, standing sentence on row 4 in
+       ![M]Comment, the six headline figures as ![M]Link mirrors of
+       the DCF sheet, the stated conventions, then that file's own
+       "Cell style map" — the legend that names every style a reader
+       will meet, reproduced verbatim so the vocabulary travels with
+       the workbook. */
+    const cover = {};
+    const X = BESS_XF;
+    cover.C2 = S("GB battery profitability calculator", X.title);
+    // Band extended across the sheet's own used width (owner request,
+    // 2026-08-01): D2 already padded the band past the title cell, but
+    // stopped there, leaving the navy bar looking cut off against
+    // Cover's own cols config (C..G, column B deliberately excluded —
+    // see the cols array below). E2/F2/G2 are the same padding style as
+    // D2, just carried the rest of the way to the sheet's true right
+    // edge, column G.
+    cover.D2 = S("", X.titlePad);
+    cover.E2 = S("", X.titlePad);
+    cover.F2 = S("", X.titlePad);
+    cover.G2 = S("", X.titlePad);
+    cover.C4 = S(BESS_STANDING_SENTENCE, X.comment);
+
+    cover.C6 = S("NPV at valuation date", X.labelBold);
+    cover.E6 = F(`DCF!$E$${D.npv}`, X.linkNum);
+    cover.C7 = S("Internal rate of return", X.labelBold);
+    cover.E7 = F(`DCF!$E$${D.irr}`, X.linkPct);
+    cover.C8 = S("MIRR (reinvestment at WACC)", X.labelBold);
+    cover.E8 = F(`DCF!$E$${D.mirr}`, X.linkPct);
+    cover.C9 = S("Discounted payback (years)", X.labelBold);
+    cover.E9 = F(`DCF!$E$${D.payback}`, X.link1dp);
+    cover.C10 = S("Profitability index (DPI)", X.labelBold);
+    cover.E10 = F(`DCF!$E$${D.dpi}`, X.link1dp);
+    cover.C11 = S("Indicative LCOS (£/MWh)", X.labelBold);
+    cover.E11 = F(`DCF!$E$${D.lcos}`, X.linkNum);
+
+    const notes = [
+      "Blue cells on a yellow fill are inputs. Every other number is a formula.",
+      "Costs are shown as positive numbers and subtracted below. The CSV " +
+        "export signs them negative; the magnitudes are the same.",
+      "Formulas carry no cached values, so this file recalculates when it " +
+        "opens. A reader that does not recalculate should use the CSV export " +
+        "instead.",
+      "IRR and MIRR are on an end-of-period basis and do not change with the " +
+        "discounting convention. MIRR finances and reinvests at WACC, and " +
+        "stays single-valued when an augmentation-year outflow gives the cash " +
+        "flow a second sign change (plain IRR then has multiple " +
+        "mathematically valid roots).",
+      "NPV above is expressed at the valuation date (blank defaults to " +
+        "commissioning). The year grid discounts straight to the valuation " +
+        "date: a discount factor above 1 means that year's cash flow is " +
+        "compounded forward to it. The commissioning-anchored figure is kept " +
+        "as a check row on the DCF sheet; the CSV export's discounted " +
+        "columns remain commissioning-anchored.",
+      "Convention: real (uninflated) sterling, pre-tax, ungeared. Enter a " +
+        "real pre-tax WACC. No terminal or residual value is included: the " +
+        "calculation period is the whole life modelled.",
+      "Year 0 and year 1 can share a calendar year: year 0 is the " +
+        "commissioning instant, year 1 the remainder of that calendar year.",
+      "TNUoS is held flat at the stated charging year's tariffs for the whole " +
+        "calculation period; real tariffs reset every charging year.",
+      "The cash flow carries no charging-cost line: the arbitrage margin is " +
+        "net of charging (s_hi less s_lo / eta), and cycling attributed to " +
+        "availability services is treated as energy-neutral. LCOS, by " +
+        "contrast, prices every discharged MWh's charge at s_lo.",
+      `Data window: ${payload.window.from} to ${payload.window.to}`,
+      `Calculator support data built: ${payload.built_at}`,
+      `TNUoS charging year: FY${payload.tnuos.year_fy} ` +
+        `${payload.tnuos.publication}, published ${payload.tnuos.published}`,
+      `Availability percentile in use: ${c.percentile}`,
+      `Valuation date in use: ${c.valuationDate || "commissioning"}`,
+    ];
+    // Owner's frame revision (2026-08-01, PVI/DPI pass): the headline
+    // block grew a sixth row (C6-C11, was C6-C10), so notes and
+    // everything below it shift down by 1 to keep the blank spacer row
+    // between the headline block and the notes.
+    notes.forEach((text, i) => { cover["C" + (13 + i)] = S(text, X.comment); });
+
+    /* The owner's "Cell style map", verbatim: a swatch cell in column C
+       carrying the style, its plain-English name in column D. Kept
+       complete rather than trimmed to the styles this export happens to
+       use, because it is the house vocabulary, not a key to this one
+       file. `mapRow` writes both cells; the swatch is a real value or
+       formula so the number format shows too. */
+    const mapTop = 13 + notes.length + 1;
+    const mapRow = (row, swatch, text, textStyle) => {
+      if (swatch) cover["C" + row] = swatch;
+      cover["D" + row] = S(text, textStyle == null ? X.mapText : textStyle);
+    };
+    cover["C" + mapTop] = S("Cell style map", X.labelBold);
+    let r = mapTop + 2;
+    cover["C" + r] = S("Inputs and references to them", X.mapHead);
+    cover["D" + r] = S("", X.mapSub); cover["E" + r] = S("", X.mapSub);
+    mapRow(r + 1, N(100, X.inputNum), "Input data (as value)");
+    mapRow(r + 2, N(0.1, X.inputPct), "Input data (as percent)");
+    mapRow(r + 3, N(0.05, X.inputPct), "Links to external files");
+    mapRow(r + 4, F("C" + (r + 1), X.link), "Assumption by reference");
+    mapRow(r + 5, N(50, X.hardNum), "Hard number");
+    r += 7;
+    cover["C" + r] = S("Calculations", X.mapHead);
+    cover["D" + r] = S("", X.mapTextAlt);
+    mapRow(r + 1, F(`C${mapTop + 3}*(1+C${mapTop + 5})`, X.formulaMoney),
+      "Formula: number");
+    mapRow(r + 2, F("C" + (mapTop + 5), X.percentFormula), "Formula: percentage");
+    mapRow(r + 3, N(Xlsx.dateSerial("2023-01-01"), X.dateFormula), "Formula: date");
+    mapRow(r + 4, F(`C${mapTop + 3}*(1+C${mapTop + 5})^(1/2)`, X.changedFormula),
+      "Formula changed in row");
+    mapRow(r + 5, S("", X.unused), "Unused cell");
+    mapRow(r + 6, F(`C${r + 4}/C${r + 1}-1`, X.kpi),
+      "Reference metric (growth, profitability)");
+    r += 8;
+    cover["C" + r] = S("Other", X.mapHead);
+    cover["D" + r] = S("", X.mapTextAlt);
+    mapRow(r + 1, F("C" + (r - 7), X.keyNum), "Key result", X.mapTextKey);
+    mapRow(r + 2, F("C" + (r - 7), X.special), "Special cell");
+    mapRow(r + 3, S("ok", X.check), "Check");
+    r += 5;
+    cover["C" + r] = S("blue color", X.mapPad);
+    cover["D" + r] = S("#0432FF", X.mapBlue);
+    cover["C" + (r + 1)] = S("green color", X.mapPad);
+    cover["D" + (r + 1)] = S("#00B050", X.mapGreen);
+    cover["C" + (r + 2)] = S("filling color", X.mapPad);
+    cover["D" + (r + 2)] = S("#FFF2CC", X.mapFill);
+    cover["C" + (r + 3)] = S("filling color", X.mapPad);
+    cover["D" + (r + 3)] = S("#90D5FF", X.mapFillAlt);
+
+    /* ----------------------------------------------------- Assumptions */
+    const a = {};
+    a.C2 = S("Assumptions", X.title);
+    // Band extended to match the sheet's own section() bands (owner
+    // request, 2026-08-01): the title used to be C2 alone, stopping
+    // visibly short of the Source column while every numbered section
+    // band below it (section(), just below) already spans B..G — the
+    // title now shares that same right edge, and the same left edge
+    // (B), so every band on this sheet lines up. X.titlePad is the
+    // navy-band-with-no-text style Cover's own D2 already uses for
+    // exactly this purpose.
+    a.B2 = S("", X.titlePad);
+    a.D2 = S("", X.titlePad);
+    a.E2 = S("", X.titlePad);
+    a.F2 = S("", X.titlePad);
+    a.G2 = S("", X.titlePad);
+    a.C4 = S("Metric", X.hdr); a.D4 = S("Units", X.hdrUnitsAssump);
+    a.E4 = S("Input", X.hdr); a.F4 = S("Source", X.hdrSource);
+
+    // Grey section band, with the section number in column B (the
+    // owner's formatted file puts it there on this sheet, and in
+    // column A on the DCF sheet).
+    const section = (row, num, title) => {
+      a["B" + row] = N(num, X.band);
+      a["C" + row] = S(title, X.band);
+      a["D" + row] = S("", X.bandUnitsAssump);
+      a["E" + row] = S("", X.band);
+      a["F" + row] = S("", X.bandSource);
+      a["G" + row] = S("", X.band);
+    };
+    const field = (row, label, unit, value, source) => {
+      a["C" + row] = S(label, X.label);
+      a["D" + row] = S(unit, X.unitsAssump);
+      a["E" + row] = value;
+      a["F" + row] = S(source, X.source);
+    };
+
+    section(6, 1, "The asset");
+    field(A.power, "Power", "MW", N(c.power != null ? c.power : 0, X.inputNum), "assumption");
+    field(A.energy, "Energy", "MWh", N(c.energy != null ? c.energy : 0, X.inputNum), "assumption");
+    field(A.duration, "Duration", "h", F(`$E$${A.energy}/$E$${A.power}`, X.formulaNum), "derived");
+    field(A.commission, "Commissioning date", "date",
+      c.commission ? N(Xlsx.dateSerial(c.commission), X.inputDate) : S("", X.inputDate),
+      c.commission ? "assumption" : "not set");
+    field(A.period, "Calculation period", "years", N(T, X.inputNum), "assumption");
+
+    section(13, 2, "Costs and finance");
+    field(A.capex, "Capital cost", "GBPk/MW", N(c.capex != null ? c.capex : 0, X.inputNum), "assumption");
+    field(A.opex, "Operating cost", "GBPk/MW/yr", N(c.opex != null ? c.opex : 0, X.inputNum), "assumption");
+    // OPEX escalation (owner request, 2026-08-01): the EFFECTIVE rate —
+    // typed, or the shipped ONS CPI default (bessCalcOpexEscDefault) —
+    // so the DCF opex formula's POWER() term always has a real number
+    // to raise, never a blank standing in for zero. Source cell says
+    // "default" (an OBSERVED ONS statistic, not a market assumption)
+    // exactly as the load-factor row's "derived" states its own
+    // fallback provenance; blank/0 either way keeps POWER()'s exponent
+    // base at 1, i.e. today's flat behaviour.
+    const opexEscDefaultForWb = bessCalcOpexEscDefault(payload);
+    const opexEscEffective = c.opexEsc != null ? c.opexEsc / 100
+      : (opexEscDefaultForWb != null ? opexEscDefaultForWb / 100 : 0);
+    field(A.opexEsc, "OPEX escalation", "%/yr",
+      N(opexEscEffective, X.inputPct),
+      c.opexEsc != null ? "assumption"
+        : (opexEscDefaultForWb != null ? "default" : "not set"));
+    // IC-review pass (owner request, 2026-07-31): one optional
+    // augmentation event. A blank year cell (like the blank dates
+    // above) keeps every age formula on the no-augmentation branch.
+    // Owner's frame revision (2026-08-01): the typed value is a year
+    // NUMBER (e.g. 5), not a magnitude, so it gets the integer input
+    // variant (no thousands comma, no decimal place) rather than the
+    // 1 dp style every other typed input on this sheet uses; the blank
+    // case is unaffected and keeps the ordinary blank input style.
+    // Calendar-year resolution (owner request, 2026-08-01): the SAME
+    // bessCalcAugYearResolved the CSV export and bessCalcEngineInputs
+    // use — the workbook's Input cell is the resolved MODEL year, never
+    // the raw typed value, so a typed "2030" and a typed "5" that
+    // resolve to the same model year drive the same formula. An
+    // unresolvable entry (no commissioning date to anchor a calendar
+    // year, or outside the T-year period) reads as "not set", same
+    // blank-cell behaviour as before this feature.
+    const augResolvedWb = bessCalcAugYearResolved(c);
+    field(A.augYear, "Augmentation year", "year no.",
+      augResolvedWb.year != null ? N(augResolvedWb.year, X.inputYear) : S("", X.inputNum),
+      augResolvedWb.year != null ? "assumption" : "not set");
+    field(A.augMwh, "Augmentation size", "MWh",
+      N(c.augMwh != null ? c.augMwh : 0, X.inputNum),
+      c.augMwh != null ? "assumption" : "not set");
+    field(A.augCostMwh, "Augmentation cost", "GBPk/MWh",
+      N(c.augCostMwh != null ? c.augCostMwh : 0, X.inputNum),
+      c.augCostMwh != null ? "assumption" : "not set");
+    // Holds the EFFECTIVE rate (the main degradation rate when the
+    // field is blank), so every tranche formula reads one cell — same
+    // always-numeric discipline as the capture-rate cell.
+    field(A.augDelta, "Augmentation tranche degradation", "%/yr",
+      N(c.augDelta != null ? c.augDelta / 100 : inputs.delta, X.inputPct),
+      c.augDelta != null ? "assumption" : "defaults to energy degradation");
+    field(A.wacc, "Discount rate (WACC)", "%", N(inputs.r, X.inputPct), "assumption");
+    field(A.midflag, "Mid-year discounting (1 = yes, 0 = end of period)", "flag",
+      N(bessCalcDiscounting(c) === "mid" ? 1 : 0, X.inputNum), "assumption");
+    // Owner request, 2026-07: valuation date and its re-anchoring
+    // factor, mirroring Metrics.reanchorNpv exactly. Blank valuation
+    // date -> factor 1 (defaults to commissioning, D30); blank
+    // commissioning date -> factor 1 too (there is no reference date to
+    // measure a span against, matching reanchorNpv's own null-safety).
+    // Nested IF rather than OR: the workbook's closed evaluator grammar
+    // (ops/xlsx_eval.py) supports both, but nested IF keeps this
+    // formula identical in shape to every other blank-guard in this
+    // sheet (e.g. A.zTotal's IF just below).
+    field(A.valuationDate, "Valuation date", "date",
+      c.valuationDate ? N(Xlsx.dateSerial(c.valuationDate), X.inputDate) : S("", X.inputDate),
+      c.valuationDate ? "assumption" : "not set (defaults to commissioning)");
+    field(A.reanchorFactor, "Re-anchoring factor, commissioning to valuation date", "x",
+      F(`IF($E$${A.valuationDate}="",1,IF($E$${A.commission}="",1,` +
+        `(1+WACC)^(($E$${A.valuationDate}-$E$${A.commission})/365.25)))`, X.formulaNum),
+      "derived");
+
+    section(26, 3, "Operation");
+    field(A.cycles, "Cycles per day", "count",
+      N(c.cycles != null ? c.cycles : 0, X.inputNum), "assumption");
+    field(A.efficiency, "Round-trip efficiency", "%", N(inputs.eta, X.inputPct),
+      "assumption");
+    field(A.degradation, "Energy degradation", "%/yr", N(inputs.delta, X.inputPct),
+      "assumption");
+    field(A.derate, "Availability derate", "%/yr", N(inputs.rho, X.inputPct),
+      c.derate != null ? "assumption" : "not set");
+
+    section(32, 4, "Market view");
+    // Owner request, 2026-07: these six family values and the published
+    // total below are figures the dashboard measured (ETL-built from the
+    // BMRS EAC auction data), never typed in and never a formula on this
+    // sheet, so they get the legend's "value from the dashboard's
+    // observed data" style (navy text, style 12) rather than the blue-
+    // on-yellow input style: that style means "type your own number
+    // here", which is not true of any cell in this block.
+    // Owner's frame revision (2026-08-01): these seven cells (the six
+    // families and the published total just below) are GBP/kW/day
+    // figures small enough that 1 dp renders as "0.0" - they get the 4
+    // dp observed variant instead. The TNUoS zone tariff cells further
+    // down keep the ordinary 1 dp observed style unchanged: those are
+    // GBP/kW, a different, larger magnitude.
+    BESS_FAMILY_CODES.forEach((fam, i) => {
+      const row = A.fam0 + i;
+      field(row, BESS_FAMILY_LABELS[fam], "GBP/kW/day",
+        N(families ? (families[fam] || 0) : 0, X.hardNum4dp), "observed");
+      a["G" + row] = N(toggles[fam] ? 1 : 0, X.inputNum);
+    });
+    field(A.famTotal, "Families selected, total", "GBP/kW/day",
+      F(`SUMPRODUCT($E$${A.fam0}:$E$${A.fam5},$G$${A.fam0}:$G$${A.fam5})`, X.formulaNum4dp), "derived");
+    field(A.availRevYr, "Availability revenue", "GBP/kW/yr",
+      F(`$E$${A.famTotal}*365`, X.formulaNum), "derived");
+    field(A.famPublished, "Published total, all families", "GBP/kW/day",
+      N(publishedTotal != null ? publishedTotal : 0, X.hardNum4dp), "observed");
+    field(A.famCheck, "Check: families reconcile to the published total", "",
+      F(`IF(ROUND(SUM($E$${A.fam0}:$E$${A.fam5})-$E$${A.famPublished},6)=0,` +
+        '"ok","check the family split")', X.checkAssump), "derived");
+    field(A.cannibalisation, "Cannibalisation", "%/yr", N(inputs.gamma, X.inputPct),
+      "assumption");
+
+    section(46, 5, "Arbitrage");
+    const arbSource = arb.manual != null ? "assumption"
+      : (arb.observed != null ? "observed" : "not set");
+    field(A.sHi, "Top-of-day price (s_hi)", "GBP/MWh",
+      N(arb.sHi != null ? arb.sHi : 0, X.hardNum), arbSource);
+    field(A.sLo, "Bottom-of-day price (s_lo)", "GBP/MWh",
+      N(arb.sLo != null ? arb.sLo : 0, X.hardNum), arbSource);
+    field(A.captureRate, "Arbitrage capture rate", "%",
+      N(c.captureRate != null ? c.captureRate / 100 : 0, X.inputPct),
+      c.captureRate != null ? "assumption" : "not set");
+    field(A.manualSpread, "Manual spread override", "GBP/MWh",
+      N(c.manualSpread != null ? c.manualSpread : 0, X.inputNum),
+      c.manualSpread != null ? "assumption" : "not set");
+    field(A.margin, "Arbitrage margin, s_hi less s_lo / eta", "GBP/MWh",
+      F(`IFERROR($E$${A.sHi}-$E$${A.sLo}/$E$${A.efficiency},0)`, X.formulaNum), "derived");
+
+    section(53, 6, "Network");
+    field(A.connType, "Connection type (T = transmission, E = distribution)",
+      "code", S(c.connType, X.inputText), "observed");
+    field(A.zone, "TNUoS zone", "no.", N(c.zone != null ? c.zone : 1, X.inputNum),
+      "reference");
+    field(A.loadFactor, "TNUoS load factor", "%", N(loadFactor, X.inputPct),
+      c.loadFactor != null ? "assumption" : "derived");
+    // TNUoS tariffs looked up from the zone table: also "value from the
+    // dashboard's observed data" (style 12), not a typed input.
+    field(A.zPeak, "SystemPeak", "GBP/kW", N(zone ? zone.peak : 0, X.hardNum), "reference");
+    field(A.zSharedYr, "SharedYearRound", "GBP/kW", N(zone ? zone.yr_shared : 0, X.hardNum), "reference");
+    field(A.zNotSharedYr, "NotSharedYearRound", "GBP/kW",
+      N(zone ? zone.yr_notshared : 0, X.hardNum), "reference");
+    field(A.zResidual, "Residual", "GBP/kW", N(zone ? zone.residual : 0, X.hardNum), "reference");
+    field(A.zTotal, "Zone total", "GBP/kW",
+      F(`IF($E$${A.connType}="E","not applicable",` +
+        `$E$${A.zPeak}+$E$${A.loadFactor}*($E$${A.zSharedYr}+$E$${A.zNotSharedYr})` +
+        `+$E$${A.zResidual})`, X.formulaNum), "derived");
+
+    /* ------------------------------------------------------------ DCF */
+    const d = {};
+    d.C2 = S("DCF", X.title);
+    // Band extended to the sheet's true last column, lastCol = 6+T
+    // (owner request, 2026-08-01): a lone D2 padding cell left the navy
+    // title bar stopping four columns short of the year grid it sits
+    // above. Looped, not hand-listed like Cover's/Assumptions' own
+    // title padding, because T (the calculation period) sets this
+    // sheet's width — unlike Cover/Assumptions, which are fixed.
+    for (let col = 4; col <= 6 + T; col++) {
+      d[bessColLetter(col) + "2"] = S("", X.titlePad);
+    }
+
+    /* Full-width section band (industry-formatting pass, 2026-07-31:
+       the reference template's numbered, bold-on-light-grey section
+       header) so a reader scrolling the grid always has a visible break
+       between sections. The navy style 2 is now reserved for the sheet
+       title alone, as in the template. Owner's frame revision
+       (2026-08-01): the running section number moves from column A to
+       column B, matching the Assumptions sheet's section() helper —
+       column A carries nothing anywhere on this sheet now, and the band
+       spans B..lastCol rather than A..lastCol.
+
+       Comment correction (owner request, 2026-08-01): this used to say
+       a "Total column insertion" had moved lastCol one column right of
+       6+T, implying the loop below was a column short. That Total
+       column does not exist — see the Headline NPV pass comment by
+       D.pv, which removed it as a hand-edit bug (a second SUM cell
+       duplicating the row's own SUM(F:lastCol) formula) — so lastCol
+       IS 6+T, exactly what the loop already uses, and always has been
+       since that fix. Verified empirically (2026-08-01) against a built
+       workbook: the year-header row's own last populated column and
+       this loop's last column are identical for every T tried. Nothing
+       here needed a functional change; only this comment was stale. */
+    const dcfBanner = (row, num, title) => {
+      for (let col = 2; col <= 6 + T; col++) {
+        const ref = bessColLetter(col) + row;
+        if (col === 2) d[ref] = N(num, X.band);
+        else if (col === 3) d[ref] = S(title, X.band);
+        else if (col === 4) d[ref] = S("", X.bandUnitsDcf);
+        else d[ref] = S("", X.band);
+      }
+    };
+
+    dcfBanner(D.genBanner, 1, "General assumptions");
+    // Owner request, 2026-07: these four are PURE `=Assumptions!$E$...`
+    // links (nothing computed here), so they take the green "reference
+    // to another sheet" style, not the black formula style a same-sheet
+    // calculation would use. genFrac1 just below stays black: its
+    // formula uses DATE/YEAR over $D$genCommission, a cell on THIS
+    // sheet, so it is a same-sheet formula, not a cross-sheet reference.
+    d["C" + D.genPeriod] = S("Calculation period", X.label);
+    d["D" + D.genPeriod] = F(`Assumptions!$E$${A.period}`, X.linkNum);
+    d["C" + D.genCommission] = S("Commissioning date", X.label);
+    d["D" + D.genCommission] = F(`Assumptions!$E$${A.commission}`, X.linkDate);
+    d["C" + D.genWacc] = S("Discount rate (WACC)", X.label);
+    d["D" + D.genWacc] = F(`Assumptions!$E$${A.wacc}`, X.percentNamed);
+    d["C" + D.genMidflag] = S("Mid-year discounting flag", X.label);
+    d["D" + D.genMidflag] = F(`Assumptions!$E$${A.midflag}`, X.link1dp);
+    d["C" + D.genFrac1] = S("Fraction of year 1 remaining", X.label);
+    d["D" + D.genFrac1] = F(
+      `IF($D$${D.genCommission}="",1,` +
+      `(DATE(YEAR($D$${D.genCommission})+1,1,1)-$D$${D.genCommission})/` +
+      `(DATE(YEAR($D$${D.genCommission})+1,1,1)-DATE(YEAR($D$${D.genCommission}),1,1)))`,
+      X.formulaNum);
+    // Valuation-date-anchored grid pass (owner decision, 2026-08-01):
+    // the span, in years, from commissioning to the valuation date -
+    // zero when either date is blank, the same null-safety the
+    // re-anchoring factor cell on Assumptions uses. The Discount
+    // factor row below subtracts this from every year's discount
+    // period, so the grid itself anchors at the valuation date rather
+    // than at commissioning (the headline no longer needs to multiply
+    // by a separate re-anchoring factor after the fact).
+    d["C" + D.genYearsToVal] = S("Years, commissioning to valuation date", X.label);
+    d["D" + D.genYearsToVal] = F(
+      `IF(Assumptions!$E$${A.valuationDate}="",0,IF($D$${D.genCommission}="",0,` +
+      `(Assumptions!$E$${A.valuationDate}-$D$${D.genCommission})/365.25))`,
+      X.formulaNum);
+
+    d["C" + D.hdr] = S("Metric", X.hdr); d["D" + D.hdr] = S("Units", X.hdrUnitsDcf);
+    d["E" + D.hdr] = S("Input", X.hdr); d["F" + D.hdr] = N(0, X.hdr);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n), prev = bessColLetter(5 + n);
+      d[col + D.hdr] = F(`${prev}${D.hdr}+1`, X.hdr);
+    }
+
+    // Calendar year row (owner decision, 2026-08-01): directly beneath
+    // the year-number header, same header-band style, so a reader can
+    // map a year column to a calendar year without counting across the
+    // grid. Year 0 and the year-1 stub deliberately share the
+    // commissioning calendar year (year 0 is not "the year before
+    // commissioning"); every later column adds the header's own year
+    // number less one.
+    d["C" + D.calYear] = S("Calendar year", X.hdr);
+    d["D" + D.calYear] = S("", X.hdrUnitsDcf);
+    // The Input column carries no calendar year, but it must still carry
+    // the band's rule: an unwritten cell breaks the medium underline
+    // between Units and year 0 (owner review, 2026-08-01).
+    d["E" + D.calYear] = S("", X.hdr);
+    d["F" + D.calYear] = F(
+      `IF($D$${D.genCommission}="","",YEAR($D$${D.genCommission}))`, X.hdr);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n);
+      d[col + D.calYear] = F(
+        `IF($D$${D.genCommission}="","",YEAR($D$${D.genCommission})+${col}$${D.hdr}-1)`,
+        X.hdr);
+    }
+
+    /* Year rows sharing one shape: label/unit in C/D, a literal at F
+       (year 0) and one formula template applied across G..last (years
+       1..T). `f0` may be a plain number (every current caller: year 0
+       has no operating activity on these rows) or a formula-typed cell
+       object for a row whose year-0 value is itself a formula over
+       that same column's other rows — every row that actually needs
+       that (discount factor, PV, cumulative PV, capex, net cash flow,
+       the MIRR legs) is hand-coded below instead, precisely so its
+       year-0 formula sits visibly beside its own C/D label rather than
+       hidden in a function argument; this branch exists for symmetry
+       with those, not because a caller currently uses it. */
+    const yearRow = (row, label, unit, template, style, f0) => {
+      d["C" + row] = S(label, X.label);
+      d["D" + row] = S(unit, X.unitsDcf);
+      // Year 0 is a hardcoded literal on the operating rows (![M]HardNumber),
+      // not a formula, and the owner's file styles it as one.
+      d["F" + row] = (f0 && f0.t) ? f0 : N(f0 || 0, X.hardNum);
+      for (let n = 1; n <= T; n++) {
+        const col = bessColLetter(6 + n);
+        d[col + row] = F(template(col), style);
+      }
+    };
+
+    dcfBanner(D.revBanner, 2, "Revenue build-up");
+    yearRow(D.frac, "Year fraction", "x",
+      (col) => `IF(${col}$${D.hdr}=1,$D$${D.genFrac1},1)`, X.formula2dp, 0);
+    yearRow(D.gamma, "Cannibalisation factor", "x",
+      (col) => `(1-Assumptions!$E$${A.cannibalisation})^(${col}$${D.hdr}-1)`, X.formula2dp, 0);
+    // Effective age (IC-review pass, 2026-07-31): years since the later
+    // of commissioning and the augmentation event. The energy
+    // degradation and availability derate exponents both read this row,
+    // so the piecewise reset logic exists exactly once and is visible
+    // to the reader. Cannibalisation above deliberately does NOT read
+    // it: gamma is a market view on the calendar clock.
+    // Two cell tranches (vintage revision, 2026-07-31): the original
+    // cells degrade on their own clock forever; the augmentation
+    // tranche joins at the start of its year and degrades at its own
+    // rate. The nested-IF blank-year guard is the re-anchoring factor's
+    // idiom, and load-bearing: a blank year cell must never reach the
+    // >= comparison (Excel would coerce "text > every number"; the
+    // closed evaluator grammar refuses the mixed comparison outright).
+    yearRow(D.tr1, "Usable energy, original tranche", "MWh",
+      (col) => `Assumptions!$E$${A.energy}*(1-Assumptions!$E$${A.degradation})^` +
+        `(${col}$${D.hdr}-1)`, X.formulaNum, 0);
+    yearRow(D.tr2, "Usable energy, augmentation tranche", "MWh",
+      (col) => `IF(Assumptions!$E$${A.augYear}="",0,` +
+        `IF(AND(Assumptions!$E$${A.augMwh}>0,Assumptions!$E$${A.augCostMwh}>0,` +
+        `${col}$${D.hdr}>=Assumptions!$E$${A.augYear}),` +
+        `Assumptions!$E$${A.augMwh}*(1-Assumptions!$E$${A.augDelta})^` +
+        `(${col}$${D.hdr}-Assumptions!$E$${A.augYear}),0))`, X.formulaNum, 0);
+    // Capacity-weighted cell age: what the availability derate
+    // compounds on. The IF inside the numerator zeroes the (negative
+    // pre-augmentation) tranche-2 age term the same way the tranche-2
+    // capacity itself is zero there; IFERROR covers the degenerate
+    // zero-capacity denominator with the no-augmentation age n-1.
+    yearRow(D.wage, "Capacity-weighted cell age", "years",
+      (col) => `IFERROR((${col}${D.tr1}*(${col}$${D.hdr}-1)` +
+        `+${col}${D.tr2}*IF(Assumptions!$E$${A.augYear}="",0,` +
+        `${col}$${D.hdr}-Assumptions!$E$${A.augYear}))` +
+        `/(${col}${D.tr1}+${col}${D.tr2}),${col}$${D.hdr}-1)`, X.formula2dp, 0);
+    yearRow(D.usable, "Usable energy", "MWh",
+      (col) => `(${col}${D.tr1}+${col}${D.tr2})*${col}${D.frac}`, X.formulaNum, 0);
+    yearRow(D.discharged, "Discharged energy", "MWh",
+      (col) => `365*Assumptions!$E$${A.cycles}*${col}${D.usable}`, X.formulaNum, 0);
+    yearRow(D.avail, "Availability revenue", "GBP",
+      (col) => `Assumptions!$E$${A.availRevYr}*1000*Assumptions!$E$${A.power}*` +
+        `${col}${D.gamma}*${col}${D.frac}*` +
+        `(1-Assumptions!$E$${A.derate})^${col}${D.wage}`, X.formulaNum, 0);
+    yearRow(D.arb, "Arbitrage revenue", "GBP",
+      (col) => `${col}${D.discharged}*Assumptions!$E$${A.margin}*` +
+        `Assumptions!$E$${A.captureRate}*${col}${D.gamma}`, X.formulaNum, 0);
+    yearRow(D.rev, "Total revenue", "GBP",
+      (col) => `SUM(${col}${D.avail}:${col}${D.arb})`, X.formulaNum, 0);
+    dcfBanner(D.costsBanner, 3, "Costs");
+    // OPEX escalation (owner request, 2026-08-01): POWER(1+esc, year-1)
+    // so year 1 is always the unescalated base, matching
+    // Metrics.bessCashflow's own (1+opexEsc)^(n-1) exactly. TNUoS below
+    // is deliberately NOT escalated (published tariff), and the
+    // augmentation capex row further down is a one-off typed cost with
+    // nothing to escalate either.
+    yearRow(D.opex, "Operating cost", "GBP",
+      (col) => `Assumptions!$E$${A.opex}*1000*Assumptions!$E$${A.power}*${col}${D.frac}` +
+        `*POWER(1+Assumptions!$E$${A.opexEsc},${col}$${D.hdr}-1)`, X.formulaNum, 0);
+    yearRow(D.tnuos, "Network charge (TNUoS)", "GBP",
+      (col) => `IF(Assumptions!$E$${A.connType}="E",0,` +
+        `Assumptions!$E$${A.zTotal}*1000*Assumptions!$E$${A.power}*${col}${D.frac})`, X.formulaNum, 0);
+    yearRow(D.cost, "Total operating costs", "GBP",
+      (col) => `SUM(${col}${D.opex}:${col}${D.tnuos})`, X.formulaNum, 0);
+    yearRow(D.netop, "Net operating cash flow", "GBP",
+      (col) => `${col}${D.rev}-${col}${D.cost}`, X.formulaNum, 0);
+
+    d["C" + D.capex] = S("Capital expenditure", X.label);
+    d["D" + D.capex] = S("GBP", X.unitsDcf);
+    d["F" + D.capex] = F(`-Assumptions!$E$${A.capex}*1000*Assumptions!$E$${A.power}`,
+      X.formulaNum);
+    // Year columns carry the augmentation outflow in its year (a blank
+    // augmentation-year cell never equals a year number, so the whole
+    // row is zero when the event is not set — and a zero cost writes a
+    // zero either way).
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n);
+      d[col + D.capex] = F(`IF(Assumptions!$E$${A.augYear}=${col}$${D.hdr},` +
+        `-Assumptions!$E$${A.augCostMwh}*1000*Assumptions!$E$${A.augMwh},0)`, X.formulaNum);
+    }
+
+    d["C" + D.netcf] = S("Net cash flow", X.labelBold);
+    d["D" + D.netcf] = S("GBP", X.unitsBold);
+    d["F" + D.netcf] = F(`F${D.netop}+F${D.capex}`, X.keyRow);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n);
+      d[col + D.netcf] = F(`${col}${D.netop}+${col}${D.capex}`, X.keyRow);
+    }
+
+    dcfBanner(D.discBanner, 4, "Discounting");
+    yearRow(D.permid, "Discount period, mid-year", "x",
+      (col) => `IF(${col}$${D.hdr}=1,1-$D$${D.genFrac1}/2,${col}$${D.hdr}-0.5)`, X.formula2dp, 0);
+    yearRow(D.perend, "Discount period, end of period", "x",
+      (col) => `${col}$${D.hdr}`, X.formula2dp, 0);
+    yearRow(D.perapp, "Discount period applied", "x",
+      (col) => `IF($D$${D.genMidflag}=1,${col}${D.permid},${col}${D.perend})`, X.formula2dp, 0);
+
+    // Valuation-date-anchored grid pass (owner decision, 2026-08-01):
+    // every column's discount period now has the commissioning-to-
+    // valuation-date span subtracted before it is raised to the WACC
+    // power, so the row discounts (or, for a pre-valuation year,
+    // compounds forward) straight to the valuation date. Year 0 shares
+    // the same formula as every other column: its perapp is 0, so its
+    // factor exceeds 1 whenever a valuation date is set, which is
+    // correct - t=0 money expressed at a later valuation date is worth
+    // more, not less.
+    d["C" + D.factor] = S("Discount factor (to the valuation date)", X.label);
+    d["D" + D.factor] = S("x", X.unitsDcf);
+    d["F" + D.factor] = F(
+      `1/(1+WACC)^(F${D.perapp}-$D$${D.genYearsToVal})`, X.formula2dp);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n);
+      d[col + D.factor] = F(
+        `1/(1+WACC)^(${col}${D.perapp}-$D$${D.genYearsToVal})`, X.formula2dp);
+    }
+
+    // Headline NPV pass (owner decision, 2026-08-01, fixing a hand-edit
+    // bug): NO Total column here any more, so the headline below reads
+    // SUM(F:last) directly across this row — the row itself carries no
+    // separate SUM cell (a second one would be a second source of
+    // truth for the exact same total). Every cell, F included, is that
+    // column's own PV; the row is already valuation-anchored via the
+    // Discount factor row above, so nothing here multiplies by a
+    // re-anchoring factor a second time.
+    d["C" + D.pv] = S("Present value at the valuation date", X.label);
+    d["D" + D.pv] = S("GBP", X.unitsDcf);
+    d["F" + D.pv] = F(`F${D.netcf}*F${D.factor}`, X.formulaNum);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n);
+      d[col + D.pv] = F(`${col}${D.netcf}*${col}${D.factor}`, X.formulaNum);
+    }
+
+    d["C" + D.cumpv] = S("Cumulative present value", X.label);
+    d["D" + D.cumpv] = S("GBP", X.unitsDcf);
+    d["F" + D.cumpv] = F(`F${D.pv}`, X.formulaNum);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n), prev = bessColLetter(5 + n);
+      d[col + D.cumpv] = F(`${prev}${D.cumpv}+${col}${D.pv}`, X.formulaNum);
+    }
+
+    // DPP pass (owner decision, 2026-08-01): the undiscounted
+    // "Cumulative net cash flow" row is gone — a discounted payback
+    // period tests and interpolates on the row above (Cumulative
+    // present value) instead, never on undiscounted flows.
+    d["C" + D.flag] = S("Payback reached this year", X.label);
+    d["D" + D.flag] = S("flag", X.unitsDcf);
+    d["F" + D.flag] = N(0, X.hardNum);
+    // First crossing only (IC-review pass): augmentation capex can push
+    // the cumulative line back below zero after a crossing, and the
+    // headline payback formula SUMPRODUCTs over these flags assuming
+    // exactly one is set — so every column after the first also
+    // requires that no earlier flag fired, matching the engine's own
+    // first-crossing return.
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n), prev = bessColLetter(5 + n);
+      d[col + D.flag] = (n === 1)
+        ? F(`IF(AND(${prev}${D.cumpv}<0,${col}${D.cumpv}>=0),1,0)`, X.formulaNum)
+        : F(`IF(AND(${prev}${D.cumpv}<0,${col}${D.cumpv}>=0,` +
+            `SUM(${g1}${D.flag}:${prev}${D.flag})=0),1,0)`, X.formulaNum);
+    }
+
+    /* LCOS's own discount factor, deliberately separate from D.factor:
+       Metrics.lcos/ops' lcos() discount every LCOS term at a plain
+       (1+r)^n, the same "end-of-period, unconditionally" shape as IRR
+       and simple payback (metrics.js/lcos: `Math.pow(1 + r, n)`, no
+       discountExponent call at all), so LCOS does NOT move with the
+       mid-year/end-of-period toggle, unlike NPV's own PV row. Built off
+       D.perend (already `=c$10` unconditionally, regardless of the
+       flag) rather than D.perapp, so this row stays correct even when
+       the convention flag is 1. */
+    d["C" + D.factorEnd] = S("Discount factor, end-of-period (for LCOS)", X.label);
+    d["D" + D.factorEnd] = S("x", X.unitsDcf);
+    d["F" + D.factorEnd] = F(`1/(1+WACC)^F${D.perend}`, X.formula2dp);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n);
+      d[col + D.factorEnd] = F(`1/(1+WACC)^${col}${D.perend}`, X.formula2dp);
+    }
+
+    yearRow(D.charge, "Charging cost", "GBP",
+      (col) => `${col}${D.discharged}/Assumptions!$E$${A.efficiency}*Assumptions!$E$${A.sLo}`,
+      X.formulaNum, 0);
+    yearRow(D.lcosCost, "Discounted costs for LCOS", "GBP",
+      (col) => `(${col}${D.opex}+${col}${D.tnuos}+${col}${D.charge}` +
+        `-${col}${D.capex})*${col}${D.factorEnd}`, X.formulaNum, 0);
+    yearRow(D.lcosEnergy, "Discounted discharged energy", "MWh",
+      (col) => `${col}${D.discharged}*${col}${D.factorEnd}`, X.formulaNum, 0);
+
+    // MIRR's two legs (owner request, 2026-07-31): positive net cash
+    // flows compound forward to the horizon and negative ones discount
+    // back to t=0, both at WACC, on the same end-of-period basis as
+    // IRR. Kept as visible rows rather than a single opaque formula so
+    // a reader can audit which years sit on which side.
+    yearRow(D.mirrPos, "Positive net cash flow, compounded to horizon", "GBP",
+      (col) => `MAX(${col}${D.netcf},0)*` +
+        `(1+WACC)^($D$${D.genPeriod}-${col}$${D.hdr})`, X.formulaNum, 0);
+    d["C" + D.mirrNeg] = S("Negative net cash flow, discounted to t=0", X.label);
+    d["D" + D.mirrNeg] = S("GBP", X.unitsDcf);
+    d["F" + D.mirrNeg] = F(`MIN(F${D.netcf},0)`, X.formulaNum);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n);
+      d[col + D.mirrNeg] = F(
+        `MIN(${col}${D.netcf},0)/(1+WACC)^${col}$${D.hdr}`, X.formulaNum);
+    }
+
+    // PVI pass (owner decision, 2026-08-01): the year-by-year present
+    // value of investment, directly beside the MIRR helper rows since
+    // it is another discounted-at-WACC helper feeding a headline
+    // result rather than a headline row itself. Positive magnitudes
+    // (capex_gbp is negative in an augmentation year, so the sign
+    // flips here) — the owner's first draft left this row negative,
+    // which flips the DPI's meaning; corrected.
+    d["C" + D.pviRow] = S("Present value of investment", X.label);
+    d["D" + D.pviRow] = S("GBP", X.unitsDcf);
+    d["F" + D.pviRow] = F(`-F${D.capex}*F${D.factor}`, X.formulaNum);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n);
+      d[col + D.pviRow] = F(`-(${col}${D.capex})*${col}${D.factor}`, X.formulaNum);
+    }
+
+    dcfBanner(D.resultsBanner, 5, "Headline results");
+    // Valuation-date-anchored grid pass (owner decision, 2026-08-01),
+    // fixing a hand-edit bug: the row above is already valuation-
+    // anchored via the Discount factor row, so the headline is a plain
+    // SUM across it, with NO separate re-anchoring multiplication (a
+    // second x factor here would double-count the one the Discount
+    // factor row already applies). See the check row below for the
+    // commissioning-anchored figure.
+    d["C" + D.npv] = S("NPV at valuation date", X.labelBold);
+    d["D" + D.npv] = S("GBP", X.unitsBold);
+    d["E" + D.npv] = F(`SUM(F${D.pv}:${lastCol}${D.pv})`, X.keyNum);
+    d["C" + D.irr] = S("Internal rate of return (end-of-period basis)", X.labelBold);
+    d["D" + D.irr] = S("%", X.unitsBold);
+    d["E" + D.irr] = F(`IFERROR(IRR(F${D.netcf}:${lastCol}${D.netcf}),"no IRR")`,
+      X.keyPct);
+    // MIRR sits BESIDE IRR, not instead of it (owner request,
+    // 2026-07-31): an augmentation-year outflow gives the series a
+    // second sign change, and plain IRR then has multiple valid roots;
+    // MIRR (financing and reinvestment both at WACC) is single-valued.
+    d["C" + D.mirr] = S("MIRR (finance and reinvestment at WACC)", X.labelBold);
+    d["D" + D.mirr] = S("%", X.unitsBold);
+    d["E" + D.mirr] = F(
+      `IFERROR(IF(SUM(${g1}${D.mirrPos}:${lastCol}${D.mirrPos})=0,"n/a",` +
+      `(SUM(${g1}${D.mirrPos}:${lastCol}${D.mirrPos})` +
+      `/(0-SUM(F${D.mirrNeg}:${lastCol}${D.mirrNeg})))` +
+      `^(1/$D$${D.genPeriod})-1),"n/a")`, X.keyPct);
+    // DPP pass (owner decision, 2026-08-01): Simple payback is retired
+    // from the workbook (Metrics.simplePayback stays in the engine for
+    // any external caller, but nothing here builds it any more) in
+    // favour of the discounted payback period — interpolation on the
+    // PV row, NOT the net-cash-flow row, so the crossing test and the
+    // fraction both use figures that already carry the mid-year/end
+    // toggle and the year-1 stub (the owner's first draft mixed
+    // undiscounted flows into a discounted interpolation; corrected).
+    d["C" + D.payback] = S("Discounted payback period (DPP)", X.labelBold);
+    d["D" + D.payback] = S("years", X.unitsBold);
+    d["E" + D.payback] = F(
+      `IF(SUM(${g1}${D.flag}:${lastCol}${D.flag})=0,"no payback",` +
+      `SUMPRODUCT(${g1}${D.flag}:${lastCol}${D.flag},${g1}$${D.hdr}:${lastCol}$${D.hdr})-1` +
+      `+(SUMPRODUCT(${g1}${D.flag}:${lastCol}${D.flag},${g1}${D.pv}:${lastCol}${D.pv})` +
+      `-SUMPRODUCT(${g1}${D.flag}:${lastCol}${D.flag},${g1}${D.cumpv}:${lastCol}${D.cumpv}))` +
+      `/SUMPRODUCT(${g1}${D.flag}:${lastCol}${D.flag},${g1}${D.pv}:${lastCol}${D.pv}))`,
+      X.keyYears);
+    d["C" + D.pvi] = S("Present value of investment (PVI)", X.labelBold);
+    d["D" + D.pvi] = S("GBP", X.unitsBold);
+    d["E" + D.pvi] = F(`SUM(F${D.pviRow}:${lastCol}${D.pviRow})`, X.keyNum);
+    d["C" + D.dpi] = S("Discounted profitability index (DPI)", X.labelBold);
+    d["D" + D.dpi] = S("x", X.unitsBold);
+    d["E" + D.dpi] = F(`IFERROR(1+E${D.npv}/E${D.pvi},"n/a")`, X.keyMult);
+    d["C" + D.lcos] = S("Indicative LCOS", X.labelBold);
+    d["D" + D.lcos] = S("GBP/MWh", X.unitsBold);
+    d["E" + D.lcos] = F(
+      `IFERROR((-F${D.capex}+SUM(${g1}${D.lcosCost}:${lastCol}${D.lcosCost}))/` +
+      `SUM(${g1}${D.lcosEnergy}:${lastCol}${D.lcosEnergy}),"n/a")`, X.keyNum);
+    dcfBanner(D.checksBanner, 6, "Checks");
+    d["C" + D.npvChk] = S("Check: Excel NPV() on the end-of-period convention",
+      X.check);
+    d["D" + D.npvChk] = S("GBP", X.check);
+    // Valuation-date-anchored grid pass: multiplied by the Assumptions
+    // re-anchoring factor so this end-of-period cross-check reconciles
+    // with the headline above in every case (the factor is 1 when no
+    // valuation date is set, so the two coincide then as before). This
+    // check row's own NPV() is commissioning-based, unlike the
+    // headline, so it keeps the x factor the headline no longer needs.
+    d["E" + D.npvChk] = F(
+      `IF($D$${D.genMidflag}=1,"n/a (mid-year)",` +
+      `(NPV(WACC,${g1}${D.netcf}:${lastCol}${D.netcf})+F${D.netcf})` +
+      `*Assumptions!$E$${A.reanchorFactor})`, X.checkMoney);
+    // Owner request, 2026-07: the commissioning-anchored NPV, retained as
+    // a labelled check row rather than dropped, so a reader can see the
+    // pre-re-anchoring figure. Valuation-date-anchored grid pass
+    // (2026-08-01): still derived from the headline by DIVIDING OUT the
+    // re-anchoring factor, since the headline itself no longer carries
+    // that factor as a multiplication (the year grid anchors at the
+    // valuation date directly) - the factor is 1 when no valuation date
+    // is set, so headline and check row coincide then, as before.
+    d["C" + D.npvAtCommission] = S("Check: net present value at commissioning",
+      X.check);
+    d["D" + D.npvAtCommission] = S("GBP", X.check);
+    d["E" + D.npvAtCommission] = F(
+      `E${D.npv}/Assumptions!$E$${A.reanchorFactor}`, X.checkMoney);
+    // Owner request, 2026-07-31: the native-function cross-check, the
+    // exact pattern the NPV() check row above established — the
+    // headline MIRR stays built from its two visible legs (auditable,
+    // and independently verified primitive-by-primitive), and this row
+    // lets an Excel-fluent reader confirm the native function lands on
+    // the same figure. Both rates at WACC; range spans years 0..T, so
+    // Excel's n = count-1 = T matches the legs' horizon exactly.
+    d["C" + D.mirrChk] = S("Check: Excel MIRR() against the built-up rows", X.check);
+    d["D" + D.mirrChk] = S("%", X.check);
+    d["E" + D.mirrChk] = F(
+      `IFERROR(MIRR(F${D.netcf}:${lastCol}${D.netcf},WACC,WACC),"n/a")`,
+      X.checkPct);
+
+    return {
+      definedNames: [{ name: "WACC", ref: `DCF!$D$${D.genWacc}` }],
+      // Column widths come from the owner's formatted file (picture-
+      // frame revision, 2026-08-01), measured cell for cell rather than
+      // carried forward from the earlier industry-formatting pass: no
+      // per-column default style entry any more (a reader typing beside
+      // the model gets whatever font the "Normal" style/theme resolve
+      // to, not a forced override), and column A on DCF deliberately
+      // has NO width entry - it holds nothing, unlike Cover's and
+      // Assumptions' own column A, which stays empty of content but
+      // still gets the owner's measured width.
+      sheets: [
+        { name: "Cover",
+          cols: [[1, 1, 10.8], [3, 3, 11.3], [4, 4, 13.8], [5, 5, 20],
+                 [6, 6, 10.8], [7, 7, 10.8]],
+          freeze: 0, cells: cover },
+        { name: "Assumptions",
+          cols: [[1, 1, 10.8], [2, 2, 4], [3, 3, 43], [4, 4, 14],
+                 [5, 5, 14], [6, 6, 12], [7, 7, 10]],
+          freeze: 4, cells: a },
+        { name: "DCF",
+          // Year columns G onward (owner request, 2026-08-01): the
+          // measured widths above stop at F (year 0) and left every
+          // later year column at Excel's ~8.4 default, which renders a
+          // seven-digit discounted figure as #####, not a number. The
+          // year grid takes the F column's own measured width, 12.7 —
+          // one rule for the whole run, deterministic (no bestFit),
+          // exactly like every other width on this sheet.
+          cols: [[2, 2, 4], [3, 3, 42.5], [4, 4, 12], [5, 5, 16],
+                 [6, 6, 12.7], [7, 6 + T, 12.7]],
+          freeze: D.calYear, zoom: 75, cells: d },
+      ],
+    };
+  }
+
+  /* D35's glue: same enablement guard as the CSV export above (missing
+     required inputs, payload not ready, or an input set the engine
+     itself refuses all block the download identically), same filename
+     convention (D35: gb_bess_calculator_<percentile>.xlsx against the
+     CSV's .csv), session-only Blob download. */
+  function downloadBessCalcXlsx() {
+    const c = State.get().calc;
+    if (bessCalcMissingLabels(c).length || bessUnitsState !== "ready") return;
+    const inputs = bessCalcEngineInputs(c, bessUnitsPayload);
+    if (!Metrics.bessCashflow(inputs)) return;
+    const bytes = Xlsx.build(bessCalcWorkbookModel(c, inputs, bessUnitsPayload));
+    const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-" +
+      "officedocument.spreadsheetml.sheet" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `gb_bess_calculator_${c.percentile}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function bessCalculator() {
+    wireBessCalc();
+    ensureBessUnitsLoaded();
+
+    const c = State.get().calc;
+    updateBessCalcLiveFields(c);
+
+    // Owner request, 2026-07: always visible, regardless of which branch
+    // below this point returns early — the reader must be able to see
+    // what t=0 means even before a valid cash flow exists.
+    const anchorEl = document.getElementById("bess-calc-anchor");
+    if (anchorEl) anchorEl.textContent = bessCalcAnchorLine(c);
+
+    const headlineEl = document.getElementById("bess-calc-headline");
+    const emptyEl = document.getElementById("bess-calc-empty");
+    const chartEl = document.getElementById("ch-bess-calc");
+    const csvBtn = document.getElementById("bess-calc-csv");
+    const xlsxBtn = document.getElementById("bess-calc-xlsx");
+    const captionEl = document.getElementById("bess-calc-caption");
+    // Deliberately outside the guard above, null-checked at each use like
+    // captionEl: a stale results panel missing these two must still
+    // render the five headline figures, not refuse the whole card.
+    const mixEl = document.getElementById("bess-calc-mix");
+    const sensEl = document.getElementById("bess-calc-sens");
+    // The chart-view toggle row (D20, Feature 2): hidden together with
+    // chartEl in every branch below, never shown while the chart itself
+    // has nothing to show — a visible toggle above an empty chart reads
+    // as broken, not as a choice.
+    const chartToggleEl = document.getElementById("bess-calc-chart-toggle");
+    const clearExtras = () => {
+      if (mixEl) { mixEl.textContent = ""; mixEl.classList.add("hidden"); }
+      if (sensEl) { sensEl.innerHTML = ""; sensEl.classList.add("hidden"); }
+      if (chartToggleEl) chartToggleEl.classList.add("hidden");
+    };
+    if (!headlineEl || !emptyEl || !chartEl || !csvBtn || !xlsxBtn) return;
+
+    const missing = bessCalcMissingLabels(c);
+    if (missing.length) {
+      headlineEl.innerHTML = "";
+      emptyEl.classList.remove("hidden");
+      emptyEl.innerHTML = `<div class="calc-missing">Enter the required
+        inputs to see a cash flow:<ul>${
+          missing.map((m) => `<li>${m}</li>`).join("")}</ul></div>`;
+      chartEl.classList.add("hidden");
+      chart("ch-bess-calc").clear();
+      csvBtn.classList.add("hidden");
+      xlsxBtn.classList.add("hidden");
+      if (captionEl) captionEl.textContent = "";
+      clearExtras();
+      return;
+    }
+
+    if (bessUnitsState !== "ready") {
+      headlineEl.innerHTML = "";
+      emptyEl.classList.remove("hidden");
+      emptyEl.innerHTML = bessUnitsState === "error"
+        ? `No calculator support data available, run
+           <code>python etl/build_bess_units.py</code> to build it.`
+        : "Loading calculator reference data…";
+      chartEl.classList.add("hidden");
+      chart("ch-bess-calc").clear();
+      csvBtn.classList.add("hidden");
+      xlsxBtn.classList.add("hidden");
+      if (captionEl) captionEl.textContent = "";
+      clearExtras();
+      return;
+    }
+
+    const inputs = bessCalcEngineInputs(c, bessUnitsPayload);
+    const cf = Metrics.bessCashflow(inputs);
+    if (!cf) {
+      headlineEl.innerHTML = "";
+      emptyEl.classList.remove("hidden");
+      emptyEl.textContent = "Enter valid numeric assumptions to see a cash flow.";
+      chartEl.classList.add("hidden");
+      chart("ch-bess-calc").clear();
+      csvBtn.classList.add("hidden");
+      xlsxBtn.classList.add("hidden");
+      clearExtras();
+      return;
+    }
+
+    emptyEl.classList.add("hidden");
+    chartEl.classList.remove("hidden");
+    csvBtn.classList.remove("hidden");
+    xlsxBtn.classList.remove("hidden");
+    if (chartToggleEl) {
+      chartToggleEl.classList.remove("hidden");
+      chartToggleEl.querySelectorAll("[data-chart-view]").forEach((btn) => {
+        const active = btn.dataset.chartView === bessCalcChartView;
+        btn.classList.toggle("active", active);
+        btn.setAttribute("aria-pressed", String(active));
+      });
+    }
+
+    const years = cf.rows.filter((r) => r.year >= 1);
+    const cashflows = years.map((r) => r.net_cashflow_gbp);
+    // Headline NPV is passed the same discounting convention and stub
+    // fraction as bessCashflow used to build cf.rows, so it matches the
+    // chart's cumulative-discounted line exactly. IRR stays convention-
+    // independent (undiscounted flows), per Metrics.npv/irr's own docs.
+    const frac1 = Metrics.yearFractionRemaining(inputs.y0);
+    const npvAtCommissioning = Metrics.npv(cf.c0, cashflows, inputs.r, inputs.discounting, frac1);
+    // Owner request, 2026-07: re-anchor the commissioning-basis NPV above
+    // to the valuation date in effect (D30 default: blank -> commissioning,
+    // factor 1, so this is a no-op until the field is used). The chart's
+    // cumulative-discounted line is re-anchored by the identical function
+    // just below, so the line and this headline always agree.
+    const valuationDateInUse = bessCalcEffectiveValuationDate(c);
+    const npvValue = Metrics.reanchorNpv(
+      npvAtCommissioning, inputs.r, inputs.y0, valuationDateInUse);
+    const irrValue = Metrics.irr(cf.c0, cashflows);
+    // DPI tile (owner decision, 2026-08-01), replacing MIRR on screen —
+    // the workbook keeps its MIRR row, so nothing is lost from the
+    // export. 1 + NPV/PVI, the workbook's own DPI formula. Both terms
+    // on the commissioning basis: re-anchoring to a valuation date
+    // scales NPV and PVI by the identical factor, so the ratio is
+    // anchor-invariant and needs no reanchorNpv pass (see
+    // pviAtCommissioning's docstring).
+    const pviValue = Metrics.pviAtCommissioning(
+      cf.c0, cf.rows, inputs.r, inputs.discounting, frac1);
+    const dpiValue = pviValue > 0 ? 1 + npvAtCommissioning / pviValue : null;
+    // Discounted payback (owner decision, 2026-08-01), replacing simple
+    // payback on this tile: interpolates on cf.rows' own discounted
+    // figures, so it is convention-aware (moves with the mid-year/end
+    // toggle) and anchor-invariant (unaffected by the valuation date —
+    // see Metrics.discountedPayback's own docstring for why neither
+    // needs a re-anchoring pass here).
+    const paybackValue = Metrics.discountedPayback(cf.rows);
+    // LCOS's charging-energy term prices at the observed bottom-of-day
+    // mean (s_lo), and only when the observed feed is what is actually
+    // in use (no manual override, and a real spread was computed) —
+    // a manual override is an assumed FULL margin, not an observed
+    // bottom-of-day price, so it has nothing valid to feed this term.
+    const arbForLcos = bessCalcArbitrage(c);
+    const lcosSlo = arbForLcos.observedFeedActive ? arbForLcos.sLo : null;
+    const lcosValue = Metrics.lcos(cf.c0, cf.rows, inputs.r, inputs.eta, lcosSlo);
+
+    const fmtGbp = (v) => (v == null ? "—"
+      : (v < 0 ? "-£" : "£") + Math.abs(v).toLocaleString("en-GB",
+          { maximumFractionDigits: 0 }));
+    const fmtPct = (v) => (v == null ? "no IRR" : `${(v * 100).toFixed(1)}%`);
+    const fmtYears = (v) => (v == null
+      ? `no payback within ${inputs.T} years` : `${v.toFixed(1)} yr`);
+    const fmtLcos = (v) => (v == null ? "—" : `£${v.toFixed(0)}/MWh`);
+
+    /* Owner review, 2026-08-01: per-unit and hurdle context on the tiles
+       that had none. These cost nothing in height — the MIRR and LCOS
+       notes already wrap to two lines at the shipped 126px tile content
+       width, so the row is already sized by a two-line .cs-note block
+       and every note below stays inside that. P is MW and E is MWh, so
+       both denominators are x1000; guarded because a division printing
+       "Infinity" beside a headline figure is not worth the saved
+       branch. */
+    const perUnit = (v, denom) => ((v == null || !denom || denom <= 0)
+      ? null : v / (denom * 1000));
+    const fmtPerUnit = (v, suffix) => (v == null ? ""
+      : (v < 0 ? "-£" : "£") + Math.abs(v).toLocaleString("en-GB",
+          { maximumFractionDigits: Math.abs(v) >= 100 ? 0 : 1 }) + suffix);
+    const npvNote = [fmtPerUnit(perUnit(npvValue, inputs.P), "/kW"),
+                     fmtPerUnit(perUnit(npvValue, inputs.E), "/kWh")]
+      .filter(Boolean).join(" · ");
+    // An IRR is only ever readable against the hurdle in the SAME set of
+    // inputs, and that input sits in the other column. Silent when there
+    // is no IRR: the tile already says "no IRR", and a lone WACC under it
+    // would read as one.
+    const irrNote = irrValue == null ? ""
+      : `${irrValue >= inputs.r ? "+" : "-"}` +
+        `${Math.abs((irrValue - inputs.r) * 100).toFixed(1)}pp vs WACC ` +
+        `${(inputs.r * 100).toFixed(1)}%`;
+    // "Discounted" is stated rather than left implicit. The horizon
+    // goes beside it only when a payback exists — the null branch of
+    // fmtYears already names T.
+    const paybackNote = paybackValue == null
+      ? "discounted at WACC" : `discounted at WACC · ${inputs.T} yr modelled`;
+
+    headlineEl.innerHTML = `
+      <div class="calc-stat"><span class="cs-label">NPV</span>
+        <span class="cs-value">${fmtGbp(npvValue)}</span>
+        <span class="cs-note">${npvNote}</span></div>
+      <div class="calc-stat"><span class="cs-label">IRR</span>
+        <span class="cs-value${irrValue == null ? " neutral" : ""}">${
+          fmtPct(irrValue)}</span>
+        <span class="cs-note">${irrNote}</span></div>
+      <div class="calc-stat"><span class="cs-label">DPI</span>
+        <span class="cs-value${dpiValue == null ? " neutral" : ""}">${
+          dpiValue == null ? "n/a" : `${dpiValue.toFixed(2)}x`}</span>
+        <span class="cs-note">discounted £ per £1 of capital committed ·
+          1.00x breaks even at WACC</span></div>
+      <div class="calc-stat"><span class="cs-label">Discounted payback</span>
+        <span class="cs-value${paybackValue == null ? " neutral" : ""}">${
+          fmtYears(paybackValue)}</span>
+        <span class="cs-note">${paybackNote}</span></div>
+      <div class="calc-stat"><span class="cs-label">Indicative LCOS</span>
+        <span class="cs-value">${fmtLcos(lcosValue)}</span>
+        <span class="cs-note">${lcosValue == null ? "" : (lcosSlo != null
+          ? "includes charging-energy cost (observed s_lo)"
+          : "excludes charging-energy cost (no observed s_lo in use)")}</span></div>`;
+
+    /* Owner review, 2026-08-01: the year-1 revenue split. Year 1 is the
+       commissioning stub whenever a commissioning date is set — the
+       anchor line immediately above says which, so this line does not
+       restate it. The arbitrage half is never stated bare: it is the
+       reader's own capture rate applied to a perfect-foresight ceiling,
+       and the clause saying so travels with the number rather than
+       living in a tooltip. Percentages only when both halves are
+       positive — a family component can be negative (DR at p10, D21),
+       and a "share" of a mixed-sign total is arithmetic theatre. */
+    if (mixEl) {
+      const y1 = cf.rows[1];
+      const av = y1 ? y1.availability_gbp : 0;
+      const ar = y1 ? y1.arbitrage_gbp : 0;
+      const fig = (v) => `<span class="cm-fig">${fmtGbp(v)}</span>`;
+      const ceilingNow = Metrics.arbitrageCeiling(
+        inputs.sHi, inputs.sLo, inputs.eta);
+      const caveat = `the arbitrage figure is your ` +
+        `${((inputs.k || 0) * 100).toFixed(0)}% capture rate applied to a ` +
+        "perfect-foresight ceiling, not a forecast";
+      let mixHtml;
+      if (av === 0 && ar === 0) {
+        mixHtml = "Year 1 revenue: none — neither availability nor " +
+          "arbitrage contributes at these assumptions.";
+      } else if (ar === 0) {
+        const why = !(inputs.k > 0) ? "no capture rate set"
+          : ceilingNow == null ? "no arbitrage ceiling in use"
+          : !(inputs.c > 0) ? "no cycles per day set, so nothing is discharged"
+          : "nothing at these assumptions";
+        mixHtml = `Year 1 revenue: availability ${fig(av)} · ` +
+          `arbitrage nil (${why}).`;
+      } else if (av > 0 && ar > 0) {
+        const pctA = Math.round((av / (av + ar)) * 100);
+        mixHtml = `Year 1 revenue: availability ${fig(av)} (${pctA}%) · ` +
+          `arbitrage ${fig(ar)} (${100 - pctA}%) — ${caveat}.`;
+      } else {
+        mixHtml = `Year 1 revenue: availability ${fig(av)} · arbitrage ` +
+          `${fig(ar)} (no split shown: a component is negative) — ${caveat}.`;
+      }
+      mixEl.innerHTML = mixHtml;
+      mixEl.classList.remove("hidden");
+    }
+
+    /* Four one-assumption sensitivities under the tiles (owner review,
+       2026-08-01), each through bessCalcNpvAt's copy of the headline's
+       own chain, PLUS an alternative 2-D rendering of the same question
+       behind a small toggle (owner decision, 2026-08-01). Toggle rather
+       than stacking both views: the sticky results column has ~27px of
+       clamp margin left at 808px width, not enough for a second block
+       under the strip without pushing the chart off the visible area.
+
+       WACC x capture, not WACC x growth: this card carries no terminal
+       value by design (D43) — a growth axis would have nothing to act
+       on, the same reason a growth chip was never added to the strip.
+       WACC and capture are the two assumptions the NPV leans on hardest,
+       and the strip already probes exactly these two, one at a time; the
+       matrix is the same two axes crossed, not a third assumption
+       introduced for the occasion.
+
+       Both axes de-duplicate their five candidate values after clamping
+       (WACC floors at zero, capture clamps to [0,1]) — near a clamp,
+       several offsets collapse onto one boundary value, and the honest
+       response is a smaller table (4x5, 3x5), never a repeated row
+       masquerading as a distinct case. See bessCalcSensMatrix.
+
+       Both views are stateless, rebuilt from `inputs` on every render;
+       only the view CHOICE persists, in the module-scope bessCalcSensView
+       (not State.calc — it is not an assumption, so Reset must not touch
+       it). Four to twenty-five extra bessCashflow passes per render
+       (four for the strip, up to twenty-five for a full 5x5 matrix) is
+       arithmetic noise next to a keystroke-driven re-render with T
+       capped at the useful life. */
+    if (sensEl) {
+      const toggleHtml = bessCalcSegHtml("sens-view", bessCalcSensView, [
+        { value: "strip", label: "Strip" },
+        { value: "matrix", label: "Matrix" },
+      ], "Sensitivity view");
+      let headText, bodyHtml;
+      if (bessCalcSensView === "matrix") {
+        const m = bessCalcSensMatrix(inputs, valuationDateInUse);
+        if (m.na) {
+          const fmtOne = bessCalcCompactGbp([npvValue]);
+          headText = `NPV by WACC × capture rate — each cell re-runs the ` +
+            `headline's own chain with two assumptions replaced; a grid ` +
+            `of sensitivities, not a scenario set. Base ${
+              fmtOne(npvValue)}.`;
+          bodyHtml = `<p class="calc-sens-na">${m.na}</p>`;
+        } else {
+          headText = `NPV by WACC × capture rate — each cell re-runs the ` +
+            `headline's own chain with two assumptions replaced; a grid ` +
+            `of sensitivities, not a scenario set. Base ${
+              m.fmt(npvValue)} boxed.`;
+          bodyHtml = bessCalcSensMatrixHtml(m);
+        }
+      } else {
+        const sens = bessCalcSensitivities(inputs, valuationDateInUse);
+        const fmtSens = bessCalcCompactGbp(
+          sens.map((s) => (s.na ? null : s.value)).concat([npvValue]));
+        headText = `NPV sensitivity — one assumption changed at a time, ` +
+          `not a scenario set. Base ${fmtSens(npvValue)}.`;
+        bodyHtml = `<div class="calc-sens-row">${sens.map((s) =>
+          `<span class="calc-sens-chip"><span class="cs-sl">${s.label}</span>` +
+          `<span class="cs-sv${s.na ? " cs-sv-na" : ""}">${
+            s.na ? s.na : fmtSens(s.value)}</span></span>`).join("")}</div>`;
+      }
+      sensEl.innerHTML = `<div class="calc-sens-headrow">` +
+        `<span class="calc-sens-head">${headText}</span>${toggleHtml}` +
+        `</div>${bodyHtml}`;
+      sensEl.classList.remove("hidden");
+    }
+
+    // Owner decision, 2026-08-01: Year 0's capex now appears on the
+    // cash-flow chart. `years` above (year >= 1) is what NPV/IRR/MIRR/
+    // discounted payback and LCOS are built from and must stay exactly
+    // that — chartRows is a SEPARATE array, used ONLY by the cash-flow
+    // chart option below. The Capacity view deliberately keeps `years`:
+    // a year-0 capacity bar would be zero by construction (nothing has
+    // been commissioned yet), a pre-commissioning artefact rather than
+    // data, so the two views differ by one column on purpose.
+    const chartRows = cf.rows;
+
+    const labels = years.map((r) => `Year ${r.year}`);
+    const chartLabels = chartRows.map((r) => `Year ${r.year}`);
+    // Axis labels in £m (raw pounds clipped against the grid margins and
+    // read poorly at seven digits); tooltips keep full £ precision. The
+    // £m formatter keeps one decimal above £100k and two below so small
+    // assets do not render as "0.0".
+    const fmtMn = (v) => (Math.abs(v) >= 1e5
+      ? (v / 1e6).toLocaleString("en-GB", { maximumFractionDigits: 1 })
+      : (v / 1e6).toLocaleString("en-GB", { maximumFractionDigits: 2 }));
+    const mnLabel = { color: css("--text-dim"), fontFamily: MONO,
+      formatter: fmtMn };
+    const xAxisYears = { type: "category", data: labels, boundaryGap: true,
+      axisLine: { lineStyle: { color: css("--border") } },
+      axisLabel: { color: css("--text-dim"), fontFamily: MONO } };
+
+    if (bessCalcChartView === "capacity") {
+      /* Capacity view (owner decision, 2026-08-01): usable_mwh's own
+         sawtooth — degradation eating capacity year over year, the
+         augmentation tranche putting a step back in (when one is set),
+         then the two-vintage blend decaying again — is a shape worth
+         its own axis, not squeezed under the cash-flow bars. An
+         operating-margin % line was considered for this second view and
+         left out: it is a different unit (%) from the MWh bar it would
+         share an axis with, and a single-unit axis is the whole reason
+         this view exists rather than a third series on the cash-flow
+         chart. Same base()/legendBar() scaffolding as the cash-flow
+         view — same grid, same xAxis — so the toggle costs zero height:
+         only the legend text, the axis and the one series change. */
+      const fmtMwh = (v) => (Math.abs(v) >= 1e5
+        ? (v / 1e3).toLocaleString("en-GB", { maximumFractionDigits: 0 }) + "k"
+        : v.toLocaleString("en-GB", { maximumFractionDigits: 0 }));
+      const mwhLabel = { color: css("--text-dim"), fontFamily: MONO,
+        formatter: fmtMwh };
+      chart("ch-bess-calc").setOption(base({
+        legend: legendBar({ data: ["Usable energy"] }),
+        grid: { left: 56, right: 70, top: 48, bottom: 42 },
+        tooltip: {
+          trigger: "axis",
+          backgroundColor: css("--bg-raised"),
+          borderColor: css("--border"),
+          textStyle: { color: css("--text"), fontSize: 12 },
+          confine: true,
+          formatter: (params) => params[0].axisValue + params.map((p) =>
+            `<br>${p.marker}${p.seriesName}: ${(+p.value).toLocaleString(
+              "en-GB", { maximumFractionDigits: 1 })} MWh`).join(""),
+        },
+        xAxis: xAxisYears,
+        yAxis: valueAxis("MWh usable", { axisLabel: mwhLabel }),
+        series: [
+          { name: "Usable energy", type: "bar",
+            // Un-scaled here, unlike the CSV export's usable_mwh column:
+            // bessCashflow multiplies year 1's usable_mwh by the
+            // commissioning-stub fraction (frac1) because that row is a
+            // partial YEAR of energy exposure, but this bar plots
+            // capacity IN PLACE, not exposure — a mid-year commissioning
+            // date must not paint a fake capacity jump into year 2 on a
+            // chart whose whole point is the degradation/augmentation
+            // shape. Stated here rather than left to be discovered, the
+            // same "state the divergence" discipline the cumulative-
+            // discounted line's own comment uses below.
+            data: years.map((r) => (r.year === 1 && frac1 > 0
+              ? r.usable_mwh / frac1 : r.usable_mwh)),
+            itemStyle: { color: css("--accent") } },
+        ],
+      }), true);
+    } else {
+      /* Year 0's capex on the cash-flow chart (owner decision,
+         2026-08-01, option 2 of the design discussion): capex_gbp
+         already carries BOTH the year-0 outflow (-c0) and any
+         augmentation-year tranche in one column, so the series below
+         is renamed "Capex" (superseding the 2026-07-31 "Augmentation"
+         label) and covers both — one series, not a seventh legend
+         entry (legendBar's width on this card was measured for six).
+         The year-8-style cumulative dip an augmentation tranche causes
+         is still explained by a visible bar, just under the name the
+         flow actually is. */
+
+      // maxAnnual: the largest magnitude a year >= 1 bar reaches, by
+      // either measure — a single series' own value, or the stacked
+      // total it sits inside (ECharts accumulates same-signed series
+      // sharing one `stack` name in each direction, so several modest
+      // bars stacking the same way can still reach further than any
+      // one of them alone). Both are one pass over <= ~15 rows, cheap
+      // enough to just take whichever is larger rather than argue
+      // in advance about which one a given cash flow needs.
+      const barKeys = ["availability_gbp", "arbitrage_gbp", "opex_gbp",
+        "tnuos_gbp", "capex_gbp"];
+      const annualRows = chartRows.filter((r) => r.year >= 1);
+      const maxAnnual = annualRows.reduce((m, r) => {
+        const perSeries = barKeys.reduce(
+          (mm, k) => Math.max(mm, Math.abs(r[k] || 0)), m);
+        const posStack = barKeys.reduce(
+          (s, k) => s + Math.max(0, r[k] || 0), 0);
+        const negStack = barKeys.reduce(
+          (s, k) => s + Math.min(0, r[k] || 0), 0);
+        return Math.max(perSeries, posStack, Math.abs(negStack));
+      }, 0);
+      const capexYear0 = chartRows[0] ? chartRows[0].capex_gbp : 0;
+      // Threshold (owner decision, 2026-08-01): a year-0 bar within 30%
+      // of the annual scale fits without help; beyond that it would
+      // crush the annual structure this chart exists to show, so the
+      // axis clamps instead — no annotation at all when it fits.
+      const clamped = Math.abs(capexYear0) > 1.3 * maxAnnual;
+      // Floor at 1.15x maxAnnual — a hairline of headroom above the
+      // tallest annual bar, so the clamp reads as a deliberate ceiling
+      // rather than a coincidence that happens to touch the data.
+      // Passed as the exact number, not pre-rounded to a "nice" figure:
+      // valueAxis()'s own scale:true still lets ECharts generate nice
+      // tick steps off whatever min is given, so rounding it ourselves
+      // first would only fight that second pass.
+      const axisMin = clamped ? -(1.15 * maxAnnual) : null;
+      // Same shared compact-£ formatter the sensitivity matrix uses
+      // (bessCalcCompactGbp) — the axis label speaks the same "one
+      // figure, one unit" language as the rest of this card.
+      const fmtCapexClamp = bessCalcCompactGbp([capexYear0]);
+
+      chart("ch-bess-calc").setOption(base({
+        legend: legendBar({ data: ["Availability", "Arbitrage", "OPEX", "TNUoS",
+          "Capex", "Cumulative discounted"] }),
+        grid: { left: 56, right: 70, top: 48, bottom: 42 },
+        tooltip: {
+          trigger: "axis",
+          backgroundColor: css("--bg-raised"),
+          borderColor: css("--border"),
+          textStyle: { color: css("--text"), fontSize: 12 },
+          confine: true,
+          formatter: (params) => params[0].axisValue + params.map((p) =>
+            `<br>${p.marker}${p.seriesName}: ${fmtGbp(p.value)}`).join(""),
+        },
+        xAxis: { type: "category", data: chartLabels, boundaryGap: true,
+          axisLine: { lineStyle: { color: css("--border") } },
+          axisLabel: { color: css("--text-dim"), fontFamily: MONO,
+            lineHeight: 14,
+            // Stated truncation (owner decision, 2026-08-01, "state the
+            // divergence" discipline): only Year 0's label changes, and
+            // only when the axis is actually clamping it — the bar is
+            // clipped at the floor below, so the true figure travels on
+            // the label instead, precisely because the bar no longer
+            // can carry it.
+            formatter: (value, index) => (clamped && index === 0)
+              ? `Year 0\n${fmtCapexClamp(capexYear0)}` : value } },
+        yAxis: [valueAxis("£m", { axisLabel: mnLabel, min: axisMin }),
+          valueAxis("£m cumulative", { position: "right",
+            axisLabel: mnLabel, splitLine: { show: false } })],
+        series: [
+          { name: "Availability", type: "bar", stack: "cf",
+            data: chartRows.map((r) => r.availability_gbp),
+            itemStyle: { color: css("--pos") } },
+          { name: "Arbitrage", type: "bar", stack: "cf",
+            data: chartRows.map((r) => r.arbitrage_gbp),
+            itemStyle: { color: css("--accent-top") } },
+          { name: "OPEX", type: "bar", stack: "cf",
+            data: chartRows.map((r) => r.opex_gbp),
+            itemStyle: { color: css("--neg") } },
+          { name: "TNUoS", type: "bar", stack: "cf",
+            data: chartRows.map((r) => r.tnuos_gbp),
+            itemStyle: { color: css("--text-dim") } },
+          // Capex (owner decision, 2026-08-01; supersedes the
+          // 2026-07-31 "Augmentation" label above) — capex_gbp is BOTH
+          // the year-0 outflow (-c0) and any augmentation-year tranche
+          // in one column, so one correctly-named series covers both.
+          { name: "Capex", type: "bar", stack: "cf",
+            data: chartRows.map((r) => r.capex_gbp),
+            itemStyle: { color: css("--accent") } },
+          { name: "Cumulative discounted", type: "line", yAxisIndex: 1,
+            // Re-anchored by the same factor as the headline NPV above
+            // (owner request, 2026-07), so the line's final point always
+            // agrees with the headline figure. Now starts at Year 0
+            // (owner decision, 2026-08-01): row 0's own
+            // cumulative_discounted_gbp is -c0, re-anchored the
+            // identical way as every later point, so the line's deep
+            // start finally has a visible x position and a stated
+            // cause (the Capex bar beside it) instead of appearing to
+            // begin already underwater for no visible reason. The CSV
+            // export's own cumulative_discounted_gbp column stays
+            // commissioning-anchored, unlike this chart series — stated
+            // here rather than left to be discovered, the same "state
+            // the divergence" discipline D36 uses for the workbook's
+            // opposite sign convention.
+            data: chartRows.map((r) => Metrics.reanchorNpv(
+              r.cumulative_discounted_gbp, inputs.r, inputs.y0, valuationDateInUse)),
+            showSymbol: false,
+            lineStyle: { width: 1.6, color: css("--text") },
+            itemStyle: { color: css("--text") } },
+        ],
+      }), true);
+    }
+
+    if (captionEl) {
+      const cohort = Data.bessRevenue && Data.bessRevenue.cohort;
+      const cohortNote = cohort
+        ? `cohort behind the percentile: ${cohort.units} units of the ` +
+          "identified fleet"
+        : "cohort behind the percentile: the identified fleet";
+      captionEl.textContent =
+        `Window ${bessUnitsPayload.window.from} to ` +
+        `${bessUnitsPayload.window.to} · ${cohortNote} · TNUoS ` +
+        `FY${bessUnitsPayload.tnuos.year_fy} ` +
+        `${bessUnitsPayload.tnuos.publication}, published ` +
+        `${bessUnitsPayload.tnuos.published} · percentile in use: ` +
+        `${c.percentile} · every figure below the inputs is your own ` +
+        "assumption arithmetic.";
+    }
+  }
+
   const PANELS = {
     overview: [overviewMain, overviewDonut, overviewResidual],
     prices: [priceMain, priceHist, priceShape, priceNetLoad],
@@ -2456,7 +5406,7 @@ const Charts = (() => {
     flows: [flowsStack, flowsScatter, flowsShare, flowsUtilisation,
             flowsContext],
     stress: [stressDaily, stressEvent],
-    bess: [bessActivity, bessRevenue, bessFleetTable],
+    bess: [bessActivity, bessRevenue, bessFleetTable, bessCalculator],
     methodology: [],
   };
 

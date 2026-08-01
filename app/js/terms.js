@@ -375,4 +375,74 @@ const Terms = {
       "spreads and the SRMC model.",
     method: "spark",
   },
+  npv: {
+    label: "Net present value (NPV)",
+    short: "The sum of a project's future cash flows, each discounted " +
+      "back to today at a chosen rate, minus the upfront cost. Positive " +
+      "means the assumptions describe a project worth more than it costs.",
+    extra: "The profitability calculator's NPV is entirely a function of " +
+      "the inputs you enter: badged Assumption throughout, never a " +
+      "valuation.",
+    method: "bess-calc",
+  },
+  irr: {
+    label: "Internal rate of return (IRR)",
+    short: "The discount rate at which a project's NPV is exactly zero: " +
+      "the break-even return the cash flow itself implies.",
+    extra: "Found here by bisection over -99% to +150%. A cash flow that " +
+      "never turns net-positive has no such rate, and the calculator " +
+      "says \"no IRR\" rather than showing 0%.",
+    method: "bess-calc",
+  },
+  discounted_payback: {
+    label: "Discounted payback",
+    short: "How many years of discounted net cash flow it takes to " +
+      "recover the upfront capital cost, linearly interpolated on the " +
+      "cumulative discounted column to a fraction of the year it falls in.",
+    extra: "Discounted, unlike simple payback, which ignores the time " +
+      "value of money — this figure moves with the mid-year/end-of-year " +
+      "discounting convention, because the column it interpolates on " +
+      "does. A cash flow whose discounted cumulative never crosses zero " +
+      "within the calculation period shows \"no payback\", never a zero.",
+    method: "bess-calc",
+  },
+  lcos: {
+    label: "Levelised cost of storage (LCOS)",
+    short: "A project's lifetime costs (capital, operating, network " +
+      "charges and the energy bought to charge the battery), each " +
+      "discounted, divided by its lifetime discounted energy " +
+      "throughput: a £/MWh cost figure comparable across assumptions.",
+    extra: "Labelled indicative here, and it carries two states rather " +
+      "than one fixed shape. With no observed price feed in use, or with " +
+      "a manual arbitrage spread overriding it, the charging-energy cost " +
+      "is excluded, and the figure is a floor on LCOS: capital and " +
+      "operating cost per discharged MWh, not the full lifetime cost. " +
+      "Once the observed price feed is active, the charging-energy cost " +
+      "is included, priced at the observed bottom-of-day mean price, and " +
+      "the results panel says which of the two applies. Discounted " +
+      "energy is the denominator either way, a stated choice rather than " +
+      "the only valid one.",
+    method: "bess-calc",
+  },
+  wacc: {
+    label: "Weighted average cost of capital (WACC)",
+    short: "The discount rate applied to a project's future cash flows: " +
+      "roughly, the blended return its financing needs to clear.",
+    extra: "A single user-entered rate here, real-terms and pre-tax, with " +
+      "no separate debt/equity split modelled.",
+    method: "bess-calc",
+  },
+  tnuos: {
+    label: "TNUoS (Transmission Network Use of System)",
+    gb: true,
+    short: "The charge a generator pays NESO for using the transmission " +
+      "network, set per zone and varying from a genuine subsidy in the " +
+      "far north to a real cost near London.",
+    extra: "The calculator vendors the published zone tariff elements " +
+      "(a fixed table, cited as reference, not a badge) and shows a " +
+      "zone-level indication, not the full CUSC tariff calculation. " +
+      "Distribution-connected assets sit outside generation TNUoS " +
+      "post-TCR and show \"not applicable\" rather than a zero charge.",
+    method: "bess-calc",
+  },
 };

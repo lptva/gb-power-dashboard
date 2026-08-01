@@ -1113,10 +1113,39 @@ const UI = (() => {
       && Data.bess.meta.series;
     const bessRevenueSeries = Data.bessRevenue && Data.bessRevenue.meta
       && Data.bessRevenue.meta.series;
+    // The profitability calculator's own source row (plan/09's ETL design
+    // section): a STATIC description, not read from app/data/bess_units.json
+    // itself, because that payload is lazily fetched on the calculator
+    // card's first render (D33/D34) — unlike bess_activity/bess_revenue
+    // above, it may never have loaded by the time this page-load render
+    // runs, so it cannot feed a dynamic row the way theirs do. The vendored
+    // table's own shape is fixed at build time regardless.
+    const BESS_CALC_SOURCE_ROW = {
+      name: "GB battery profitability calculator: TNUoS zone tariffs",
+      source: "NESO Data Portal (CKAN), dataset " +
+        "transmission-network-use-of-system-tnuos-tariffs, " +
+        "Onshore Generator Tariffs resource",
+      unit: "£/kW: SystemPeak, SharedYearRound, NotSharedYearRound, " +
+        "Residual per zone",
+      resolution: "27 charging zones, one set of elements each",
+      update_frequency: "vendored at ETL build time from the highest " +
+        "Year_FY carrying Publication = 'Final'; the source itself " +
+        "publishes quarterly",
+      quality: "reference",
+      transformations: "copied verbatim from the resource, rounded to " +
+        "3 dp",
+      notes: "A zone-level indication using the published tariff " +
+        "elements, not the full CUSC tariff calculation for a specific " +
+        "asset. The cross-unit percentile block behind the calculator's " +
+        "availability revenue is Observed (etl/build_bess_units.py); " +
+        "everything the calculator itself outputs is Assumption, per " +
+        "the card's own badges.",
+    };
     const batterySourceRows = [
       bessActivitySeries,
       bessRevenueSeries && bessRevenueSeries.eac,
       bessRevenueSeries && bessRevenueSeries.bm,
+      BESS_CALC_SOURCE_ROW,
     ].filter(Boolean).map(sourceRow).join("");
     const sourceRows = Object.values(meta.series).map(sourceRow).join("")
       + batterySourceRows;
@@ -1813,6 +1842,237 @@ const UI = (() => {
              transformations" table above.</p>`
         : `<p>No BESS revenue dataset built on this machine yet, run
              <code>python etl/build_bess_revenue.py</code>.</p>`}
+
+      <h3 id="m-bess-calc">Profitability calculator (beta)</h3>
+      <p>The fourth Batteries card answers a different question from the
+         two above it: not what the fleet was paid, but what a battery has
+         to believe about itself to pay back, given what the market
+         observably paid comparable units last year. You describe an
+         asset, the calculator anchors the revenue side on the published
+         record, and does the arithmetic on your own assumptions in front
+         of you. The framing is deliberate and stated on the card: this is
+         illustrative economics, not investment advice, not a valuation
+         and not a forecast.</p>
+      <p>The one-way rule: the calculator reads from this dashboard's data
+         and from its own small support payload, and writes to nothing.
+         No output it produces is stored, cached, exported into another
+         panel's series, or included in any file other than its own CSV
+         or Excel export.</p>
+      <p><b>Observed vs Assumption:</b> the availability
+         revenue figure behind the percentile control is the cross-unit
+         distribution of trailing 365-day EAC revenue for the identified
+         battery fleet (<code>etl/build_bess_units.py</code>): published
+         accepted quantity times published clearing price times published
+         delivery window, aggregated per unit and summarised across units
+         at five percentiles. That figure is Observed. The TNUoS zone
+         tariff elements are vendored, cited reference data, shown in
+         prose rather than badged. Everything else on the card, every
+         input you enter and every figure computed from one, including the
+         whole annual cash flow, NPV, IRR, simple payback and the
+         indicative LCOS, is Assumption.</p>
+      <p><b>Percentile and the double-count trap:</b> you pick
+         a percentile (p10 to p90) of the cross-unit distribution rather
+         than the calculator multiplying a fleet average by a win
+         probability. That average already divides total revenue by total
+         days, including the days a unit won nothing: applying a
+         participation or acceptance rate on top of it removes those zero
+         days a second time. Measured on the underlying data, doing that
+         understates the correct figure by 58%. The percentile is
+         therefore the whole answer to "how likely is this outcome", not
+         an input to be discounted further. These are rank percentiles of
+         the cross-unit distribution, not the exceedance convention some
+         readers bring from energy-yield work, where P90 names the
+         conservative case: on this card p90 is the top-decile unit, the
+         opposite of a conservative reading.</p>
+      <p><b>Family toggles, and how the split stays additive:</b> the six
+         service families (DC, DM, DR, BR, QR, SR) can each be switched
+         off, which recomputes the £/kW/yr from that percentile's own
+         family components rather than from a fleet-wide average.
+         <code>etl/build_bess_units.py</code> publishes those components
+         as the family split of the same rank-interpolated unit pair the
+         percentile total itself is built from (the unit at the
+         percentile's rank and the next one up, blended by the same
+         fractional weight), not as six independently-ranked family
+         percentiles: only the first definition sums back to the
+         published total exactly, which the ETL asserts on every build.
+         Turning a family off is an assumption about what the asset will
+         contract for, not a claim about the data.</p>
+      <p><b>Wholesale arbitrage, an observed ceiling with a capture
+         rate:</b> a perfect-foresight calculation over the half-hourly
+         prices already loaded clears positive on every complete day
+         measured: mean top-2d and bottom-2d half-hourly price per day
+         (d the asset's own duration), averaged across every complete
+         day (at least 46 populated half-hours) in the loaded window. A
+         quantity that can never lose money is not a revenue forecast of
+         anything, so it is labelled a perfect-foresight ceiling
+         throughout, never arbitrage revenue, and it only enters the
+         cash flow once a capture rate is entered: there is no default
+         capture rate, and an empty field leaves the line at zero. MID
+         is a market-wide index, not a transacted price, and diverges
+         from what any single asset actually achieves, particularly in
+         stressed periods. A manual spread override, mirroring the
+         coal-price override on the Spreads tab, replaces the observed
+         ceiling entirely with a single flat £/MWh figure the user
+         enters, and flips that line's provenance chip from Estimated to
+         Assumption; the capture rate still applies to whichever ceiling
+         is in effect. The card's Estimated badge appears only while the
+         observed ceiling is the one actually contributing a non-zero
+         figure, per the house rule of badging only what is active.</p>
+      <p><b>Balancing Mechanism, deliberately not a projection line:</b>
+         treating BM cashflow as a standalone forecast line alongside
+         wholesale arbitrage would double count the same underlying
+         energy volumes, because a battery's BM position is dominated by
+         buying and selling the very energy the arbitrage line already
+         prices. To keep the arithmetic and the physics honest, BM data
+         appears exclusively as observed context in the dedicated panel
+         above, never as a projection inside this calculator.</p>
+      <p><b>Duration, and every cost input:</b> a plain input, with no
+         shipped default. Two candidate sources
+         for a duration prefill were investigated and both failed on
+         measurement, not effort: the Capacity Market register's storage
+         duration class joins to only a fifth of the identified fleet at a
+         defensible confidence tier, and changes for one site in ten
+         between delivery years, so it is a de-rating election, not a
+         physical property, and cannot be trusted as a prefill. The same
+         holds for CAPEX, OPEX, WACC, cycles per day, degradation and
+         round-trip efficiency: this dashboard's standing principle is
+         that it never ships a figure it did not measure, and it has not
+         measured a market CAPEX. The placeholders on these fields are
+         illustrative examples of plausible magnitudes, not sourced
+         figures and not defaults; nothing is computed until you type
+         your own number, and the results panel stays empty until the
+         required inputs, power, energy, useful life, WACC and CAPEX,
+         are all present.</p>
+      <p><b>TNUoS:</b> a transmission-connected asset gets a 27-entry zone
+         dropdown, populated from the vendored
+         <a class="term-link" data-term="tnuos" href="#g-tnuos">TNUoS</a>
+         Onshore Generator Tariffs table (charging year and publication
+         date shown alongside), with
+         <code>z_total(f) = SystemPeak + f x (SharedYearRound +
+         NotSharedYearRound) + Residual</code> and <code>f</code>
+         defaulting to cycles per day times duration divided by 24, hours,
+         editable. This is a zone-level indication using the published
+         tariff elements, not the full CUSC tariff calculation for a
+         specific asset, and the card says so. A distribution-connected
+         asset shows "not applicable" rather than a zero TNUoS line: post-
+         reform, embedded generation sits outside generation TNUoS
+         entirely, and the two states must stay visually distinguishable.</p>
+      <p><b>The engine, in one place:</b> real terms, pre-tax, ungeared,
+         no residual value. One optional augmentation event (a year, a
+         size in MWh and a cost in £k/MWh, all required) adds a second
+         cell tranche at the start of that year — a partial top-up, a
+         full restore, or an expansion beyond nameplate, uncapped — and
+         lands as capital expenditure in that year's cash flow and in
+         LCOS. The original cells keep degrading on their own clock;
+         the new tranche degrades at its own rate, defaulting to the
+         main degradation rate. Availability revenue
+         scales with power, not energy, because EAC availability is paid
+         per MW of contracted capacity; a real degraded asset eventually
+         loses access to a product's minimum-duration requirement, and
+         that cliff is not modelled as a step — the optional
+         availability derate (%/yr, default 0) is the smooth stand-in
+         for it, compounding on the capacity-weighted cell age so an
+         augmentation tranche rejuvenates capability in proportion to
+         its size, distinct from cannibalisation, which is a market
+         view on the calendar clock and never resets. Alongside IRR, a
+         MIRR row finances and reinvests at WACC; it exists because an
+         augmentation-year outflow gives the cash flow a second sign
+         change, where plain IRR has multiple mathematically valid
+         roots. Operating cost is flat in real terms,
+         because escalating it on top of a real-terms discount rate is the
+         commonest way to double count inflation. Cycles per day are
+         constant, with no seasonality. The calculation period is capped
+         at the useful life: with no residual value and no revenue after
+         decommissioning, years past the life would be zero rows
+         pretending to be analysis, and the card says when the cap has
+         been applied. Year 1 is pro-rated by the
+         fraction of the calendar year remaining after the commissioning
+         date. Discounting follows a stated convention, mid-year by
+         default: year n's cash flow discounts at (1+r)^(n-0.5), as if it
+         landed at the year's midpoint, and the pro-rated first year
+         discounts at the midpoint of its own remaining stub rather than
+         the calendar year's. An end-of-period option sits alongside it,
+         discounting at (1+r)^n, unchanged from how this card behaved
+         before the control existed. The headline NPV is, separately,
+         expressed at a chosen valuation date rather than silently at
+         commissioning: t=0 for the cash-flow build-up is always the
+         commissioning date, but the valuation date input re-anchors the
+         headline (and the chart's cumulative-discounted line) to any
+         other date, defaulting to commissioning when left blank, by one
+         exact factor, (1+r) raised to the number of 365.25-day years
+         between the two. A valuation date after commissioning compounds
+         the figure forward; one before commissioning, a pre-decision
+         appraisal, discounts it back, through the same identity. Neither
+         choice moves IRR, which is
+         defined on the undiscounted cash flow and stays a standard
+         annual-compounding calculation either way. The discounted payback
+         period, by contrast, does move with the discounting convention —
+         it interpolates on discounted cash flows, so a mid-year versus
+         end-of-period choice changes it — but stays unaffected by the
+         valuation date: re-anchoring scales every discounted figure by the
+         same one factor, which cancels in both the crossing test and the
+         interpolation fraction. IRR is found by bisection over -99% to
+         +150% and renders
+         "no IRR", never 0%, when the cash flow never turns net-positive
+         anywhere in that range. The discounted payback period interpolates
+         linearly on discounted cash flows and
+         renders "no payback within N years" rather than a zero when
+         capital is never recovered. Indicative LCOS carries two states
+         rather than one fixed shape: with no price feed in use, or with
+         a manual arbitrage spread overriding it, LCOS excludes the
+         battery's charging-energy cost and is a floor covering capital
+         and operating cost per discharged MWh, not the full lifetime
+         cost; once the observed price feed is active (no manual
+         override, and a complete day of prices was found), LCOS
+         includes the charging-energy cost at the observed bottom-of-day
+         mean price, and the results panel says which of the two applies.
+         The discharged-energy denominator is discounted at the same
+         rate as the costs, a stated choice rather than the only valid
+         one.</p>
+      <p><b>Held for a later release</b> (plan/09 D34): pick-a-unit mode
+         and its per-unit disclosure, plus the acceptance-rate context
+         table. The "Pick a unit" mode control is visible now, disabled,
+         with a note, precisely so the card does not silently change
+         shape later.</p>
+      <p>The export is numeric only: year, capex, availability (plus one
+         column per service family), arbitrage, opex, TNUoS, net and
+         discounted cash flow, cumulative discounted cash flow,
+         discharged energy and usable energy, plus a header comment block
+         carrying your inputs, including the family toggle state and the
+         arbitrage ceiling's own parameters (<code>s_hi</code>,
+         <code>s_lo</code>, the capture rate or the manual spread). No
+         unit, party or site name is ever exported, the same rule the BMU
+         snapshot table and the activity/revenue export already apply.</p>
+      <p><b>Excel export, a working model rather than a numeric
+         record:</b> a second export, "Export model (Excel)", writes a
+         real <code>.xlsx</code> whose Cover, Assumptions and DCF sheets
+         hold live formulas over the same assumptions cells, not values
+         printed from JavaScript, so changing WACC or the discounting
+         flag inside the spreadsheet itself recalculates NPV, IRR, MIRR,
+         discounted payback, a profitability index and LCOS. Costs sit as
+         positive numbers subtracted in
+         the totals there, the opposite sign convention to the CSV's
+         negative opex and TNUoS columns; the magnitudes agree and the
+         Cover sheet says so in one line. A colour key on the Cover sheet
+         sets out the convention: blue text on a pale yellow fill is an
+         input, black text is a formula, navy text is a value the
+         dashboard measured or looked up (the family revenue components,
+         the published percentile total, TNUoS tariffs), never typed in
+         and never calculated on the sheet, and green text is a plain
+         link to another sheet with no calculation of its own (the DCF
+         sheet's general-assumptions block, and the Cover headline's own
+         links back to the DCF sheet). The DCF sheet groups its
+         rows under numbered grey section bands, with gridlines switched
+         off throughout the workbook. The family and zone blocks carry
+         the same toggles and check row the card itself uses. The
+         valuation date sits on the Assumptions sheet and the DCF year
+         grid discounts straight to it - a discount factor above 1
+         compounds a pre-valuation year forward; the commissioning-
+         anchored figure is kept alongside as a labelled check row,
+         never dropped. The workbook stores no cached values, so a reader
+         that does not recalculate formulas should use the CSV instead.
+         It carries the same no-names rule and the same illustrative-
+         economics sentence as the card and the CSV.</p>
 
       <h3 id="m-overnight">Overnight summary (AI-generated)</h3>
       <p>The collapsible panel below the KPI strip is written by an LLM,

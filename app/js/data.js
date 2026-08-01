@@ -290,6 +290,28 @@ const Data = (() => {
     return promise;
   }
 
+  /* Lazily load the BESS profitability calculator's own small support
+     payload (percentiles + TNUoS zone tariffs, D33/D34) on the
+     calculator card's first render, cached in memory for the session —
+     same lazy precedent as loadEventSlice above (plan/06 D8), chosen so
+     the eager page payload stays unchanged for every reader who never
+     opens the card. */
+  let bessUnitsPromise = null;
+  function loadBessUnits() {
+    if (bessUnitsPromise) return bessUnitsPromise;
+    const v = manifest ? `?v=${manifest.version}` : "";
+    bessUnitsPromise = fetch(`data/bess_units.json${v}`)
+      .then((resp) => {
+        if (!resp.ok) throw new Error(`bess_units.json: HTTP ${resp.status}`);
+        return resp.json();
+      })
+      .catch((error) => {
+        bessUnitsPromise = null; // allow retry after a transient failure
+        throw error;
+      });
+    return bessUnitsPromise;
+  }
+
   /* True when a column carries any real signal (non-null AND non-zero).
      Constant-zero generation columns are TSO placeholders (e.g. IE solar)
      — display paths exclude them; the raw data keeps them. */
@@ -340,7 +362,7 @@ const Data = (() => {
     get bess() { return bess; },
     get bessRevenue() { return bessRevenue; },
     get refreshStatus() { return refreshStatus; },
-    loadEventSlice,
+    loadEventSlice, loadBessUnits,
     get zone() { return zone; },
     currency, ZONE_INFO,
     FUELS, INTERCONNECTORS, STACK_ORDER, LOW_CARBON,

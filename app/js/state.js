@@ -31,7 +31,41 @@ const State = (() => {
     // off. Gates rendering of the overnight summary, never the fetch; the data
     // stays published at data/overnight_summary.json regardless.
     aiInterpretation: false,
+    // BESS profitability calculator (plan/09, #49) — session-only input
+    // set, D30. No browser storage, no URL parameters: defaults restore on
+    // reload, same documented behaviour as the rest of this store. Every
+    // numeric field starts null (D23: no cost defaults ship from
+    // anywhere; the form's ghost placeholders suggest a shape, they never
+    // set a value). Structural choices (connection type, zone, percentile,
+    // cannibalisation) DO carry stated defaults straight from the design
+    // doc (D21's p50, D28's 0%, a plain "most of the fleet is
+    // transmission-connected" starting point for connType/zone) — those
+    // are not market or cost figures.
+    calc: {
+      mode: "hypothetical",       // "unit" ships in v2; disabled for now
+      power: null,                // P, MW
+      energy: null,               // E, MWh
+      commission: null,           // y0, ISO date
+      life: null,                 // N, years
+      period: null,               // T, years (blank -> defaults to N)
+      capex: null,                // C, £k/MW
+      opex: null,                 // O, £k/MW/yr (blank -> 0)
+      opexEsc: null,              // e, %/yr OPEX escalation (blank -> 0,
+                                   // D23: no market default ships)
+      wacc: null,                 // r, % (blank; stored as a percentage,
+                                   // converted to a fraction at compute time)
+      connType: "T",              // "T" transmission | "E" distribution
+      zone: 1,                    // TNUoS zone number, 1-27
+      loadFactor: null,           // f override, % (blank -> c x d / 24)
+      cycles: null,               // c, cycles/day (blank -> 0)
+      efficiency: null,           // eta, % round-trip (blank -> 0)
+      degradation: null,          // delta, %/yr (blank -> 0)
+      percentile: "p50",          // D21 default
+      cannibalisation: 0,         // gamma, %/yr — D28 default (0% opt-in)
+    },
   };
+
+  const CALC_DEFAULTS = { ...state.calc };
 
   const listeners = [];
   function subscribe(fn) { listeners.push(fn); }
@@ -41,6 +75,18 @@ const State = (() => {
   }
   function setAssumption(key, value) {
     state.assumptions[key] = value;
+    listeners.forEach((fn) => fn(state));
+  }
+  /* BESS calculator (D30): setCalc mirrors setAssumption exactly.
+     resetCalc restores every field to CALC_DEFAULTS (captured once, at
+     module load, from the object above) — the single "Reset to
+     defaults" button's whole job. */
+  function setCalc(key, value) {
+    state.calc[key] = value;
+    listeners.forEach((fn) => fn(state));
+  }
+  function resetCalc() {
+    state.calc = { ...CALC_DEFAULTS };
     listeners.forEach((fn) => fn(state));
   }
   function setAiInterpretation(on) {
@@ -84,5 +130,6 @@ const State = (() => {
   }
 
   return { get: () => state, set, setAssumption, setAiInterpretation, subscribe,
+           setCalc, resetCalc,
            effectiveResolution, bucketSeconds, window: window_, coalInfo };
 })();

@@ -64,11 +64,18 @@ body {
 /* ---------- header ---------- */
 .topbar {
   position: sticky; top: 0; z-index: 50;
-  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 8px 18px; flex-wrap: wrap;
   padding: 10px 20px;
   background: var(--bg-card);
   border-bottom: 1px solid var(--border);
 }
+/* Two-row header (owner, 2026-07-31): brand + controls share the top
+   line, the tab strip takes the full second line so nine tabs never
+   fight the controls for width. Same order sequence the compact block
+   below already uses, so both widths agree on brand, controls, tabs. */
+.topbar .brand { order: 1; }
+.topbar .controls { order: 2; }
+.topbar .tabs { order: 3; flex-basis: 100%; }
 .brand { display: flex; align-items: baseline; gap: 8px; }
 .brand-mark {
   background: var(--accent-top); color: #fff; font-weight: 800;
@@ -427,9 +434,20 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
   display: inline-block; margin-right: 7px; }
 
 /* Batteries tab: the BM cashflow sub-panel (plan/08 D18) lives inside the
-   revenue stack's own card, separated by a rule rather than a new card. */
-.card-subsection { border-top: 1px solid var(--border); margin-top: 16px;
-  padding-top: 14px; }
+   revenue stack's own card, contained by a left rule, an indent and a
+   tinted background rather than reading as a new card. The subordinate
+   heading (.card-head h3, as opposed to the card-level .card-head h2)
+   keeps its title visually smaller and dimmer than the card it belongs
+   to, and it carries no badge of its own: the parent card's badges
+   already cover both graphs. */
+.card-subsection { border: 1px solid var(--border);
+  border-left: 2px solid var(--border); margin-top: 16px;
+  padding: 14px 14px 14px 14px; background: var(--bg-raised);
+  border-radius: 8px; }
+.card-subsection .chart-wrap { margin-bottom: 10px; }
+.card-subsection .card-head h3 { margin: 0; font-size: 12.5px;
+  font-weight: 600; color: var(--text-dim); display: flex;
+  align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* Identified fleet table (Batteries tab) reuses .util-table's cell
    styling but scrolls internally instead of paginating 100+ rows; the
@@ -474,6 +492,281 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
 .assumptions .asm-label b { color: var(--text); font-feature-settings: "tnum"; }
 .assumptions input[type=range] { width: 100%; accent-color: var(--accent); }
 .assumptions .asm-note { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+/* ---------- BESS profitability calculator (plan/09, #49) ----------
+   D47 layout: the five field groups stack in a fixed 380px left column
+   and the results sit in a sticky right column, the split D19 promised
+   and the stacked implementation drifted away from. Fixed left track,
+   not a fraction, so narrowing the window takes width off the chart
+   (which tolerates it down to ~490px at the 980px breakpoint) rather
+   than off the form controls (which do not) — the same idiom as
+   .method-layout and .gloss-layout. Provenance chips reuse the badge
+   colour variables at a smaller scale rather than the 4-class .badge
+   component itself (D20 introduces no fifth badge class; this is a
+   finer-grained, field-level mechanism). */
+.calc-mode-row { display: flex; justify-content: space-between;
+  align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.calc-mode { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px; }
+.calc-mode label { display: flex; align-items: center; gap: 5px;
+  color: var(--text-dim); cursor: pointer; }
+.calc-mode input[type=radio] { accent-color: var(--accent); }
+.calc-mode-disabled { opacity: .5; cursor: not-allowed; }
+.calc-mode-note { font-size: 10.5px; font-style: italic; }
+.calc-reset-btn { background: var(--bg-raised); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 6px;
+  font: inherit; font-size: 12px; font-weight: 600;
+  padding: 6px 12px; cursor: pointer; }
+.calc-reset-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
+/* align-items: start is load-bearing, not cosmetic — a stretched grid
+   item is as tall as its row, which makes the sticky results column
+   inert. Same reason .method-layout and .gloss-layout carry it. */
+.calc-grid { display: grid; grid-template-columns: 380px minmax(0, 1fr);
+  gap: 18px; align-items: start; }
+#bess-calc-inputs { display: flex; flex-direction: column; gap: 14px;
+  min-width: 0; }
+/* Pinned below the sticky topbar on the same formula as .method-toc and
+   .gloss-nav (--topbar-h is live-measured in app.js; 66px fallback, +12px
+   = the jump targets' scroll-margin). The max-height/overflow pair is a
+   safety valve, not the normal case: the stack measures 500px against
+   601px of room at 1280x720, but reflowing the KPI grid at a narrower
+   card pushes it to 634px, which would otherwise cut the export row off
+   the bottom with no way to reach it. min-width: 0 keeps ECharts' inline
+   pixel widths from widening the track. */
+#bess-calc-results {
+  position: sticky; top: calc(var(--topbar-h, 66px) + 12px);
+  max-height: calc(100vh - var(--topbar-h, 66px) - 28px); overflow-y: auto;
+  min-width: 0;
+}
+.calc-field-group { margin-bottom: 0; background: var(--bg-card);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px 4px; }
+.calc-field-group h4 { font-size: 11px; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--text-dim); margin: 0 0 8px; }
+.calc-field { display: flex; flex-direction: column; gap: 3px;
+  margin-bottom: 11px; }
+.calc-field-label { display: flex; justify-content: space-between;
+  align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
+.calc-field input[type=number], .calc-field input[type=date],
+.calc-field select {
+  background: var(--bg-raised); color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px;
+  padding: 5px 8px; font: inherit; font-size: 13px; width: 100%;
+}
+.calc-field input:focus-visible, .calc-field select:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+/* A badge inside a live line flows inline with the text (long provenance
+   text wraps naturally under it), with the same 8px gap the flexed
+   .calc-field-label rows give their badges. Flexing this container
+   instead strands the badge on its own line whenever the text wraps. */
+.calc-live { font-size: 11px; color: var(--text-dim); margin-top: 1px; }
+.calc-live .badge { margin-right: 8px; vertical-align: middle; }
+.calc-note { font-size: 11px; color: var(--text-dim); margin: 2px 0 10px;
+  max-width: 46em; }
+/* D47: the ten paragraph captions collapse behind a disclosure line so
+   they stop inflating the form (3106px -> 2437px in one column). Native
+   <details> because the container is built once and never re-rendered
+   (D30) — open state has to survive every subsequent render, and the DOM
+   already holds it. The ⓘ pattern cannot do this job: its handler
+   (app/js/app.js) only deep-links to a Methodology section and is bound
+   once at boot, before these inputs exist. The .calc-live read-outs
+   deliberately stay outside this: they are the field's answer, not
+   commentary about it. The field's own margin-bottom provides the gap
+   below, so this carries top margin only. */
+.calc-note-d { margin: 3px 0 0; }
+.calc-note-d > summary {
+  list-style: none; cursor: pointer;
+  display: inline-flex; align-items: baseline; gap: 4px;
+  font-size: 11px; color: var(--text-dim);
+}
+.calc-note-d > summary::-webkit-details-marker { display: none; }
+.calc-note-d > summary::before { content: "\25B8"; font-size: 9px; }
+.calc-note-d[open] > summary::before { content: "\25BE"; }
+.calc-note-d > summary:hover { color: var(--text); }
+.calc-note-d > summary:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px;
+}
+.calc-note-d .calc-note { margin: 4px 0 0; }
+.calc-zone-ref { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+.calc-results-head { font-size: 11px; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--text-dim); margin: 0 0 8px; }
+/* Owner request, 2026-07: an always-visible line stating what t=0 means
+   for the figures below it — commissioning, or a re-anchored valuation
+   date — so the headline NPV is never silently "as of commissioning".
+   Plain text, no badge: it is a statement about the OTHER figures'
+   basis, not a figure of its own. */
+.calc-anchor-line { font-size: 11px; color: var(--text-dim);
+  margin: 0 0 4px; }
+
+/* Owner review, 2026-08-01: the year-1 revenue split, 4px under the
+   anchor line rather than 10px — both are statements about what the
+   figures below them mean, not figures of their own, and at that
+   spacing they read as one pair. The £ figures go mono and full-
+   brightness inside a dim sentence: the split is scanned, the caveat
+   around it is read once. */
+.calc-mix-line { font-size: 11px; color: var(--text-dim); margin: 0 0 10px; }
+.calc-mix-line .cm-fig { font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums; color: var(--text); }
+
+/* D21's six family toggles: a wrapping row of plain checkbox labels,
+   not a new form control — deliberately the same visual weight as the
+   browser-default checkbox already used elsewhere on this card
+   (bess-normalise on the Activity chart above), no custom styling. The
+   per-family £/kW/yr value (owner request, 2026-07) sits after the
+   code in the same label, dimmed further still when the component is
+   exactly zero at the active percentile — BR and SR are zero at every
+   shipped percentile, and the dimming is what tells a reader that is
+   the data, not a rendering gap. */
+.calc-toggle-row { display: flex; flex-wrap: wrap; gap: 4px 12px;
+  font-size: 12px; }
+.calc-toggle-row label { display: flex; align-items: center; gap: 4px;
+  color: var(--text-dim); cursor: pointer; }
+.calc-toggle-row input[type=checkbox] { accent-color: var(--accent); }
+.calc-toggle-row .fam-value { font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--text-dim); }
+.calc-toggle-row .fam-value.fam-zero { opacity: .45; }
+
+.calc-headline { display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px 14px; margin-bottom: 14px; }
+.calc-stat { background: var(--bg-raised); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px 11px; }
+.calc-stat .cs-label { font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--text-dim); display: block; }
+.calc-stat .cs-value { font-size: 17px; font-weight: 700; margin-top: 4px;
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  display: block; }
+.calc-stat .cs-value.neutral { color: var(--text-dim); font-size: 13px;
+  font-weight: 500; }
+.calc-stat .cs-note { font-size: 10px; color: var(--text-dim);
+  display: block; margin-top: 2px; }
+
+/* Four one-assumption perturbations of the set now on screen (WACC
+   ±2pp, capture ±10pp). The head says "not a scenario set" in words
+   because a bare row of NPVs beside the headline tile invites reading
+   it as a forecast band, and no tooltip can carry that. Head on its own
+   line, not inline with the chips: inline it measures ~795px against
+   the 808px column and one substituted font strands a chip alone on a
+   second row. Chips, not a 2x2 table — the column reflows to ~490px at
+   the 980px breakpoint, where a wrapping chip row survives and a table
+   does not. Borrows .calc-stat's surface; D20 introduces no fifth badge
+   class and this is not one. */
+.calc-sens { margin: 0 0 12px; }
+/* Head sentence and the strip/matrix toggle share one line (owner
+   decision, 2026-08-01) — wrap allowed because the sentence alone can
+   run to two lines at the narrow-column width, and the toggle must not
+   be pushed off the card when it does. */
+.calc-sens-headrow { display: flex; justify-content: space-between;
+  align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.calc-sens-head { display: block; font-size: 10.5px; color: var(--text-dim);
+  margin: 0 0 3px; }
+/* One italic dim line standing in for the matrix table when its capture
+   axis has nothing to act on (D26's no-default-capture-rate rule, same
+   as the strip's own "na" chip) — a sentence, not a figure, so it gets
+   no mono treatment. */
+.calc-sens-na { font-size: 11px; font-style: italic; color: var(--text-dim);
+  margin: 0; }
+.calc-sens-row { display: flex; flex-wrap: wrap; gap: 6px 8px; }
+.calc-sens-chip { display: inline-flex; align-items: baseline; gap: 6px;
+  max-width: 100%; background: var(--bg-raised);
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px;
+  font-size: 10.5px; color: var(--text-dim); }
+/* Label and figure never break internally — "WACC" over "-2pp" is
+   unreadable at this size. The n/a variant is the exception: it carries
+   a sentence, which must be allowed to wrap. */
+.calc-sens-chip .cs-sl { white-space: nowrap; }
+.calc-sens-chip .cs-sv { font-family: var(--font-mono); font-size: 11px;
+  font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+.calc-sens-chip .cs-sv.cs-sv-na { font-family: inherit; font-size: 10.5px;
+  font-style: italic; color: var(--text-dim); white-space: normal; }
+
+/* Shared segmented control (owner decision, 2026-08-01) for BOTH toggles
+   on this card — sens strip/matrix and chart cash-flow/capacity — one
+   visual language for "pick which rendering", not two. Borders rather
+   than a background pill: the card already uses border-delimited
+   surfaces everywhere else (.calc-stat, .calc-sens-chip). */
+.calc-seg { display: inline-flex; border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden; }
+.calc-seg button { font: inherit; font-size: 10.5px; padding: 2px 8px;
+  background: transparent; color: var(--text-dim); border: none;
+  border-left: 1px solid var(--border); cursor: pointer; }
+.calc-seg button:first-child { border-left: none; }
+.calc-seg button.active { background: var(--bg-raised); color: var(--text);
+  font-weight: 600; }
+.calc-seg button:not(.active):hover { color: var(--text); }
+
+/* Slim, right-aligned — the chart-view toggle costs zero height because
+   it sits on its own line above the chart rather than inside it, and
+   "right-aligned" keeps it out of the reader's way when the default
+   (cash flow) view is exactly what most visits want. */
+.calc-chart-toggle { display: flex; justify-content: flex-end;
+  margin: 0 0 6px; }
+
+/* The matrix scrolls its own overflow (owner decision, 2026-08-01)
+   rather than stretching or clipping the card: at the ~490px narrow-
+   column width a 4-6 column table does not fit, and a horizontal
+   scrollbar on the table is the honest response, not a shrunk font. */
+.calc-sens-matrixwrap { overflow-x: auto; }
+/* Restyle (owner request, 2026-08-01): the matrix speaks .util-table's
+   language — full column width, row separators rather than a full grid,
+   dim weighted headers, mono right-aligned numerics — instead of the
+   cramped bordered grid it shipped as. A full grid at 11px reads as a
+   spreadsheet screenshot; row rules and column alignment carry the same
+   structure at half the ink. */
+/* Equal columns (owner request, 2026-08-01): fixed layout so the five
+   value columns share the width evenly instead of the row-header column
+   swallowing the slack; the min-width hands a too-narrow column to the
+   wrapper's own horizontal scroll rather than crushing the cells. */
+.calc-sens-matrix { border-collapse: collapse; width: 100%;
+  table-layout: fixed; min-width: 480px; margin-top: 2px; }
+.calc-sens-matrix thead th:first-child { white-space: normal; }
+.calc-sens-matrix th, .calc-sens-matrix td {
+  border: none; border-bottom: 1px solid var(--border);
+  padding: 6px 10px; text-align: right; white-space: nowrap; }
+.calc-sens-matrix td { font-family: var(--font-mono); font-size: 11.5px;
+  font-variant-numeric: tabular-nums; color: var(--text); }
+.calc-sens-matrix th { font: inherit; font-size: 10.5px;
+  color: var(--text-dim); font-weight: 600; }
+/* Row headers are values too (8.0%), so they align and set like the
+   cells they label; the corner cell is the one word-shaped header and
+   sits left, where a reading starts. */
+.calc-sens-matrix tbody th { font-family: var(--font-mono);
+  font-size: 11px; font-variant-numeric: tabular-nums; font-weight: 500; }
+.calc-sens-matrix thead th:first-child { text-align: left; }
+.calc-sens-matrix tbody tr:hover th,
+.calc-sens-matrix tbody tr:hover td { background: var(--bg-raised); }
+/* Base row/column header: same marker treatment as the base cell below,
+   at text weight rather than an outline — a header is not a value. */
+.calc-sens-matrix th.csm-base { color: var(--text); font-weight: 700; }
+/* The base cell equals the headline NPV by construction (D20) — outlined
+   rather than filled, so it reads as "this one, boxed" without fighting
+   the negative-value colour a base cell can also carry; the raised
+   surface underneath keeps it findable when the row hover paints its
+   neighbours the same. */
+.calc-sens-matrix td.csm-basecell { outline: 1px solid var(--accent);
+  outline-offset: -2px; background: var(--bg-raised); }
+.calc-sens-matrix td.csm-neg { color: var(--neg); }
+.calc-missing { color: var(--text-dim); font-size: 13px; }
+.calc-missing ul { margin: 6px 0 0; padding-left: 18px; }
+/* Two exports (CSV, D31; Excel, D35), same visual weight, side by side
+   at desktop width and wrapping to stacked full-width buttons on a
+   narrow card rather than overflowing it. */
+.calc-export-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.calc-csv-btn { background: var(--bg-raised); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 6px;
+  font: inherit; font-size: 12px; font-weight: 600;
+  padding: 6px 12px; cursor: pointer; }
+.calc-csv-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
+/* One column, inputs first, results after — DOM order, no reordering.
+   Sticky off: pinning half the viewport on a phone leaves no room for
+   the form it is meant to accompany. */
+@media (max-width: 980px) {
+  .calc-grid { grid-template-columns: 1fr; }
+  #bess-calc-results { position: static; max-height: none;
+    overflow: visible; margin-top: 6px; }
+}
 
 /* empty / error / loading states */
 .empty-state {

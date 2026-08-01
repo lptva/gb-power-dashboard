@@ -624,15 +624,15 @@ document.write('<link rel="stylesheet" href="css/style.css'
 
       <div class="card-subsection" id="bess-bm-section">
         <div class="card-head">
-          <h2>Balancing Mechanism cashflow (gross, includes the energy leg)
-            <span class="badge observed">Observed</span></h2>
-          <p id="bess-bm-desc">What the identified fleet was paid (offer)
-             and paid out (bid) in Balancing Mechanism settlement, from
-             Elexon's indicative Bid-Offer Cashflow (EBOCF, the II
-             settlement run), with the net MWh that produced it on the
-             right-hand axis. This is <b>never added to the stack
-             above</b>: it is the energy-purchase leg of BM participation,
-             not margin. Its sign follows whichever way the fleet happened
+          <h3>Balancing Mechanism cashflow (gross, includes the energy leg)</h3>
+          <p id="bess-bm-desc">The other half of this card's story: what the
+             identified fleet was paid (offer) and paid out (bid) in
+             Balancing Mechanism settlement, from Elexon's indicative
+             Bid-Offer Cashflow (EBOCF, the II settlement run), with the net
+             MWh that produced it on the right-hand axis. The BM cashflow is
+             <b>deliberately never added to the revenue stack above</b>: it
+             is the energy-purchase leg of BM participation, not margin.
+             Its sign follows whichever way the fleet happened
              to charge or discharge that day, so a day of heavy charging
              settles deep negative, and its scale runs to several times
              the availability stack's. The offsetting wholesale trade is
@@ -681,6 +681,69 @@ document.write('<link rel="stylesheet" href="css/style.css'
         No BESS activity dataset available — run
         <code>python etl/build_bess_activity.py --backfill 400</code> to
         build the fleet list.
+      </div>
+    </div>
+
+    <div class="card span-2 calc-card">
+      <div class="card-head">
+        <h2>Profitability calculator
+          <span class="badge assumption">Assumption</span>
+          <span class="badge estimated hidden"
+            id="bess-calc-badge-estimated">Estimated</span>
+          <span class="badge beta">Beta</span></h2>
+        <p id="bess-calc-desc">Illustrative economics from the assumptions
+           you enter, anchored on what comparable units observably earned.
+           <b>Not investment advice, not a valuation, and not a
+           forecast.</b> You describe a battery, the calculator anchors the
+           revenue side on the published record for real units, and reports
+           a simple annual cash flow with NPV, IRR, DPI, a discounted
+           payback period and
+           an indicative LCOS. Every figure below the inputs is your own
+           assumption arithmetic.
+           <span class="info" data-method="bess-calc">ⓘ</span></p>
+        <p class="card-meta" id="bess-calc-caption"></p>
+      </div>
+
+      <div class="calc-mode-row">
+        <div class="calc-mode" id="bess-calc-mode">
+          <label><input type="radio" name="bess-calc-mode"
+            value="hypothetical" checked> Hypothetical asset</label>
+          <label class="calc-mode-disabled" title="Ships in a later release">
+            <input type="radio" name="bess-calc-mode" value="unit" disabled>
+            Pick a unit
+            <span class="calc-mode-note">per-unit anchoring is coming in a
+              later release</span>
+          </label>
+        </div>
+        <button type="button" id="bess-calc-reset"
+          class="calc-reset-btn">Reset to defaults</button>
+      </div>
+
+      <div class="calc-grid">
+        <div id="bess-calc-inputs"></div>
+        <div id="bess-calc-results">
+          <h4 class="calc-results-head">Results</h4>
+          <p class="calc-anchor-line" id="bess-calc-anchor"></p>
+          <p class="calc-mix-line hidden" id="bess-calc-mix"></p>
+          <div id="bess-calc-headline" class="calc-headline"></div>
+          <div class="calc-sens hidden" id="bess-calc-sens"></div>
+          <div class="calc-chart-toggle hidden" id="bess-calc-chart-toggle">
+            <span class="calc-seg" role="group" aria-label="Chart view">
+              <button type="button" data-chart-view="cashflow">Cash flow</button>
+              <button type="button" data-chart-view="capacity">Capacity</button>
+            </span>
+          </div>
+          <div class="chart-wrap">
+            <div class="chart" id="ch-bess-calc"></div>
+            <div class="chart-empty hidden" id="bess-calc-empty"></div>
+          </div>
+          <div class="calc-export-row">
+            <button type="button" id="bess-calc-csv"
+              class="calc-csv-btn hidden">Export cash flow (CSV)</button>
+            <button type="button" id="bess-calc-xlsx"
+              class="calc-csv-btn hidden">Export model (Excel)</button>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -768,7 +831,7 @@ document.write('<link rel="stylesheet" href="css/style.css'
    placeholder was never replaced); on localhost it is a fresh Date.now()
    on every load. */
 ["js/data.js", "js/metrics.js", "js/state.js", "js/terms.js",
- "js/charts.js", "js/ui.js", "js/app.js"].forEach(function (src) {
+ "js/xlsx.js", "js/charts.js", "js/ui.js", "js/app.js"].forEach(function (src) {
   document.write('<script src="' + src + DEV_CACHE_V + '"><\/script>');
 });
 </script>
