@@ -126,7 +126,8 @@ class WriteStatusTest(unittest.TestCase):
 
     def test_ok_run_schema_round_trips(self):
         steps = ["core dataset refresh", "bmu snapshot refresh",
-                 "bess activity refresh", "bess revenue refresh"]
+                 "bess activity refresh", "bess revenue refresh",
+                 "bess units refresh"]
         returned = write_status(
             self.path, "ok", None, None, steps, 1,
             ts="2026-07-13T09:00:12Z")
@@ -291,6 +292,74 @@ class BessActivityStepTest(unittest.TestCase):
         self.assertIn("bmu snapshot refresh", status["steps_completed"])
         self.assertIn("stress metrics refresh", status["steps_completed"])
         self.assertNotIn("bess activity refresh", status["steps_completed"])
+
+
+class BessUnitsStepTest(unittest.TestCase):
+    """The BESS profitability calculator support payload (plan/09,
+    issue #49) is wired as a non-fatal step, positioned after "bess
+    revenue refresh" — same contract as BessActivityStepTest above: a
+    failure must not turn the run's overall outcome into "failed", and
+    the label must not land in steps_completed."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp.name)
+        (tmp / "logs").mkdir()
+        self.status_path = tmp / "refresh_status.json"
+        self._patches = [
+            mock.patch.object(refresh, "OPS", tmp),
+            mock.patch.object(refresh, "STATUS_PATH", self.status_path),
+            mock.patch.object(refresh, "resolve_child_python",
+                              lambda: "python3"),
+            mock.patch.object(refresh.time, "sleep", lambda s: None),
+            mock.patch.object(refresh, "ZONES", []),
+            mock.patch.object(refresh, "ai_summary_enabled",
+                              lambda root: False),
+        ]
+        for p in self._patches:
+            p.start()
+        self._saved_env = os.environ.pop("GB_DASH_ORCHESTRATED", None)
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        os.environ.pop("GB_DASH_ORCHESTRATED", None)
+        if self._saved_env is not None:
+            os.environ["GB_DASH_ORCHESTRATED"] = self._saved_env
+        self._tmp.cleanup()
+
+    def read_status(self):
+        return json.loads(self.status_path.read_text(encoding="utf-8"))
+
+    def test_bess_units_failure_is_non_fatal(self):
+        def run(args, **kwargs):
+            code = 1 if any("build_bess_units.py" in str(a) for a in args) else 0
+            return types.SimpleNamespace(returncode=code)
+
+        with mock.patch.object(refresh.subprocess, "run", run):
+            refresh.main()
+        status = self.read_status()
+        self.assertEqual(status["outcome"], "ok")
+        self.assertIsNone(status["failed_step"])
+        self.assertIn("bess revenue refresh", status["steps_completed"])
+        self.assertNotIn("bess units refresh", status["steps_completed"])
+
+    def test_bess_units_runs_after_bess_revenue(self):
+        order = []
+
+        def run(args, **kwargs):
+            label = str(args[1]) if len(args) > 1 else ""
+            if "build_bess_revenue.py" in label:
+                order.append("bess revenue")
+            elif "build_bess_units.py" in label:
+                order.append("bess units")
+            return types.SimpleNamespace(returncode=0)
+
+        with mock.patch.object(refresh.subprocess, "run", run):
+            refresh.main()
+        self.assertEqual(order, ["bess revenue", "bess units"])
+        status = self.read_status()
+        self.assertIn("bess units refresh", status["steps_completed"])
 
 
 if __name__ == "__main__":
