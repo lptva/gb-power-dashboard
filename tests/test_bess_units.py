@@ -38,6 +38,21 @@ from build_bess_units import (  # noqa: E402
     per_unit_totals,
     trailing_window,
 )
+# The suite runs without the ETL's third-party deps (deploy.yml
+# installs certifi for the real ETL run; tests.yml deliberately does
+# not — its own comment says so). build_dataset builds its SSL context
+# from certifi.where() at import time, so when certifi is absent this
+# stands in with a None cafile (ssl's own default trust store) — safe
+# here because build_dataset is monkeypatched below and never makes a
+# live request in this file.
+try:
+    import certifi  # noqa: F401 — presence check only
+except ModuleNotFoundError:
+    import ssl  # noqa: F401 — documents what consumes the stub
+    import types
+    _certifi_stub = types.ModuleType("certifi")
+    _certifi_stub.where = lambda: None
+    sys.modules["certifi"] = _certifi_stub
 import build_dataset  # noqa: E402 — monkeypatched, never called live below
 
 
