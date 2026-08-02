@@ -657,8 +657,13 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
    decision, 2026-08-01) — wrap allowed because the sentence alone can
    run to two lines at the narrow-column width, and the toggle must not
    be pushed off the card when it does. */
+/* Row gap covers the wrapped (narrow-column) case, where the toggle
+   drops under the head sentence and sat flush against the chip row
+   below (owner fix, 2026-08-02); the bottom margin separates whichever
+   line is last from the strip/matrix body at every width. */
 .calc-sens-headrow { display: flex; justify-content: space-between;
-  align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  align-items: baseline; gap: 6px 8px; flex-wrap: wrap;
+  margin: 0 0 6px; }
 .calc-sens-head { display: block; font-size: 10.5px; color: var(--text-dim);
   margin: 0 0 3px; }
 /* One italic dim line standing in for the matrix table when its capture

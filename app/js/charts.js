@@ -5239,7 +5239,12 @@ const Charts = (() => {
               "en-GB", { maximumFractionDigits: 1 })} MWh`).join(""),
         },
         xAxis: xAxisYears,
-        yAxis: valueAxis("MWh usable", { axisLabel: mwhLabel }),
+        // Zero-based axis (owner fix, 2026-08-02): ECharts' auto-min
+        // crops the bars to the data's own range, which inflates the
+        // sawtooth — a 10 MWh augmentation tranche on a 40 MWh asset
+        // read as a near-doubling. Capacity bars are magnitudes, and a
+        // magnitude bar starts at zero.
+        yAxis: valueAxis("MWh usable", { axisLabel: mwhLabel, min: 0 }),
         series: [
           { name: "Usable energy", type: "bar",
             // Un-scaled here, unlike the CSV export's usable_mwh column:
