@@ -1397,8 +1397,9 @@ const UI = (() => {
          Honesty limits, stated plainly: this is first-order
          counterparty-mix attribution only, not flow tracing. The zone's
          own imports are not re-attributed. It exists only over the
-         accumulated zone history, append-only from 31 May 2026, extended
-         by the daily refresh, no backfill, so the line simply starts
+         accumulated zone history, append-only from late May 2026 (FR
+         from 16 May, the other zones from 30 May), extended by the daily
+         refresh, no backfill, so the line simply starts
          where zone history does. Where zone data is missing at a
          timestamp, that cable's import falls back to the headline
          treatment, denominator only. Exports are excluded from both
@@ -1423,7 +1424,8 @@ const UI = (() => {
             what the exporting zone was running, not which plants supplied
             the cable's electrons.</li>
         <li><b>Zone history is shorter than GB's 365 days.</b> It
-            accumulates append-only at ~6 kB/day/zone from 31 May 2026
+            accumulates append-only at ~6 kB/day/zone from late May 2026
+            (FR from 16 May, the other zones from 30 May)
             (<code>--retain-days</code> can trim it if size ever matters),
             and deepens with the daily refresh, so longer ranges clip to
             the overlap (stated in the panel's meta line). TSO reporting
@@ -1495,8 +1497,9 @@ const UI = (() => {
             GB premium. Day-ahead auction vs within-day MID are different
             market segments, so the gap is context, not a tradable spread.
             Zone prices exist only over the accumulated zone history:
-            collection began 31 May 2026 and is append-only with no
-            backfill, so that date is a fixed accumulation start. Unlike
+            collection began 16 May 2026 for France and 30 May 2026 for
+            the other zones, append-only with no
+            backfill, so those dates are a fixed accumulation start. Unlike
             the rolling ceiling window, it never moves, and it bounds the
             join. The row tooltip counts the half-hours actually used.</li>
         <li><b><a class="term-link" data-term="congestion_proxy" href="#g-congestion_proxy">

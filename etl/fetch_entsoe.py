@@ -35,9 +35,18 @@ from pathlib import Path
 
 # Reuse the shared HTTP/caching helpers and output location.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_dataset import HALF_HOUR, OUT_DIR, _atomic_write, http  # noqa: E402
+from build_dataset import (  # noqa: E402
+    HALF_HOUR, OUT_DIR, _atomic_write, day_chunks, http,
+)
 
 API = "https://web-api.tp.entsoe.eu/api"
+
+# Longest window fetched in ONE request. A single unchunked 365-day A75
+# request times out (probed live 2026-07-16); 60 days is proven. Windows
+# longer than this are split with day_chunks and merged — so callers may
+# ask for any span (e.g. the cold-start rebuild anchored at the start of
+# accumulated zone history) without a timeout ceiling to revisit.
+CHUNK_DAYS = 60
 
 # Zone set logic (stated explicitly — see plan/04 and README):
 #   "interconnected" = GB's physical counterparty bidding zones, one per
@@ -284,6 +293,48 @@ def fetch_zone(token: str, zone: str, start: date, end: date):
     return hh, currency
 
 
+def _merge_sources(sources: list[dict]) -> tuple[list[str], dict]:
+    """Merge columnar half-hour dicts; later sources win on overlap.
+    Returns (columns, rows) with rows keyed by timestamp — callers pick
+    the axis (sorted, possibly trimmed) and rebuild columns from it."""
+    columns = sorted({k for src in sources for k in src if k != "t"})
+    rows: dict[int, dict] = {}
+    for source in sources:
+        for i, ts in enumerate(source["t"]):
+            row = rows.setdefault(ts, {})
+            for k in columns:
+                v = source[k][i] if k in source else None
+                if v is not None:
+                    row[k] = v
+    return columns, rows
+
+
+def _columnar(columns: list[str], rows: dict, axis: list[int]) -> dict:
+    out: dict = {"t": axis}
+    for k in columns:
+        out[k] = [rows[ts].get(k) for ts in axis]
+    return out
+
+
+def fetch_zone_chunked(token: str, zone: str, start: date, end: date):
+    """fetch_zone over an arbitrary span, split into <=CHUNK_DAYS windows
+    (see CHUNK_DAYS for why) and merged on the half-hour axis. A span
+    that fits one window is a single plain fetch_zone call."""
+    windows = list(day_chunks(start, end, CHUNK_DAYS))
+    parts, currency = [], None
+    for n, (lo, hi) in enumerate(windows, 1):
+        if len(windows) > 1:
+            print(f"  window {n}/{len(windows)}: {lo} → {hi}")
+        hh, cur = fetch_zone(token, zone, lo, hi)
+        currency = currency or cur
+        if hh["t"]:
+            parts.append(hh)
+    if not parts:
+        return {"t": []}, currency
+    columns, rows = _merge_sources(parts)
+    return _columnar(columns, rows, sorted(rows)), currency
+
+
 def merge_with_history(zone: str, hh_new: dict,
                        retain_days: int = 0) -> dict:
     """Append-only retention: merge the fresh fetch onto the previously
@@ -301,16 +352,7 @@ def merge_with_history(zone: str, hh_new: dict,
     except (OSError, ValueError):
         return hh_new  # first run for this zone — nothing to merge
 
-    columns = sorted({k for k in hh_old if k != "t"}
-                     | {k for k in hh_new if k != "t"})
-    rows: dict[int, dict] = {}
-    for source in (hh_old, hh_new):  # new second → fresh values win
-        for i, ts in enumerate(source["t"]):
-            row = rows.setdefault(ts, {})
-            for k in columns:
-                v = source[k][i] if k in source else None
-                if v is not None:
-                    row[k] = v
+    columns, rows = _merge_sources([hh_old, hh_new])  # new second → fresh wins
     axis = sorted(rows)
     if retain_days > 0:
         cutoff = axis[-1] - retain_days * 86400 + HALF_HOUR
@@ -322,9 +364,7 @@ def merge_with_history(zone: str, hh_new: dict,
     if any(axis[i] >= axis[i + 1] for i in range(len(axis) - 1)):
         raise SystemExit(f"REFUSING TO PUBLISH {zone}: merged axis is "
                          "not strictly increasing")
-    merged = {"t": axis}
-    for k in columns:
-        merged[k] = [rows[ts].get(k) for ts in axis]
+    merged = _columnar(columns, rows, axis)
     print(f"  history: {len(hh_old['t'])} stored + {len(hh_new['t'])} "
           f"fetched → {len(axis)} half-hours "
           f"({axis[0]} → {axis[-1]}, append-only)")
@@ -463,6 +503,12 @@ if __name__ == "__main__":
     cli.add_argument("--zone", choices=sorted(ZONES), default="FR")
     cli.add_argument("--days", type=int, default=30,
                      help="fetch window; history is retained append-only")
+    cli.add_argument("--start", type=date.fromisoformat, default=None,
+                     metavar="YYYY-MM-DD",
+                     help="fetch from this date to yesterday instead of "
+                          "--days (the cold-start rebuild anchors here); "
+                          "spans over %d days are fetched in chunks "
+                          "either way" % CHUNK_DAYS)
     cli.add_argument("--retain-days", type=int, default=0,
                      help="trim retained history to N days (0 = keep all; "
                           "fallback if size ever becomes a concern)")
@@ -475,9 +521,12 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     end = date.today() - timedelta(days=1)
-    start = end - timedelta(days=args.days - 1)
+    start = args.start or end - timedelta(days=args.days - 1)
+    if start > end:
+        raise SystemExit(f"--start {start} is after {end} (yesterday) — "
+                         "nothing to fetch")
     print(f"Fetching ENTSO-E {args.zone} {start} → {end}")
-    hh, currency = fetch_zone(token, args.zone, start, end)
+    hh, currency = fetch_zone_chunked(token, args.zone, start, end)
     if not hh["t"]:
         raise SystemExit("ENTSO-E returned no data — nothing written")
     hh = merge_with_history(args.zone, hh, args.retain_days)

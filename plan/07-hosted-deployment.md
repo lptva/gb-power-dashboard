@@ -386,6 +386,13 @@ jobs:
 > even on a benign skip, and unlike the warm path nothing here inherits
 > `run_non_fatal` from `refresh.py`. See `.github/workflows/deploy.yml`.
 
+> **Resolved (2026-08-02):** the `ZONE_DAYS=60` ratchet (REVISIT BY 30 Jul)
+> is retired. `fetch_entsoe.py` now chunks any span into ≤60-day requests
+> internally, and the cold path anchors at `ZONE_HISTORY_START=2026-05-16`
+> (the FR pilot's first day; the real accumulation starts were 16/30 May,
+> not the 31 May the old comment assumed), so a cold start always rebuilds
+> the full accumulated history with nothing to revisit as it grows.
+
 **Ordering — RESOLVED (owner, 2026-07-15): snapshot upload stays *before* the
 Pages publish.** If a deploy fails after the snapshot upload, state races
 slightly ahead of what is actually live — but the next successful deploy

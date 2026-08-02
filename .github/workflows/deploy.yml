@@ -92,14 +92,15 @@ jobs:
           ENABLE_AI_SUMMARY: "true"                # D3 = yes (§5)
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # No GITHUB_TOKEN — same reason as the warm step (LLM with Bash).
-          ZONE_DAYS: "60"   # 60, not 365: a single unchunked 365-day A75 request
-                            # times out (probed live 2026-07-16). Zone history
-                            # accumulates from 31 May 2026, so a 60-day window
-                            # covers it in full only until 30 Jul 2026 (31 May
-                            # + 60 d). From 31 Jul a COLD start silently drops
-                            # the earliest days; warm runs are unaffected (the
-                            # snapshot carries full history). REVISIT BY
-                            # 30 Jul 2026 (see plan/07 §2).
+          # Anchor of the accumulated zone history: the FR pilot's first
+          # day (16 May 2026; the other six zones start 30 May and would
+          # gain a ~14-day backfill on a cold start — harmless, richer).
+          # fetch_entsoe.py splits any span into <=60-day requests (a
+          # single unchunked 365-day A75 request times out — probed live
+          # 2026-07-16), so unlike the old ZONE_DAYS=60 day-count this
+          # anchor needs NO revisiting as history grows: a cold start
+          # always rebuilds the full span. Warm runs never hit this path.
+          ZONE_HISTORY_START: "2026-05-16"
         run: |
           # Core dataset — FATAL if it fails (the core step; matches refresh.py,
           # where only the core step exits non-zero). No guard: let -e stop here.
@@ -111,7 +112,7 @@ jobs:
 
           # ENTSO-E zones — NON-FATAL per zone, naming the zone on failure.
           for Z in FR NL BE NO_2 DK_1 IE DE_LU; do
-            python3 etl/fetch_entsoe.py --zone "$Z" --days "$ZONE_DAYS" \
+            python3 etl/fetch_entsoe.py --zone "$Z" --start "$ZONE_HISTORY_START" \
               || echo "::warning::zone $Z refresh failed — switcher may drop $Z"
           done
 

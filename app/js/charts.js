@@ -1333,7 +1333,7 @@ const Charts = (() => {
       + `${Metrics.fmtDate((win.endTs - 1800) * 1000, "day")})`
       + " · near-capacity % over the selected range · Δ uses zone"
       + " day-ahead prices collected since "
-      + (zFrom ? Metrics.fmtDate(zFrom * 1000, "day") : "31 May 2026")
+      + (zFrom ? Metrics.fmtDate(zFrom * 1000, "day") : "16 May 2026")
       + " (fixed accumulation start, no backfill)"
       + " · congestion proxy = at-ceiling + wide direction-consistent"
       + ` spread (market p75/p25 over the zone window, ≥£${CONG_FLOOR})`

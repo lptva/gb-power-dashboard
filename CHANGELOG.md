@@ -1130,3 +1130,22 @@ machine, worked through in priority order.
   the defensive re-fetch — price/solar coverage is now exactly 1.0).
 - Serving: use port 8872 for this copy (`gb-power-dashboard-2-qa` launch
   config); the original stays on 8861/8871.
+
+### Zone cold-start rebuild: chunked + anchored (2026-08-02)
+
+- `etl/fetch_entsoe.py` now splits any requested span into ≤60-day requests
+  (`CHUNK_DAYS`, the size proven live on 2026-07-16 — one unchunked 365-day
+  A75 request times out) and merges the windows on the half-hour axis, so
+  the fetch window no longer has a timeout ceiling. New `--start YYYY-MM-DD`
+  fetches from a fixed date to yesterday; `--days` unchanged.
+- The hosted cold path (`.github/workflows/deploy.yml`) anchors at
+  `ZONE_HISTORY_START=2026-05-16` instead of the `ZONE_DAYS=60` day-count,
+  retiring the "REVISIT BY 30 Jul 2026" ratchet: a cold start now rebuilds
+  the entire accumulated zone history however long it grows. Warm runs are
+  unaffected (snapshot carries history; merge stays append-only).
+- Corrected the documented accumulation start everywhere: collection really
+  began 16 May 2026 (FR, pilot) and 30 May 2026 (other six zones) — the
+  "31 May 2026" previously stated in methodology.md, README.md and the
+  Flows/zone UI text matched no zone's data. The old comment's cold-start
+  exposure maths was therefore optimistic: the 60-day window had already
+  stopped covering FR's history on 15 Jul, not 30 Jul.
