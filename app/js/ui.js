@@ -2097,7 +2097,7 @@ const UI = (() => {
          number. The agent is instructed to synthesise: at most two
          causally-explained findings per tab, with correlated hours
          collapsed into one finding, rather than enumerate threshold
-         crossings. It compares the last 48 hours against a 14–30 day
+         crossings. It compares the last 24 hours against a trailing 14-day
          baseline and reports data-quality flags separately.</p>
       <p>It is an <b>interpretation of the published dataset, not a data
          series</b>, hence the distinct dashed styling and AI-generated
@@ -2226,9 +2226,14 @@ const UI = (() => {
          the Identified fleet table on the tab itself, which has no
          export. No dataset built yet, or no stored days in range, →
          header-only file.</p>
-      <p>No export contains free text. Every value is a number, an ISO
-         date or timestamp, a boolean, or a value from a fixed token set,
-         because the CSV writer does no comma-escaping.</p>
+      <p>No export contains free text in any data cell: every value is a
+         number, an ISO date or timestamp, a boolean, or a value from a
+         fixed token set, because the CSV writer does no comma-escaping.
+         The one scoped exception is the BESS profitability calculator's
+         CSV and Excel exports, which carry a free-text <code>#</code>
+         header comment block (your inputs, the illustrative-economics
+         disclaimer, and an ONS CPI provenance note) above the data —
+         free text never enters a data cell.</p>
 
       <h3 id="m-limits">Known limitations</h3>
       <ul>
@@ -2445,8 +2450,8 @@ const UI = (() => {
      [fromIso, toIso] across BOTH optional secondary payloads: activity
      (bess_activity.json, dict keyed by day) and revenue
      (bess_revenue.json, columnar with a plain `days` array — plan/08 D16).
-     The two payloads cover different windows (activity ships a short
-     rolling backfill, revenue ships the full 400-day retention), so a row
+     The two payloads can cover different windows (both retain 400 days,
+     but each is only as deep as its own backfill has run), so a row
      can carry one side and leave the other blank — that is a real gap in
      what has been fetched, not a bug, and is left as an empty cell rather
      than a zero.

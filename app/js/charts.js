@@ -1296,8 +1296,9 @@ const Charts = (() => {
         <th class="num" title="Operator-published design capacity — cited`
       + ` reference only, never used in the near-capacity test (sources:`
       + ` methodology.md)">Nameplate MW</th>
-        <th class="num" title="Trailing ${UTIL_CEIL_DAYS}-day max observed`
-      + ` flow per direction — the operational ceiling the near-capacity`
+        <th class="num" title="Trailing ${UTIL_CEIL_DAYS}-day sustained`
+      + ` ceiling per direction (4th-largest half-hour, not a plain max)`
+      + ` — the operational ceiling the near-capacity`
       + ` test uses (Proxy)">Op. ceiling MW imp / exp</th>
         <th class="num" title="Share of half-hours in the selected range`
       + ` with flow at or beyond ${UTIL_THRESHOLD * 100}% of the`
@@ -1347,8 +1348,8 @@ const Charts = (() => {
      auction converted to GBP at the daily BoE EUR/GBP rate — Derived and
      indicative only (different market segment from MID). The mix panel is
      zone-wide CONTEXT, not attribution of the cable's electrons. Zone
-     history is append-only from a fixed accumulation start (31 May 2026,
-     no backfill) and deepens daily — NOT a rolling window: longer GB
+     history is append-only from a fixed accumulation start (FR 16 May
+     2026, other zones 30 May; no backfill) and deepens daily — NOT a rolling window: longer GB
      ranges are clipped to the overlap, stated in the caption meta line.
      Gaps stay gaps. */
   let selectedCable = null;

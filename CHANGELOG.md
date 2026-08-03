@@ -1149,3 +1149,21 @@ machine, worked through in priority order.
   Flows/zone UI text matched no zone's data. The old comment's cold-start
   exposure maths was therefore optimistic: the 60-day window had already
   stopped covering FR's history on 15 Jul, not 30 Jul.
+
+### Methodology consistency pass (2026-08-02, follow-up)
+
+- A verified 15-agent audit found methodology.md had fallen behind the
+  dashboard — chiefly the entire Batteries (BESS) tab (schema, windows,
+  exports, judgement calls existed only in the in-app tab). methodology.md
+  now covers the three BESS payloads, the 400-day retention windows, the
+  gb_bess_activity CSV and both calculator exports, and judgement calls
+  14-16; the free-text export rule is scoped to data cells (the calculator
+  exports carry a # header comment block).
+- Corrected across surfaces: netImports/renewables documented as
+  client-side derived (not file columns); fx_eur_per_gbp and coal_source
+  documented; flows CSV column is timestamp_utc; AI-summary text now says
+  24 h window / trailing 14-day baseline; stress-card text carries the
+  60 s and 1% rule floors; utilisation tooltip no longer says "max";
+  the last user-facing "31 May 2026" zone dates fixed (index.html card,
+  charts.js comment); index.html's revenue backfill hint uses the real
+  --backfill flag.

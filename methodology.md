@@ -14,8 +14,10 @@ This file and the in-app Methodology tab split the documentation deliberately. T
 | `solar` | MW | PV_Live national | observed (model-estimated standard) |
 | `CCGT, WIND, NUCLEAR, …` | MW | Elexon FUELHH | observed |
 | `INTFR, INTNSL, …` (10 cables) | MW, +ve = import | Elexon FUELHH | observed |
-| `netImports` | MW | derived: Σ INT* | derived from observed |
-| `renewables` | MW | derived: WIND + solar | derived from observed |
+| `netImports` | MW | derived: Σ INT* | derived from observed — not a column of the published file |
+| `renewables` | MW | derived: WIND + solar | derived from observed — not a column of the published file |
+
+`netImports` and `renewables` are not columns of the published `series_hh.json`: the app derives them once at load (`app/js/data.js`) from the INT* columns and from WIND + solar respectively, using exactly the formulas in the table. A direct consumer of the JSON file must derive them itself.
 
 **Price series scope: MID, not day-ahead.** The dashboard's "price" is the Market Index Data price. It tracks the day-ahead auction closely in normal conditions but diverges in stressed periods. It is used because it is the only free, half-hourly, officially published GB price series. One deliberate exception: the System stress tab uses SSP instead, the settlement price of the balancing actions NESO actually took, where MID measures traded wholesale sessions. The reasoning is spelled out with the stress flag rules below.
 
@@ -24,6 +26,7 @@ This file and the in-app Methodology tab split the documentation deliberately. T
 | Field | Unit | Source | Quality |
 |---|---|---|---|
 | `gas_sap` | £/MWh thermal (HHV) | National Gas SAP ×10 from p/kWh | observed |
+| `fx_eur_per_gbp` | EUR per GBP | Bank of England daily spot, series XUDLERS, forward-filled over weekends and holidays | observed (carried forward on non-business days) |
 | `carbon_uka_month` | £/tCO2 | gov.uk CCM monthly average | observed monthly |
 | `carbon_ffill` | boolean | – | true where UKA carried forward past last published month |
 | `coal_proxy_gbp_mwh` | £/MWh thermal | World Bank Pink Sheet (Newcastle 6,000 futures, USD/t) ÷ BoE USD/GBP ÷ 6.978 | proxy / derived |
@@ -52,6 +55,36 @@ A day is flagged when any of four rules fires. `frequency` fires when seconds be
 
 `events/<date>/freq.json` (optional, same pipeline) stores grid-aligned 15 s frequency for **every flagged day**, any flag type: `start_utc`, `step_seconds`, `hz[5760]` with `null` gaps. The app fetches slices lazily, one per view. Each is ~40 kB on disk and none of it joins the eager page payload.
 
+`bess_activity.json` (optional, written by `etl/build_bess_activity.py`) powers the Batteries tab's BM activity chart and the Identified fleet table. It stores signed accepted Balancing Mechanism volumes per stored day for the deterministically identified GB battery fleet (the identification rule is judgement call 14 below, echoed verbatim in the payload's `meta.identification`), plus a `fleet` block: `units`, `mw`, and a `list[]` of unit id, name, registered party, `cap_mw`, which identification leg matched, and `first_active` — the day of the unit's first observed non-zero accepted volume, the state behind the per-day denominator. Retention is tiered inside one rolling window of at most 400 days: every stored day carries the daily totals, counts and denominator; the newest 90 also carry per-settlement-period half-hourly arrays (one slot per period of the local calendar day — 46, 48 or 50 on clock-change days, deliberately never hard-coded to 48) and `active_idx`; the newest 30 also carry per-unit acceptance counts. The tier is implied by which optional fields are present, and consumers never branch on it.
+
+| Field (per day) | Unit | Source | Quality |
+|---|---|---|---|
+| `offer_mwh_total`, `bid_mwh_total` | MWh, offer ≥ 0, bid ≤ 0 | Elexon settlement accepted volumes (not integrated BOALF: accepted deviation from the unit's own notified position, not delivered energy) | observed |
+| `acceptances` | count | Elexon accepted-volume rows that day | observed |
+| `active_units`, `active_mw` | count, MW | fleet units with non-zero accepted volume that day | derived from observed |
+| `denominator_mw`, `denominator_units` | MW, count | cumulative first-entry rule: registered capacity of identified units first dispatched in the BM on or before that day | derived from observed |
+| `offer_mwh[]`, `bid_mwh[]`, `active_idx` (newest 90 d only) | MWh per settlement half-hour; one slot per period of the local day (46/48/50 on clock-change days) | Elexon settlement accepted volumes | observed |
+| `unit_acceptances` (newest 30 d only) | count per unit | Elexon | observed |
+
+`bess_revenue.json` (optional, written by `etl/build_bess_revenue.py`) carries the Observable revenue stack and its Balancing Mechanism cashflow sub-panel, columnar over a plain `days[]` array with at most 400 days retained. The cohort is the EAC join: NESO `technologyType = 'Batteries'`, matched exact and uppercase on `auctionUnit` = `nationalGridBmUnit`, restricted to physical units (`elexonBmUnit` prefix `E_`/`T_`) with registered generation capacity above zero; the `cohort` block discloses both coverage figures (share of REPD's operational battery MW, and share of all EAC battery-labelled gross £ the cohort earns).
+
+| Field | Unit | Source | Quality |
+|---|---|---|---|
+| `eac_gbp_per_kw_day.<product>[]` (12 products: DCL, DCH, DML, DMH, DRL, DRH, PBR, NBR, PQR, NQR, PSR, NSR) | £/kW/day, signed | NESO EAC auction results: executedQuantity × clearingPrice × window_h, summed per day per product | observed |
+| `eac_unit_spread_gbp_per_kw_day.{p10,p50,p90}[]` | £/kW/day | cross-unit spread of the same total, no unit named | derived from observed |
+| `bm.offer_gbp_per_kw_day[]`, `bm.bid_gbp_per_kw_day[]` | £/kW/day, signed | Elexon EBOCF (indicative bid-offer cashflow, II settlement run) | observed |
+| `bm.offer_mwh[]`, `bm.bid_mwh[]` | MWh | Elexon DISPTAV (indicative accepted volumes) | observed |
+| `denominator_kw[]` | kW | per day, summed nameplate of cohort units first appearing in the fetched EAC history on or before that day | derived from observed |
+
+`bess_units.json` (optional, written by `etl/build_bess_units.py`) is the profitability calculator's support payload, small by design (a payload-size tripwire fails the build above 40 kB):
+
+| Field | Unit | Source | Quality |
+|---|---|---|---|
+| `percentiles.{p10,p25,p50,p75,p90}`, `percentiles.mean_cap_weighted` | £/kW/day | cross-unit distribution of per-unit trailing-365-day EAC availability revenue for the same cohort | observed |
+| `percentiles.families.<pX>.{DC,DM,DR,BR,QR,SR}` | £/kW/day | family split of the same rank-interpolated unit pair the percentile total is built from; the ETL asserts the six components sum exactly to the published total | observed |
+| `tnuos` | £/kW/yr tariff elements, 27 zones | vendored NESO TNUoS Onshore Generator Tariffs, highest financial year with a Final publication, `year_fy` and `published` carried alongside | reference data, cited |
+| `inflation.cpi_annual_pct` | % (12-month rate) | ONS CPI; `null` when the fetch fails, which never fails the build | observed |
+
 ## Data windows
 
 Every day-count in this project is one of three kinds, and they behave differently by design: a rolling analytical window moves forward daily and data leaving it is intended; accumulating history grows monotonically and never truncates, so anything that shortened it would be a bug; an infrastructure constraint bounds rare rebuild operations and is not an analytical choice at all. The table maps every documented day-count to its kind.
@@ -59,14 +92,19 @@ Every day-count in this project is one of three kinds, and they behave different
 | Day-count | Applies to | Kind | Defined in |
 |---|---|---|---|
 | 365 d rolling | core GB dataset, every tab's charts | rolling analytical window | `etl/build_dataset.py` |
-| trailing 90 d, sustained ≥ 2 h | utilisation ceiling (Flows ranking) | rolling analytical window | `app/js/metrics.js`, rules in this file |
+| trailing 90 d, sustained ≥ 2 h | utilisation ceiling (Flows ranking) | rolling analytical window | window: `UTIL_CEIL_DAYS` in `app/js/charts.js`; sustain rule: `sustainHh = 4` in `app/js/metrics.js`; rules in this file |
 | up to 365 d, point-in-time, strictly before each day | stress flag baselines | rolling analytical window | `etl/fetch_stress.py` |
 | at least 90 d of history | stress percentile bands, else `insufficient history` | floor on the stress baselines, not a window itself | `etl/fetch_stress.py` |
 | trailing 14 d | overnight AI summary z-score baselines | rolling analytical window | `ops/panel_facts.py` |
 | append-only since late May 2026 (FR 16 May, other zones 30 May) | zone history: low-carbon import attribution, Flows differential, zone switcher | accumulating history; survives a hosted cold start via the anchored chunked refetch (see the utilisation ranking section) | `etl/fetch_entsoe.py` |
 | append-only, at least 400 d retained | `stress_daily.json` | accumulating history, independent of the core window | `etl/fetch_stress.py` |
+| at most 400 d retained, tiered: daily totals all 400 d, half-hourly arrays newest 90 d, per-unit detail newest 30 d | `bess_activity.json` | rolling analytical window (oldest days trim off as new days land, unlike the append-only stress history) | `etl/build_bess_activity.py` (`RETAIN_DAYS`) |
+| at most 400 d retained | `bess_revenue.json` (EAC stack and BM cashflow) | rolling analytical window | `etl/build_bess_revenue.py` (`RETAIN_DAYS`) |
+| trailing 365 d | `bess_units.json` calculator percentiles | rolling analytical window | `etl/build_bess_units.py` |
+| `--backfill 400` (activity), `--backfill` defaulting to 400 d, capped at 800 (revenue) | BESS first install and disaster recovery | infrastructure constraint | the two BESS builders, empty-state hints in `app/index.html` |
 | `--days 365` full rebuild, `--backfill 365` stress seed | first install and disaster recovery | infrastructure constraint | README, `.github/workflows/deploy.yml` |
 | `--days 7` zone top-up | daily scheduled refresh | infrastructure constraint | `ops/refresh.py` |
+| last 2 stored days | incremental refresh re-fetch tail (judgement call 9) | infrastructure constraint | `etl/build_dataset.py --incremental` |
 | `ZONE_HISTORY_START` (16 May 2026) | hosted cold start only; the full accumulated zone history is refetched from this anchor in ≤60-day chunks (a single unchunked 365-day request times out) | infrastructure constraint | `.github/workflows/deploy.yml` |
 | `--days 30` | manual zone-fetch default | infrastructure constraint | `etl/fetch_entsoe.py` |
 
@@ -144,7 +182,7 @@ Values are bucket means at the selected resolution.
 **`gb_spreads_<from>_<to>.csv`** (Spreads). Observed inputs, Estimated spreads, coal Proxy or Assumption depending on source. Existing daily columns, including `carbon_is_ffill` and `coal_is_ffill`. The coal trio
 (`coal_proxy_gbp_mwh_th`, `coal_is_ffill`, `clean_dark_gbp_mwh`) appears only when a coal price exists. A manual coal entry overrides the ETL proxy and leaves `coal_is_ffill` blank for that row.
 
-**`gb_flows_<from>_<to>_<res>.csv`** (Flows). `timestamp`, `net_imports_mw`, and one signed MW column per cable, positive for import. Two honest notes:
+**`gb_flows_<from>_<to>_<res>.csv`** (Flows). `timestamp_utc`, `net_imports_mw`, and one signed MW column per cable, positive for import. Two honest notes:
 
 - Per-cable cells keep gaps as gaps, but `net_imports_mw` counts a missing cable reading as zero. A row with a gap in one cable, therefore, does not sum exactly across the row. This is existing behaviour, stated here, not fixed.
 - Utilisation and congestion columns are deliberately absent. They are window-level derived views, not per-row quantities (see the Utilisation ranking and Congestion proxy entries above): the ceilings come from a  trailing 90-day window, so a per-row percentage would be a metric the tab never computes. To reproduce the ranking table's ceilings and near-capacity shares from an export, take a 30-minute export covering the trailing 90 days (the 3M preset or longer) and apply the documented rules: the 4th-largest reading per direction, the 90% near-capacity threshold, and the 5% nameplate floor for treating a direction as offline. The congestion proxy is NOT reproducible from exports alone. It also needs the counterparty day-ahead price series, which is not in this file.
@@ -164,10 +202,24 @@ range series.
 | `capacity_basis` | `latest_observed` for wind and solar, `p98_observed` for everything else |
 | `contains_assumptions` | true where the technology's SRMC range is a broad estimate (see Formulas above) |
 | `gas_sap_gbp_mwh_th`, `carbon_uka_gbp_t`, `coal_gbp_mwh_th` (when present) | the constant inputs held fixed across every row, so the file is self-reproducing against the SRMC formulas above |
+| `coal_source` | fixed token, `manual` or `proxy` — present, alongside `coal_gbp_mwh_th`, only when a coal price exists |
 
-Two related exports live elsewhere, not in this file: the observed-dispatch panel's raw per-unit data is already a served file at `data/bmu_snapshot.json` (schema documented above), and the SRMC-vs-price time series is reproducible from the spreads CSV + the CCGT SRMC formula above.
+**`gb_bess_activity_<from>_<to>.csv`** (Batteries, same ⤓ CSV button). One row per stored day either optional BESS payload has in the selected range (the union of the two), Observed throughout. The activity and revenue payloads can differ in exactly which days they have fetched, so a row can carry one side and leave the other blank — an honest gap in what has been fetched, not a zero. The fleet's names and owners never appear here (the Identified fleet table on the tab itself has no export, because name and owner are free text). No dataset built, or no stored days in the range, produces a header-only file, still a valid CSV.
 
-No export contains free text. Every value is a number, an ISO date or timestamp, a boolean, or a value from a fixed token set, because the CSV writer does no comma-escaping.
+| Column | Contents |
+|---|---|
+| `date` | ISO day |
+| `offer_mwh`, `bid_mwh`, `net_mwh` | accepted BM volumes, offer ≥ 0, bid ≤ 0, net their sum — read from each day's always-present daily totals, which every stored day carries regardless of retention tier |
+| `acceptances`, `active_units`, `active_mw` | acceptance count, and the fleet units/MW with non-zero accepted volume that day |
+| `fleet_units`, `fleet_mw` | the registered identified fleet, constant, repeated on every row (the registered fleet does not vary by day) |
+| `denominator_mw`, `denominator_units` | the activity side's own per-day divisor — capacity first dispatched in the BM on or before that day — so the "per MW of fleet active to date" toggle is reproducible from the export row by row |
+| `eac_<product>_gbp_per_kw_day` (twelve, `dcl` … `nsr`) | the signed EAC availability stack, zero-filled where a product cleared nothing on a stored revenue day |
+| `bm_offer_gbp_per_kw_day`, `bm_bid_gbp_per_kw_day`, `bm_offer_mwh`, `bm_bid_mwh` | the BM cashflow sub-panel, never summed with the EAC columns |
+| `denominator_kw` | the revenue side's own per-day divisor, in kW so the unit disambiguates it from the activity side's `denominator_mw` |
+
+Four related exports live elsewhere, not in this file: the observed-dispatch panel's raw per-unit data is already a served file at `data/bmu_snapshot.json` (schema documented above); the SRMC-vs-price time series is reproducible from the spreads CSV + the CCGT SRMC formula above; and the BESS profitability calculator has two dedicated buttons of its own on its card, "Export cash flow (CSV)" (`gb_bess_calculator_<percentile>.csv`) and "Export model (Excel)" (`gb_bess_calculator_<percentile>.xlsx`), both built in `app/js/charts.js`, not by the ⤓ CSV button. The calculator CSV is the annual cash flow — year, capex, availability plus one column per service family, arbitrage, opex, TNUoS, net, discounted and cumulative discounted cash flow, discharged and usable energy — beneath a `#` header comment block recording every input; the Excel export is a live-formula workbook over the same assumptions that stores no cached values, so a reader that does not recalculate formulas should use the CSV instead. Both carry the calculator's no-names rule and its illustrative-economics disclaimer.
+
+No export contains free text in any data cell: every value is a number, an ISO date or timestamp, a boolean, or a value from a fixed token set, because the CSV writer does no comma-escaping. The one scoped exception is the BESS profitability calculator's CSV and Excel exports, which carry a free-text `#` header comment block (your inputs, the illustrative-economics disclaimer, and an ONS CPI provenance note) above the data — free text never enters a data cell.
 
 ## Zone set (Europe extension)
 
@@ -190,3 +242,6 @@ Several of these choices turn on day-counts; the Data windows table above states
 11. **The congestion flag is a two-condition proxy, conservative by design.** Requiring BOTH at-ceiling flow AND a direction-consistent wide spread means the flag under-counts congestion when thresholds miss borderline periods. It also deliberately refuses two tempting over-counts: wide spreads with slack flow (outages and ramp limits look like that) and counter-price at-limit flows (emergency actions look like that, and 23 Jun 2026 is the canonical example). The tail (p75/p25), the floor (£5/MWh) and the fixed spread population (the full accumulated zone window) are presentation choices, stated in the UI. None of it is a shadow price. GB's explicitly allocated cables publish nothing of the kind, which is also why the flag is named a proxy everywhere it appears.
 12. **Stress flags use two complementary signal families, and the FREQ feed needs a plausibility band.** The Elexon FREQ dataset carries occasional literal-0.0 Hz samples: 18 days of the first 365-day backfill were affected, the worst carrying 404 such samples. A live grid cannot read 0.0 Hz, and unfiltered each sample counts as 15 s of fake excursion below both the 49.8 and 49.5 Hz thresholds. Samples outside 45–55 Hz are therefore gaps, never readings (the modern GB record has never left 48.8–50.5). On the rules themselves: LoLP and de-rated margin are *leading margin* indicators, and they stayed near zero through the year's worst delivery event (23 Jun 2026, max LoLP 0.0017). Frequency, price and EMNs are *outcome* indicators, and they stayed quiet through the year's clearest managed adequacy squeeze (8 Jan 2026: zero excursion seconds, no EMN, LoLP 0.036). Neither family may be dropped in favour of the other. The flag set is their union, and each flag carries the value and the exact point-in-time threshold it fired against.
 13. **The overnight AI summary is Claude-only by design, not an oversight.** The panel is generated by invoking the Claude Code CLI as a version-controlled agent (`.claude/agents/dashboard-watcher.md`), authenticated against a Claude subscription rather than a metered API key, and the publish validator, the cost/turn logging and the transient-error retry all parse that CLI's own JSON result envelope. Supporting another provider is therefore not a swapped API key: it needs a second auth model, a second envelope format, and the publish guards re-validated against a different model's failure modes, assessed in [issue #29](https://github.com/lptva/gb-power-dashboard/issues/29) and judged not worth the ongoing maintenance for an optional panel that is off by default. Nothing else on the dashboard depends on it.
+14. **Battery fleet identification is a deterministic rule, not an asserted list.** A BM Unit joins the identified fleet if its id starts `E_` or `T_`, its registered generation capacity is at least 5 MW, it is not a site-demand BMU (id matching `D-\d+$` or a name containing "Demand"), and it matches either a structural signature (generation capacity > 0, demand capacity < 0, symmetric within 0.5–1.5×, no fuel type or interconnector flag) or a battery name pattern over the unit's own id and name fields — deliberately not the owning party's name, since parties named "… Energy Storage Ltd" also own non-battery plant. Virtual Lead Party `V_` portfolios are excluded: that prefix is the aggregator namespace and its portfolios mix batteries with demand-side response. Why a rule rather than a list: it is recomputed from the registry on every refresh, never hand-maintained, so a new battery joins without a code change. Measured on a manual sample week, the structural leg alone recovered 97% of name-labelled battery BMUs (recall) and 75% of identified MW showed genuine two-sided operation or non-zero accepted BM volume (precision), the residual being dormant or pre-commercial capacity, not misidentification. A reviewer should check `identify()` in `etl/build_bess_activity.py` against the rule echoed in the payload's `meta.identification`, and that REPD is cited as scale context only, never as a coverage percentage or divisor — identified MW exceeds REPD's operational figure, so a ">100% coverage" caption would read as a data error.
+15. **BM cashflow is deliberately never added to the revenue stack.** Elexon's indicative bid-offer cashflow (EBOCF) prices the same accepted-volume actions the activity chart counts in MWh, but it is the energy-purchase leg of BM participation, not margin: its sign follows whichever way the fleet happened to charge or discharge that day (a heavy charging day settles deep negative purely because energy was bought, not lost), and its magnitude runs to several times the whole availability stack. Stacked into the total it would both dominate the chart and read as batteries losing money in the Balancing Mechanism, while the offsetting wholesale trade is not publicly attributable per unit and stays out of frame. It therefore renders as its own signed sub-panel with the net MWh companion series on the right-hand axis, and the CSV keeps its four `bm_*` columns separate from the EAC columns. A reviewer should check the sub-panel's rationale on the card itself (`app/index.html`, the `bess-bm-desc` paragraph) and that no code path sums `bm.*` into `eac_gbp_per_kw_day`.
+16. **The two legs of a service are shown separately, never netted into one band.** Each of the six EAC service families splits into a low/negative and a high/positive leg, and the stack keeps all twelve products rather than collapsing to six service bands. Dynamic Regulation High and Low routinely clear opposite signs on the same day, so netting them would hide two large, real, offsetting flows behind a small net figure; a negative band (commonly DRH, whose clearing prices go negative most often) is expected and renders below zero rather than being clipped. A reviewer should check that the revenue chart and the twelve `eac_<product>_gbp_per_kw_day` CSV columns are per-product, and that only the colouring (light/dark by family) groups the legs, never the arithmetic.
