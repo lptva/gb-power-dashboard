@@ -2232,7 +2232,7 @@ const UI = (() => {
          The one scoped exception is the BESS profitability calculator's
          CSV and Excel exports, which carry a free-text <code>#</code>
          header comment block (your inputs, the illustrative-economics
-         disclaimer, and an ONS CPI provenance note) above the data —
+         disclaimer, and an ONS CPI provenance note) above the data, and
          free text never enters a data cell.</p>
 
       <h3 id="m-limits">Known limitations</h3>

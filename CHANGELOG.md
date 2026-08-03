@@ -1152,9 +1152,10 @@ machine, worked through in priority order.
 
 ### Methodology consistency pass (2026-08-02, follow-up)
 
-- A verified 15-agent audit found methodology.md had fallen behind the
-  dashboard — chiefly the entire Batteries (BESS) tab (schema, windows,
-  exports, judgement calls existed only in the in-app tab). methodology.md
+- A review of methodology.md against the shipped dashboard found the file
+  had fallen behind, chiefly on the Batteries (BESS) tab: its schema,
+  windows, exports and judgement calls existed only in the in-app tab,
+  which made the file's own exhaustiveness claims untrue. methodology.md
   now covers the three BESS payloads, the 400-day retention windows, the
   gb_bess_activity CSV and both calculator exports, and judgement calls
   14-16; the free-text export rule is scoped to data cells (the calculator
