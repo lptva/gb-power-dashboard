@@ -1168,3 +1168,22 @@ machine, worked through in priority order.
   the last user-facing "31 May 2026" zone dates fixed (index.html card,
   charts.js comment); index.html's revenue backfill hint uses the real
   --backfill flag.
+
+### BESS chart fixes: percentile band + dual-axis zero (2026-08-03)
+
+- **Unit-spread band mis-rendered on negative days.** The Batteries
+  revenue panel's p10–p90 peer band is drawn as an invisible p10 base
+  line plus a stacked (p90−p10) delta. ECharts' default stack strategy is
+  `samesign`, which refuses to add the positive delta onto a negative p10
+  base and resets it to zero — so on any day p10 < 0 (routine, since DRH
+  clears negative) the band rendered from 0 up to (p90−p10) instead of
+  from p10 up to p90. Fixed with `stackStrategy: "all"` on both band
+  series; verified the band now spans exactly p10→p90 at a known day
+  (−0.084 → +0.075). The identical idiom on the price-shape p25–p75 band
+  had the same latent fault (GB prices go negative) and got the same fix;
+  the merit-order SRMC band is safe by construction (cost ≥ 0).
+- **BM cashflow axes did not share a zero.** The £/kW/day and MWh axes
+  autoscaled independently, so the net-MWh line's zero crossing drifted
+  off the offer/bid bars' zero baseline. Added a small `dualZeroAlign`
+  helper that gives both axes nice steps with an equal number of
+  intervals above and below zero, so zero sits at one shared height.

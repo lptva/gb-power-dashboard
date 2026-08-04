@@ -112,6 +112,31 @@ const Charts = (() => {
     };
   }
 
+  // Two independent y-axes autoscale separately, so a dual-axis panel's two
+  // zero baselines land on different pixel rows and a reader misjudges the
+  // sign of the right-axis series against the left-axis bars. Return matched
+  // {min,max,interval} for each axis: nice steps AND an equal number of
+  // intervals above and below zero, so zero sits at one shared fraction of
+  // the plot height on both. Pass each axis's data values.
+  function dualZeroAlign(dataA, dataB, targetTicks = 4) {
+    const niceStep = (rough) => {
+      if (!(rough > 0)) return 1;
+      const p = Math.pow(10, Math.floor(Math.log10(rough)));
+      const f = rough / p;
+      return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
+    };
+    const ext = (d) => ({ pos: Math.max(0, ...d), neg: -Math.min(0, ...d) });
+    const a = ext(dataA), b = ext(dataB);
+    const stepA = niceStep(Math.max(a.pos, a.neg) / targetTicks);
+    const stepB = niceStep(Math.max(b.pos, b.neg) / targetTicks);
+    const nUp = Math.max(Math.ceil(a.pos / stepA), Math.ceil(b.pos / stepB), 1);
+    const nDn = Math.max(Math.ceil(a.neg / stepA), Math.ceil(b.neg / stepB), 1);
+    return [
+      { min: -nDn * stepA, max: nUp * stepA, interval: stepA },
+      { min: -nDn * stepB, max: nUp * stepB, interval: stepB },
+    ];
+  }
+
   function line(name, t, v, colour, opts = {}) {
     return {
       name, type: "line", showSymbol: false, sampling: "lttb",
@@ -305,10 +330,17 @@ const Charts = (() => {
         axisLine: { lineStyle: { color: css("--border") } } },
       yAxis: valueAxis(`${CUR()}/MWh`),
       series: [
-        { name: "p25–p75", type: "line", stack: "iqr", showSymbol: false,
+        // stackStrategy "all": the band is p25 + a stacked (p75 - p25)
+        // delta. GB prices go negative (high wind, low demand), so p25 can
+        // be < 0; the default "samesign" stacking would then reset the
+        // positive delta to a zero base and mis-draw the band. See the same
+        // guard on the BESS unit-spread band.
+        { name: "p25–p75", type: "line", stack: "iqr", stackStrategy: "all",
+          showSymbol: false,
           data: shape.map((s) => s.p25), lineStyle: { opacity: 0 },
           itemStyle: { color: "#888" } },
-        { name: "p25–p75 ", type: "line", stack: "iqr", showSymbol: false,
+        { name: "p25–p75 ", type: "line", stack: "iqr", stackStrategy: "all",
+          showSymbol: false,
           data: shape.map((s) => s.p75 == null ? null : +(s.p75 - s.p25).toFixed(2)),
           lineStyle: { opacity: 0 },
           areaStyle: { color: css("--accent"), opacity: 0.14 },
@@ -2238,14 +2270,26 @@ const Charts = (() => {
     // meritTime's "CCGT SRMC range" above (base series carries the
     // itemStyle colour for its legend swatch; the delta series is
     // tooltip/legend-hidden via its trailing-space name).
+    //
+    // stackStrategy MUST be "all" here. The band is the base line (p10)
+    // plus a stacked delta of (p90 - p10) so the top lands at p90. ECharts'
+    // DEFAULT stack strategy is "samesign", which refuses to add a positive
+    // delta onto a negative running total and resets it to zero instead —
+    // so on any day p10 < 0 (common: DRH clears negative, dragging weak
+    // units below zero) the band would render from 0 up to (p90 - p10)
+    // rather than from p10 up to p90. "all" always stacks, giving the true
+    // p10..p90 span. (meritTime's SRMC band needs no such guard: cost is
+    // always >= 0, so its base never goes negative.)
     const spread = payload.eac_unit_spread_gbp_per_kw_day || {};
     const at = (col) => idx.map((i) => (col ? col[i] : null));
     const p10 = at(spread.p10), p90 = at(spread.p90), p50 = at(spread.p50);
     const bandSeries = [
       { name: "Unit spread (p10-p90)", type: "line", stack: "spread",
+        stackStrategy: "all",
         showSymbol: false, data: dayMs.map((t, j) => [t, round(p10[j])]),
         lineStyle: { opacity: 0 }, itemStyle: { color: css("--text-dim") } },
       { name: "Unit spread (p10-p90) ", type: "line", stack: "spread",
+        stackStrategy: "all",
         showSymbol: false,
         data: dayMs.map((t, j) => [t, (p10[j] == null || p90[j] == null)
           ? null : round(p90[j] - p10[j])]),
@@ -2298,13 +2342,21 @@ const Charts = (() => {
         `${state.bm_last_day ?? "?"}`;
     }
 
+    // Left (£/kW/day, the offer/bid bars) and right (MWh, the net line)
+    // share one zero baseline — otherwise the two axes autoscale apart and
+    // the net-MWh line's zero crossing drifts off the bars' zero, which is
+    // exactly the sign relationship this sub-panel exists to show.
+    const [bmLeft, bmRight] =
+      dualZeroAlign(bmOffer.concat(bmBid), netMwh);
     chart("ch-bess-bm").setOption(baseDay({
       legend: legendBar({ data: ["Offer cashflow (received)",
         "Bid cashflow (paid)", "Net MWh"] }),
       grid: { left: 60, right: 60, top: 48, bottom: 56 },
       xAxis: timeAxis(),
-      yAxis: [valueAxis("£/kW/day"),
-        valueAxis("MWh", { position: "right", splitLine: { show: false } })],
+      yAxis: [valueAxis("£/kW/day",
+          { min: bmLeft.min, max: bmLeft.max, interval: bmLeft.interval }),
+        valueAxis("MWh", { position: "right", splitLine: { show: false },
+          min: bmRight.min, max: bmRight.max, interval: bmRight.interval })],
       dataZoom: zoom(),
       series: [
         { name: "Offer cashflow (received)", type: "bar", stack: "bmcf",
