@@ -1187,3 +1187,6 @@ machine, worked through in priority order.
   off the offer/bid bars' zero baseline. Added a small `dualZeroAlign`
   helper that gives both axes nice steps with an equal number of
   intervals above and below zero, so zero sits at one shared height.
+  Follow-up: the helper's `n × step` bounds surfaced IEEE-754 noise
+  (3 × 0.1 = 0.30000000000000004) as a literal axis-tick label; the
+  forced bounds are now snapped to 12 significant figures.

@@ -131,9 +131,12 @@ const Charts = (() => {
     const stepB = niceStep(Math.max(b.pos, b.neg) / targetTicks);
     const nUp = Math.max(Math.ceil(a.pos / stepA), Math.ceil(b.pos / stepB), 1);
     const nDn = Math.max(Math.ceil(a.neg / stepA), Math.ceil(b.neg / stepB), 1);
+    // Snap off IEEE-754 noise (e.g. 3 * 0.1 = 0.30000000000000004) so the
+    // forced bounds never surface as an ugly float in an axis-tick label.
+    const clean = (v) => +v.toPrecision(12);
     return [
-      { min: -nDn * stepA, max: nUp * stepA, interval: stepA },
-      { min: -nDn * stepB, max: nUp * stepB, interval: stepB },
+      { min: clean(-nDn * stepA), max: clean(nUp * stepA), interval: clean(stepA) },
+      { min: clean(-nDn * stepB), max: clean(nUp * stepB), interval: clean(stepB) },
     ];
   }
 
