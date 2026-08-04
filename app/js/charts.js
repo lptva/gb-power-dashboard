@@ -2179,6 +2179,42 @@ const Charts = (() => {
   const BESS_LEG_LABEL = { structural: "Structural", name: "Name",
     "structural+name": "Structural + name" };
 
+  // Service-group view toggle (Change 2): the twelve products collapse to
+  // two NESO taxonomy groups — Response (the dynamic response suite: DC/
+  // DM/DR) and Reserve (BR/QR/SR). Judgement call 16 forbids netting a
+  // service's offsetting legs together, so collapsing to four bands still
+  // splits by the SIGN of each day's realised value (not by a static
+  // per-product direction), never nets a positive leg against a negative
+  // one, and stacks the two half-series on opposite sides of zero exactly
+  // like the per-product view. Colours reuse the family palette above: the
+  // DC base for both Response series, the BR base for both Reserve series,
+  // dark for the positive-legs half and light for the negative-legs half —
+  // the same offer/bid shade idiom the BM sub-panel bars use below.
+  const BESS_REVENUE_GROUPS = [
+    { label: "Response", keys: ["DCL", "DCH", "DML", "DMH", "DRL", "DRH"],
+      colour: BESS_FAMILY_COLOUR.DC },
+    { label: "Reserve", keys: ["PBR", "NBR", "PQR", "NQR", "PSR", "NSR"],
+      colour: BESS_FAMILY_COLOUR.BR },
+  ];
+  let bessRevenueChartView = "product"; // product | group, in-memory only
+  let bessRevenueViewWired = false;
+
+  function wireBessRevenueView() {
+    if (bessRevenueViewWired) return;
+    const toggleEl = document.getElementById("bess-revenue-view-toggle");
+    if (!toggleEl) return;
+    // Delegation on the static toggle element (never rebuilt) survives
+    // bessRevenue()'s re-render, same reasoning as wireBessCalc's chart
+    // toggle above.
+    toggleEl.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-revenue-view]");
+      if (!btn) return;
+      bessRevenueChartView = btn.dataset.revenueView;
+      bessRevenue();
+    });
+    bessRevenueViewWired = true;
+  }
+
   function bessRevenueShade(meta) {
     const base = (meta && BESS_FAMILY_COLOUR[meta.code])
       || css("--text-dim");
@@ -2194,6 +2230,8 @@ const Charts = (() => {
     const captionEl = document.getElementById("bess-revenue-caption");
     const bmSection = document.getElementById("bess-bm-section");
     const bmCaptionEl = document.getElementById("bess-bm-caption");
+    const viewToggleEl = document.getElementById("bess-revenue-view-toggle");
+    wireBessRevenueView();
 
     const payload = Data.bessRevenue;
     const ok = !!(payload && Array.isArray(payload.days)
@@ -2204,12 +2242,23 @@ const Charts = (() => {
     if (!ok) {
       if (captionEl) captionEl.textContent = "";
       if (bmCaptionEl) bmCaptionEl.textContent = "";
+      if (viewToggleEl) viewToggleEl.classList.add("hidden");
       ["ch-bess-revenue", "ch-bess-bm"].forEach((id) => {
         const existing = registry.get(id);
         if (existing) existing.clear();
       });
       return;
     }
+    if (viewToggleEl) {
+      viewToggleEl.classList.remove("hidden");
+      viewToggleEl.querySelectorAll("[data-revenue-view]").forEach((btn) => {
+        const active = btn.dataset.revenueView === bessRevenueChartView;
+        btn.classList.toggle("active", active);
+        btn.setAttribute("aria-pressed", String(active));
+      });
+    }
+
+    const productKeys = Object.keys(payload.eac_gbp_per_kw_day);
 
     // Caption: every number from the payload, mid-dot card-meta idiom —
     // the two D13 coverage figures, both disclosed (denominator MW share
@@ -2246,6 +2295,21 @@ const Charts = (() => {
     payload.days.forEach((d, i) => {
       if (d >= fromIso && d <= toIso) idx.push(i);
     });
+    if (captionEl && idx.length) {
+      // Annualised availability-only run-rate: mean of the daily 12-product
+      // total (£/kW/day, payload units, unconverted) over the selected
+      // window, scaled to a year. "Availability-only" is load-bearing — the
+      // figure excludes wholesale arbitrage and the BM cashflow sub-panel
+      // below, and must never read as total battery revenue.
+      const dailyTotal = (i) => productKeys.reduce((s, k) => {
+        const v = (payload.eac_gbp_per_kw_day[k] || [])[i];
+        return s + (v || 0);
+      }, 0);
+      const meanDaily = idx.reduce((s, i) => s + dailyTotal(i), 0)
+        / idx.length;
+      captionEl.textContent += ` · availability-only run-rate ≈ ` +
+        `${(meanDaily * 365).toFixed(1)} £/kW/yr over the range`;
+    }
     if (!idx.length) {
       chart("ch-bess-revenue").clear();
       chart("ch-bess-bm").clear();
@@ -2253,9 +2317,13 @@ const Charts = (() => {
       return;
     }
     const dayMs = idx.map((i) => Date.parse(payload.days[i] + "T00:00:00Z"));
-    const round = (v) => (v == null ? null : +v.toFixed(4));
+    // Display-only unit change (owner-approved): the payload and every
+    // export stay £/kW/day; this panel multiplies by 1000 to plot
+    // £/MW/day, the same order of magnitude as the profitability
+    // calculator's £/kW/yr headline, because the raw £/kW/day values
+    // (typically well under 1) rendered as unreadable slivers.
+    const round = (v) => (v == null ? null : +(v * 1000).toFixed(1));
 
-    const productKeys = Object.keys(payload.eac_gbp_per_kw_day);
     const stackSeries = productKeys.map((k) => {
       const meta = payload.products && payload.products[k];
       const shade = bessRevenueShade(meta);
@@ -2267,6 +2335,38 @@ const Charts = (() => {
         barMaxWidth: 14,
       };
     });
+
+    // Service-group view (Change 2b): per day, per group, sum the POSITIVE
+    // product values into one series and the NEGATIVE product values into
+    // another (see BESS_REVENUE_GROUPS above for the no-netting rationale).
+    const groupSeries = BESS_REVENUE_GROUPS.flatMap((g) => {
+      const pos = [], neg = [];
+      idx.forEach((i) => {
+        let p = 0, n = 0, any = false;
+        g.keys.forEach((k) => {
+          const arr = payload.eac_gbp_per_kw_day[k];
+          const v = arr ? arr[i] : undefined;
+          if (v == null) return;
+          any = true;
+          if (v >= 0) p += v; else n += v;
+        });
+        pos.push(any ? p : null);
+        neg.push(any ? n : null);
+      });
+      return [
+        { name: `${g.label} (positive legs)`, type: "bar", stack: "revenue",
+          data: dayMs.map((t, j) => [t, round(pos[j])]),
+          itemStyle: { color: g.colour, opacity: 0.9 }, barMaxWidth: 14 },
+        { name: `${g.label} (negative legs)`, type: "bar", stack: "revenue",
+          data: dayMs.map((t, j) => [t, round(neg[j])]),
+          itemStyle: { color: g.colour, opacity: 0.45 }, barMaxWidth: 14 },
+      ];
+    });
+
+    const useGroups = bessRevenueChartView === "group";
+    const mainSeries = useGroups ? groupSeries : stackSeries;
+    const legendNames = useGroups
+      ? groupSeries.map((s) => s.name) : productKeys;
 
     // Peer-group overlay: p10-p90 band + p50 line across cohort units, no
     // unit named — same stacked-invisible-line band technique as
@@ -2304,7 +2404,7 @@ const Charts = (() => {
     ];
 
     chart("ch-bess-revenue").setOption(baseDay({
-      legend: legendBar({ data: [...productKeys, "Unit spread (p10-p90)",
+      legend: legendBar({ data: [...legendNames, "Unit spread (p10-p90)",
         "Unit spread (p50)"] }),
       grid: { left: 60, right: 56, top: 48, bottom: 56 },
       xAxis: timeAxis(),
@@ -2313,9 +2413,9 @@ const Charts = (() => {
       // above: the pitfall this panel exists to avoid is DROPPING or
       // clipping negative bands (DRH clears negative most days), not
       // exact axis symmetry.
-      yAxis: valueAxis("£/kW/day"),
+      yAxis: valueAxis("£/MW/day"),
       dataZoom: zoom(),
-      series: [...stackSeries, ...bandSeries],
+      series: [...mainSeries, ...bandSeries],
     }), true);
 
     // D18 sub-panel: gross BM cashflow, own heading, own axis pair, never
@@ -2338,14 +2438,14 @@ const Charts = (() => {
       const state = payload.state || {};
       bmCaptionEl.textContent =
         `Window mean net ${meanNet >= 0 ? "+" : "−"}` +
-        `${Math.abs(meanNet).toFixed(4)} £/kW/day · ` +
+        `${Math.abs(meanNet).toFixed(1)} £/MW/day · ` +
         `${Math.round(sum(offerMwh)).toLocaleString("en-GB")} MWh offer, ` +
         `${Math.round(sum(bidMwh)).toLocaleString("en-GB")} MWh bid over ` +
         `the range · EBOCF indicative settlement run, current to ` +
         `${state.bm_last_day ?? "?"}`;
     }
 
-    // Left (£/kW/day, the offer/bid bars) and right (MWh, the net line)
+    // Left (£/MW/day, the offer/bid bars) and right (MWh, the net line)
     // share one zero baseline — otherwise the two axes autoscale apart and
     // the net-MWh line's zero crossing drifts off the bars' zero, which is
     // exactly the sign relationship this sub-panel exists to show.
@@ -2356,7 +2456,7 @@ const Charts = (() => {
         "Bid cashflow (paid)", "Net MWh"] }),
       grid: { left: 60, right: 60, top: 48, bottom: 56 },
       xAxis: timeAxis(),
-      yAxis: [valueAxis("£/kW/day",
+      yAxis: [valueAxis("£/MW/day",
           { min: bmLeft.min, max: bmLeft.max, interval: bmLeft.interval }),
         valueAxis("MWh", { position: "right", splitLine: { show: false },
           min: bmRight.min, max: bmRight.max, interval: bmRight.interval })],

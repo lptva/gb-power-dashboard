@@ -1767,6 +1767,23 @@ const UI = (() => {
          arbitrage, Capacity Market payments and bilateral tolls are not
          observable per unit anywhere this dashboard can see, and stay out
          of frame.</p>
+      <p>The chart itself displays £/MW/day, not the £/kW/day the payload
+         and CSV carry: every plotted value (the twelve product bars, the
+         unit-spread band and the p50 line, and the BM cashflow bars below)
+         is multiplied by 1000 for the axis, a display-only change so the
+         bars read at a sane scale — the raw £/kW/day figures are tiny
+         decimals. The card's caption also states an annualised
+         availability-only run-rate: the mean of the daily 12-product total
+         (£/kW/day, unconverted) over the selected window, scaled to a
+         year and labelled £/kW/yr, the same unit the profitability
+         calculator uses. It is labelled "availability-only" because it
+         excludes wholesale arbitrage and the BM cashflow sub-panel, and
+         must never be read as total battery revenue. A toggle above the
+         chart switches between the per-product view (twelve bars, the
+         default) and a service-group view (four bars: Response and
+         Reserve, each split into a positive-legs and a negative-legs
+         series). The grouping never nets a leg against its opposite —
+         see the per-product paragraph below and judgement call 16.</p>
       <p>Cohort: EAC auction units whose NESO <code>technologyType</code>
          is <code>Batteries</code>, joined on an exact, uppercase
          <code>auctionUnit</code> to <code>nationalGridBmUnit</code>
@@ -2225,7 +2242,9 @@ const UI = (() => {
          than a zero. The fleet's name and owner never appear here: see
          the Identified fleet table on the tab itself, which has no
          export. No dataset built yet, or no stored days in range, →
-         header-only file.</p>
+         header-only file. The revenue chart displays £/MW/day (see
+         above); that is display-only and does not touch this export —
+         every EAC and BM column here stays £/kW/day, the payload unit.</p>
       <p>No export contains free text in any data cell: every value is a
          number, an ISO date or timestamp, a boolean, or a value from a
          fixed token set, because the CSV writer does no comma-escaping.

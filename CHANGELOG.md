@@ -1190,3 +1190,33 @@ machine, worked through in priority order.
   Follow-up: the helper's `n × step` bounds surfaced IEEE-754 noise
   (3 × 0.1 = 0.30000000000000004) as a literal axis-tick label; the
   forced bounds are now snapped to 12 significant figures.
+
+### Batteries revenue panel: readable units + service-group view (2026-08-04)
+
+Answers reader feedback that the revenue panel was hard to read and
+unit-inconsistent with the profitability calculator elsewhere on the tab.
+
+- **Display unit changed to £/MW/day.** The revenue chart and its BM
+  cashflow sub-panel plotted £/kW/day figures directly, tiny signed
+  decimals (±0.25) that were unreadable at a glance. Both charts now
+  multiply every plotted value by 1000 on display only: the twelve
+  product bars, the unit-spread band and p50 line, and the BM offer/bid
+  bars. The payload and the CSV/Excel exports are untouched and stay
+  £/kW/day, for reproducibility. The revenue card's caption also gained
+  an annualised availability-only run-rate — the mean daily 12-product
+  total over the selected window, scaled to a year and shown in £/kW/yr,
+  the profitability calculator's own unit — labelled "availability-only"
+  because it excludes wholesale arbitrage and the BM cashflow sub-panel
+  and must not read as total battery revenue.
+- **Service-group view toggle.** A segmented control above the revenue
+  chart (the calculator card's existing `calc-seg` idiom, reused rather
+  than reinvented) switches between the default per-product view (twelve
+  bars) and a service-group view (four bars: Response = Dynamic
+  Containment/Moderation/Regulation, Reserve = Balancing/Quick/Slow
+  Reserve). Judgement call 16 forbids netting a service's offsetting legs
+  together, so the grouped view still never nets: each group is split,
+  per day, into a positive-legs series (that day's positive product
+  values summed) and a negative-legs series (the negative ones summed),
+  stacked on opposite sides of zero exactly like the per-product bars.
+  State is in-memory only, no persistence. The unit-spread band and p50
+  line render unchanged in both views.

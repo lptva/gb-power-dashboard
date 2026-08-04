@@ -595,26 +595,37 @@ document.write('<link rel="stylesheet" href="css/style.css'
         <h2>Observable revenue stack
           <span class="badge observed">Observed</span>
           <span class="badge beta">Beta</span></h2>
-        <p id="bess-revenue-desc">Stacked signed £/kW/day for the twelve
-           EAC availability products NESO auctions to the identified
-           battery fleet, one bar per stored day filtered to the selected
-           range (the hh/hour/day resolution toggle is not applied here,
-           only the date range is, same reasoning as the activity chart
-           above). Bands are coloured by service family (Dynamic
-           Containment, Dynamic Moderation, Dynamic Regulation, Balancing
-           Reserve, Quick Reserve, Slow Reserve), light for the
+        <p id="bess-revenue-desc">Stacked signed £/MW/day (display only —
+           the underlying payload and the CSV export stay £/kW/day) for
+           the twelve EAC availability products NESO auctions to the
+           identified battery fleet, one bar per stored day filtered to
+           the selected range (the hh/hour/day resolution toggle is not
+           applied here, only the date range is, same reasoning as the
+           activity chart above). Bands are coloured by service family
+           (Dynamic Containment, Dynamic Moderation, Dynamic Regulation,
+           Balancing Reserve, Quick Reserve, Slow Reserve), light for the
            low/negative leg and dark for the high/positive leg, and
            legended by product code. The two legs of a service are never
            netted into one band: Dynamic Regulation High and Low routinely
            clear opposite signs on the same day, and collapsing them would
            hide two large, real, offsetting flows behind a small net
            figure, so a negative band (commonly DRH) is expected and
-           renders below zero rather than being clipped. The shaded band
-           and its centre line are the p10-p90 spread and median of the
-           same total £/kW/day figure split across identified units, the
-           peer-group comparison, with no unit named.
+           renders below zero rather than being clipped. The view toggle
+           below collapses the twelve products into four service-group
+           bands (Response, Reserve), each split into a positive-legs and
+           a negative-legs series so the no-netting rule holds in both
+           views. The shaded band and its centre line are the p10-p90
+           spread and median of the same total £/kW/day figure split
+           across identified units, the peer-group comparison, with no
+           unit named.
            <span class="info" data-method="bess-revenue">ⓘ</span></p>
         <p class="card-meta" id="bess-revenue-caption"></p>
+        <div class="calc-chart-toggle hidden" id="bess-revenue-view-toggle">
+          <span class="calc-seg" role="group" aria-label="Revenue chart view">
+            <button type="button" data-revenue-view="product">By product</button>
+            <button type="button" data-revenue-view="group">By service group</button>
+          </span>
+        </div>
       </div>
       <div class="chart-wrap">
         <div class="chart tall" id="ch-bess-revenue"></div>
