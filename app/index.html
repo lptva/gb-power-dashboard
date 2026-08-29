@@ -743,6 +743,7 @@ document.write('<link rel="stylesheet" href="css/style.css'
           <p class="calc-anchor-line" id="bess-calc-anchor"></p>
           <p class="calc-mix-line hidden" id="bess-calc-mix"></p>
           <div id="bess-calc-headline" class="calc-headline"></div>
+          <p class="calc-reading hidden" id="bess-calc-reading"></p>
           <div class="calc-sens hidden" id="bess-calc-sens"></div>
           <div class="calc-chart-toggle hidden" id="bess-calc-chart-toggle">
             <span class="calc-seg" role="group" aria-label="Chart view">
@@ -797,6 +798,53 @@ document.write('<link rel="stylesheet" href="css/style.css'
         No LDES cap-and-floor dataset available — run
         <code>python3 etl/build_ldes_capfloor.py</code> to build the
         vendored reference table.
+      </div>
+    </div>
+
+    <!-- Mini-CFFM calculator (plan/10 Phase 3, B2) — deliberately BELOW
+         the reference card: the reference states what Ofgem published,
+         this card lets the reader apply the published method to their
+         own numbers. All-assumption by construction (D73–D78). -->
+    <div class="card span-2 calc-card">
+      <div class="card-head">
+        <h2>Mini cap-and-floor calculator (indicative)
+          <span class="badge assumption">Assumption</span></h2>
+        <p id="ldes-cffm-desc">Where would the building blocks put a
+           floor and cap for an asset like yours — and does the corridor
+           bite? You describe the build and its costs, the calculator
+           runs Ofgem's published building-blocks arithmetic (RAV with
+           interest during construction, straight-line depreciation, a
+           return at the floor and cap rates, annuitised flat) and holds
+           your gross-margin scenarios against the resulting corridor:
+           floor top-ups below it, the 70% consumer clawback above it,
+           and the Financial Assessment ratio Ofgem screens with. The
+           regime rates are prefilled from the published indicative
+           parameters and badged Reference; every cost and margin input
+           is yours, blank until you type it.
+           <span class="info" data-method="ldes-cffm">ⓘ</span></p>
+        <p class="card-meta">every figure is your own assumption
+           arithmetic on Ofgem's published building-blocks method;
+           ex-tax; not the CFFM, not a valuation</p>
+      </div>
+      <div class="calc-grid">
+        <div id="ldes-cffm-inputs"></div>
+        <div id="ldes-cffm-results">
+          <h4 class="calc-results-head">Results</h4>
+          <div id="ldes-cffm-headline" class="calc-headline"></div>
+          <p class="calc-mix-line hidden" id="ldes-cffm-breakdown"></p>
+          <p class="calc-reading hidden" id="ldes-cffm-reading"></p>
+          <div class="chart-wrap">
+            <div class="chart" id="ch-ldes-cffm"></div>
+            <div class="chart-empty hidden" id="ldes-cffm-empty"></div>
+          </div>
+          <p class="card-meta" id="ldes-cffm-caption"></p>
+          <div class="calc-export-row">
+            <button type="button" id="ldes-cffm-csv"
+              class="calc-csv-btn hidden">Download CSV</button>
+            <button type="button" id="ldes-cffm-xlsx"
+              class="calc-csv-btn hidden">Export model (Excel)</button>
+          </div>
+        </div>
       </div>
     </div>
   </section>

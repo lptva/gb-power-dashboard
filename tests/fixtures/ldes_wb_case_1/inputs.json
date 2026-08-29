@@ -1,0 +1,19 @@
+{
+ "constructionYears": 3,
+ "devex": 4.5,
+ "capex": 150.0,
+ "idcRate": 0.061,
+ "gearing": 0.375,
+ "txDebtRate": 0.025,
+ "txEquityRate": 0.05,
+ "opexFixed": 3.0,
+ "decom": 0.3,
+ "opYears": 25,
+ "residualValue": 0.0,
+ "floorRate": 0.0447,
+ "capRate": 0.0748,
+ "mw": 65.0,
+ "gmLow": 11.5,
+ "gmCentral": 14.5,
+ "gmHigh": 19.0
+}

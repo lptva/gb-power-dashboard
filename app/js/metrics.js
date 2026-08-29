@@ -898,6 +898,262 @@ const Metrics = (() => {
     return npvAtCommissioning * Math.pow(1 + r, years);
   }
 
+  /* ================= Mini-CFFM engine (plan/10 Phase 3, B2) ===========
+     Ofgem's LDES cap-and-floor financial model (CFFM), reduced to its
+     ex-tax real-terms core (D73/D74): RAV build with interest during
+     construction (IDC), transaction costs, straight-line depreciation,
+     an NPV-neutral return on RAV, and annuity flattening — computed
+     separately at the floor rate and the cap rate. Deliberately OUT of
+     scope: the corporation-tax loop (levels here are ex-tax; the real
+     CFFM adds a grossed-up nominal tax annuity), Repex, the ACOD floor,
+     and the partial-indexation switch (dropped by Ofgem). Everything is
+     flat real terms — no inflation arithmetic anywhere. Mirrored by
+     ops/ldes_cffm_figures.py; same discipline as the BESS block above:
+     pure null-safe functions, no DOM, no State — the card owns inputs
+     and rendering, this module owns arithmetic only. Formula references
+     (A1.x) are to the CFFM Handbook v2.1, annex A1. ================== */
+
+  /* Floor and cap levels (£m/yr, flat real, ex-tax). `inputs`, all real
+     £m unless stated:
+       constructionYears int >= 1; devex £m (spent in construction year
+       1); capex £m (spread evenly across construction years); idcRate
+       fraction; gearing fraction (pre-operational notional — used only
+       for the transaction-cost split); txDebtRate/txEquityRate
+       fractions of transferred RAV; opexFixed £m/yr (flat real over
+       operations); decom £m/yr (baseline, flat); opYears int (default
+       25); residualValue £m at end of regime (default 0); floorRate/
+       capRate fractions.
+     Returns null on any missing/non-finite required input, or on
+     constructionYears/opYears < 1. Otherwise
+       { rav, idcTotal, txTotal,
+         floor: { level, returnAnnuity, depreciationAnnuity, opexBlock },
+         cap:   { ...same shape } }.
+
+     Mechanics:
+     - Pre-op RAV walk, one row per construction year: additions =
+       devex (year 1 only) + capex/constructionYears;
+       IDC_y = idcRate x (openingRAV + additions/(2 + idcRate)) — the
+       A1.70 formula verbatim (in-year costs earn a half year of IDC,
+       discounted from mid-year at the simple half-year rate); closing =
+       opening + additions + IDC_y. Whole construction years only — the
+       full model's fractional-year IDC flags are not replicated.
+     - Transaction costs at transfer (A1.72-77, simplified to one shot):
+       tx = closing pre-op RAV x (gearing x txDebtRate + (1 - gearing)
+       x txEquityRate). The real model also capitalises IDC on early
+       debt transaction costs; this mini version does not.
+     - RAV at start of operations = closing pre-op RAV + tx.
+       Depreciation runs the RAV down TO residualValue (assumption —
+       the handbook does not state the sign convention): depreciable
+       base = RAV - residualValue, straight-line over opYears (no Repex,
+       so no re-spread), the residual left standing at the end.
+     - NPV-neutral return, per operational year n at rate r:
+       return_n = r x openingRAV_n. Under this block's end-of-year
+       discounting ((1+r)^-n from the start of operations, A1.153) the
+       opening RAV is the UNIQUE return base for which
+       PV(depreciation + return) telescopes exactly to
+       RAV - residualValue x (1+r)^-opYears — the classic result the
+       NPV-neutral base exists to guarantee, pinned by the annuity
+       identity test. The full CFFM instead averages opening and
+       discounted closing RAV (A1.143), which is neutral only under its
+       own intra-year receipt timing; carried over verbatim here it
+       would undershoot the identity by (2+r)/(2(1+r)) (2.1% at the
+       floor rate), so the mini model states the base it actually uses
+       rather than approximating the big model's.
+     - Annuitisation at each rate (A1.151):
+       annuityFactor = r / (1 - (1+r)^-opYears) (r = 0 degenerates to
+       1/opYears, an explicit branch like annuityPayment's); NPV =
+       sum of allowance_n x (1+r)^-n where allowance_n = opexFixed +
+       decom + depreciation_n + return_n; level = NPV x annuityFactor.
+       The annuitised sub-blocks are exposed for the card's breakdown;
+       flattening is idempotent on flat streams, so depreciationAnnuity
+       equals the annual depreciation and opexBlock equals
+       opexFixed + decom (to float precision) — only the declining
+       return block is genuinely reshaped. */
+  function cffmLevels(inputs) {
+    if (!inputs) return null;
+    const opYears = inputs.opYears == null ? 25 : inputs.opYears;
+    const residualValue = inputs.residualValue == null ? 0
+      : inputs.residualValue;
+    const { constructionYears, devex, capex, idcRate, gearing,
+            txDebtRate, txEquityRate, opexFixed, decom,
+            floorRate, capRate } = inputs;
+    const required = [constructionYears, devex, capex, idcRate, gearing,
+                      txDebtRate, txEquityRate, opexFixed, decom,
+                      opYears, residualValue, floorRate, capRate];
+    if (required.some((v) => !Number.isFinite(v))) return null;
+    if (constructionYears < 1 || opYears < 1) return null;
+
+    let preOpRav = 0, idcTotal = 0;
+    const capexPerYear = capex / constructionYears;
+    for (let y = 1; y <= constructionYears; y++) {
+      const additions = capexPerYear + (y === 1 ? devex : 0);
+      const idc = idcRate * (preOpRav + additions / (2 + idcRate));
+      preOpRav += additions + idc;
+      idcTotal += idc;
+    }
+    const txTotal = preOpRav
+      * (gearing * txDebtRate + (1 - gearing) * txEquityRate);
+    const rav = preOpRav + txTotal;
+
+    const depreciation = (rav - residualValue) / opYears;
+    const side = (r) => {
+      let opening = rav, npvReturn = 0, npvDep = 0, npvOpex = 0;
+      for (let n = 1; n <= opYears; n++) {
+        const disc = Math.pow(1 + r, -n);
+        npvReturn += r * opening * disc;
+        npvDep += depreciation * disc;
+        npvOpex += (opexFixed + decom) * disc;
+        opening -= depreciation;
+      }
+      const annuityFactor = r === 0 ? 1 / opYears
+        : r / (1 - Math.pow(1 + r, -opYears));
+      const returnAnnuity = npvReturn * annuityFactor;
+      const depreciationAnnuity = npvDep * annuityFactor;
+      const opexBlock = npvOpex * annuityFactor;
+      return { level: returnAnnuity + depreciationAnnuity + opexBlock,
+               returnAnnuity, depreciationAnnuity, opexBlock };
+    };
+    return { rav, idcTotal, txTotal,
+             floor: side(floorRate), cap: side(capRate) };
+  }
+
+  /* Corridor arithmetic (D77 — from Ofgem's decision documents, not
+     the handbook): what a gross-margin scenario means under the
+     floor/cap regime. `levels` is { floorLevel, capLevel } (£m/yr,
+     flat real); `inputs` is { gmLow, gmCentral, gmHigh } (£m/yr flat
+     real gross-margin scenarios) plus opYears (default 25). Per
+     scenario, all annual £m/yr:
+       topUp    = max(0, floorLevel - gm)   consumer support up to the
+                                            floor;
+       aboveCap = max(0, gm - capLevel)     excess above the cap;
+       clawback = 0.7 x aboveCap            the 70% consumer share of
+                                            above-cap margin;
+       retained = gm - clawback             what the operator keeps;
+     with lifetime figures = annual x opYears — flat and deliberately
+     UNDISCOUNTED: the model is a flat real annuity held against flat
+     real scenarios, and inventing a consumer-flow discount rate would
+     be false precision, so none is applied. faScore = gmCentral /
+     floorLevel, Ofgem's financial-adequacy metric (the published 0.60
+     demotion threshold is a UI concern, not an engine constant); null
+     when the floor level is not positive. Returns null on any
+     missing/non-finite input or opYears < 1. */
+  function cffmCorridor(levels, inputs) {
+    if (!levels || !inputs) return null;
+    const { floorLevel, capLevel } = levels;
+    const { gmLow, gmCentral, gmHigh } = inputs;
+    const opYears = inputs.opYears == null ? 25 : inputs.opYears;
+    const required = [floorLevel, capLevel, gmLow, gmCentral, gmHigh,
+                      opYears];
+    if (required.some((v) => !Number.isFinite(v))) return null;
+    if (opYears < 1) return null;
+    const scenario = (gm) => {
+      const topUp = Math.max(0, floorLevel - gm);
+      const aboveCap = Math.max(0, gm - capLevel);
+      const clawback = 0.7 * aboveCap;
+      const retained = gm - clawback;
+      return { gm, topUp, aboveCap, clawback, retained,
+               lifetimeTopUp: topUp * opYears,
+               lifetimeClawback: clawback * opYears,
+               lifetimeRetained: retained * opYears };
+    };
+    return { low: scenario(gmLow), central: scenario(gmCentral),
+             high: scenario(gmHigh),
+             faScore: floorLevel > 0 ? gmCentral / floorLevel : null };
+  }
+
+  /* One-off end-of-regime cost -> flat annual equivalent (D79): a
+     single payment X at the end of year opYears is NPV-equivalent to
+     X x (1+r)^-opYears x AF(r, opYears) per year over the regime —
+     discount the lump to the start of operations, then flatten with
+     the same A1.151 annuity factor the levels use. Exists for the
+     decommissioning field's live line: the field is a per-YEAR
+     allowance (the CFFM's annual Opex & Decom block), and an owner who
+     has a one-off end-of-life estimate needs its annuitised equivalent
+     stated, not silently multiplied by the regime length. r = 0
+     degenerates to X / opYears (no discounting, plain spreading).
+     Null on any missing/non-finite input or opYears < 1. Mirrored in
+     ops/ldes_cffm_figures.py. */
+  function cffmAnnuitiseEndOfLife(amount, rate, opYears) {
+    if (![amount, rate, opYears].every(Number.isFinite)) return null;
+    if (opYears < 1) return null;
+    if (rate === 0) return amount / opYears;
+    const af = rate / (1 - Math.pow(1 + rate, -opYears));
+    return amount * Math.pow(1 + rate, -opYears) * af;
+  }
+
+  /* The mini-CFFM CSV export's parameter table (D81, superseding D80's
+     year table after owner feedback: the model is flat, so 25
+     identical year rows carried nothing, and `#` comment-line inputs
+     forced manual parsing). Factored out of the card so the schema is
+     testable through the Python mirror. Returns the full row list for
+     a section,parameter,value CSV: the header row, then one `input`
+     row per card field (the raw typed value — percents as typed, this
+     export records what the reader entered, not the engine's
+     fractions — "not_set" when blank), then the `derived` summary
+     (RAV, IDC, transaction costs, both levels with their annuitised
+     sub-blocks, FA score, and the lifetime corridor figures per
+     scenario — "not_set" for any scenario not typed), and the
+     standing caveat as the one `note` row. Every value is a number
+     rounded to 4 dp or a closed token, all ASCII; the note text is
+     the only free-text value and the only one a serialiser must
+     comma-quote. `levels` from cffmLevels, `corridor` from
+     cffmCorridor or null (no central scenario typed), `inputs` is the
+     card's raw typed state. Null on missing levels or inputs. */
+  function cffmCsvRows(levels, corridor, inputs) {
+    if (!levels || inputs == null) return null;
+    const round4 = (v) => +v.toFixed(4);
+    const rows = [["section", "parameter", "value"]];
+    [["construction_years", inputs.constructionYears],
+     ["capex_gbpm", inputs.capex],
+     ["devex_gbpm", inputs.devex],
+     ["idc_rate_pct", inputs.idcRate],
+     ["gearing_pct", inputs.gearing],
+     ["tx_debt_pct", inputs.txDebtRate],
+     ["tx_equity_pct", inputs.txEquityRate],
+     ["opex_gbpm_yr", inputs.opexFixed],
+     ["decom_gbpm_yr", inputs.decom],
+     ["op_years", inputs.opYears],
+     ["residual_value_gbpm", inputs.residualValue],
+     ["floor_return_pct", inputs.floorRate],
+     ["cap_return_pct", inputs.capRate],
+     ["mw", inputs.mw],
+     ["gm_low_gbpm_yr", inputs.gmLow],
+     ["gm_central_gbpm_yr", inputs.gmCentral],
+     ["gm_high_gbpm_yr", inputs.gmHigh],
+    ].forEach(([key, v]) => rows.push(
+      ["input", key, Number.isFinite(v) ? v : "not_set"]));
+    const derived = (key, v) => rows.push(
+      ["derived", key, Number.isFinite(v) ? round4(v) : "not_set"]);
+    derived("rav_gbpm", levels.rav);
+    derived("idc_total_gbpm", levels.idcTotal);
+    derived("tx_total_gbpm", levels.txTotal);
+    derived("floor_level_gbpm_yr", levels.floor.level);
+    derived("cap_level_gbpm_yr", levels.cap.level);
+    derived("floor_return_annuity_gbpm", levels.floor.returnAnnuity);
+    derived("floor_depreciation_annuity_gbpm",
+            levels.floor.depreciationAnnuity);
+    derived("floor_opex_block_gbpm", levels.floor.opexBlock);
+    derived("cap_return_annuity_gbpm", levels.cap.returnAnnuity);
+    derived("cap_depreciation_annuity_gbpm",
+            levels.cap.depreciationAnnuity);
+    derived("cap_opex_block_gbpm", levels.cap.opexBlock);
+    derived("fa_score",
+            corridor && corridor.faScore != null ? corridor.faScore : NaN);
+    [["low", inputs.gmLow], ["central", inputs.gmCentral],
+     ["high", inputs.gmHigh]].forEach(([name, typed]) => {
+      const sc = corridor && Number.isFinite(typed)
+        ? corridor[name] : null;
+      derived(`lifetime_topup_${name}_gbpm`, sc ? sc.lifetimeTopUp : NaN);
+      derived(`lifetime_clawback_${name}_gbpm`,
+              sc ? sc.lifetimeClawback : NaN);
+      derived(`lifetime_retained_${name}_gbpm`,
+              sc ? sc.lifetimeRetained : NaN);
+    });
+    rows.push(["note", "caveat",
+      "ex-tax, flat real, indicative - not the CFFM, not a valuation"]);
+    return rows;
+  }
+
   /* Build a CSV string from {header: array} columns. No comma-escaping —
      do not add free-text columns to any export without revisiting this
      function first: a single stray comma shifts every field on that row
@@ -925,5 +1181,7 @@ const Metrics = (() => {
            observedArbitrageSpread,
            bessCashflow, annuityPayment, dscrStats,
            npv, irr, mirr, simplePayback, discountedPayback,
-           pviAtCommissioning, lcos, reanchorNpv };
+           pviAtCommissioning, lcos, reanchorNpv,
+           cffmLevels, cffmCorridor, cffmAnnuitiseEndOfLife,
+           cffmCsvRows };
 })();

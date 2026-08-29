@@ -1361,3 +1361,159 @@ material above (plan/10 D71–D72).
   has no ENTSO-E counterpart). Methodology and card prose updated to
   the new location; the Batteries tab keeps its other five cards
   unchanged.
+
+### LDES mini cap-and-floor calculator (2026-08-29)
+
+Plan/10 Phase 3 (B2), after the CFFM Handbook v2.1 read (work item
+3.0): the all-assumption counterpart to the Window 1 reference card,
+answering "where would the building blocks put a floor and cap for an
+asset like yours — and does the corridor bite?". Decisions D73–D78.
+
+- **Engine** (`Metrics.cffmLevels`/`cffmCorridor` in `app/js/metrics.js`,
+  mirrored by `ops/ldes_cffm_figures.py`, tests in
+  `tests/test_ldes_cffm.py`): Ofgem's building-blocks method reduced to
+  its ex-tax flat-real core — RAV with the A1.70 IDC formula, one-shot
+  gearing-split transaction costs, straight-line depreciation to the
+  residual, a return of rate × opening RAV, annuity flattening (A1.151)
+  at the floor and the cap rate — plus the D77 corridor arithmetic
+  (top-up, 70/30 soft-cap split, FA ratio, undiscounted flat
+  lifetimes). The return base deliberately deviates from A1.143's
+  intra-year averaging (D75, judgement call 18): under end-of-year
+  discounting the opening-RAV base is the unique one satisfying the
+  annuity identity `level = RAV × AF`, the only available parity anchor
+  since the handbook has no worked example, and the identity is pinned
+  in the tests.
+- **Card** (`app/index.html`, `app/js/charts.js`): `span-2` below the
+  reference card on the LDES tab, badged Assumption, with the
+  "ex-tax; not the CFFM, not a valuation" card-meta. BESS-calculator
+  idioms throughout — two-column calc-grid, D30 build-once form, D71
+  collapsible groups with "n set" markers — but its own module-scope
+  state and its own delegated listener, never State.calc (D78). The
+  regime group ships Ofgem's published indicative parameters prefilled
+  and Reference-badged (floor 4.47% / cap 7.48% CPIH-real, IDC 6.1%,
+  notional gearing 37.5%, tx 2.5%/5%, 25 years, zero residual); every
+  cost and margin input is blank with no default (D23). Results: floor
+  and cap tiles (£m/yr flat real, £/kW/yr sub-note once MW is set), a
+  building-blocks breakdown line that sums to each level, and — once a
+  central gross margin is typed — an FA-score tile flagging the
+  published 0.60 demotion threshold, lifetime top-up and clawback
+  tiles, and a corridor chart (flat floor/cap lines, shaded band, GM
+  scenario lines, tooltip stating the top-up or clawback each scenario
+  earns). D78 shipped no exports; superseded the same day by D80 below.
+- **Decommissioning input clarified as an annual allowance** (D79,
+  owner feedback from first real use, same day): the field is a
+  per-year allowance — faithful to the CFFM's annual Opex & Decom
+  block — but an owner entering a one-off end-of-life cost there
+  silently got a 25× overstatement of lifetime decommissioning.
+  Semantics unchanged; the field is relabelled "Decommissioning
+  allowance (£m/yr, real)", the footnote states the annuitisation
+  conversion for a one-off (X × (1+r)^−N × AF(r, N) per year at the
+  floor rate), and a live line under the field states the lifetime
+  total whenever the field is set — appending the annuitised
+  equivalent of the same figure read as a one-off when the total
+  exceeds 20% of CAPEX. The conversion is the engine's own annuity
+  arithmetic (`Metrics.cffmAnnuitiseEndOfLife`, mirrored in
+  `ops/ldes_cffm_figures.py`, hand-pinned in the tests).
+- **CSV export** (D80, owner feedback, same day): "Download CSV" on
+  the card (`gb_ldes_minicffm.csv`), the BESS calculator's export
+  discipline verbatim — `#` key=value header with every input
+  (`not_set` when blank), the derived RAV/IDC/tx/level/FA summary and
+  the standing "ex-tax, flat real, indicative — not the CFFM" caveat,
+  then a schema-stable nine-column year table (floor, cap, three GM
+  scenarios, central top-up/clawback/retained; flat values repeated,
+  zeros for unset scenarios) built by `Metrics.cffmCsvColumns`,
+  mirrored in Python and pinned by the tests. Gated on the results'
+  own gate. Shape superseded the same day by D81 below.
+- **CSV reshaped to a parameter table; UTF-8 BOM on both calculator
+  CSVs** (D81, owner feedback with an Excel mojibake screenshot, same
+  day): `gb_ldes_minicffm.csv` is now a three-column
+  `section,parameter,value` table — `input` rows for all 17 card
+  fields verbatim (`not_set` when blank), `derived` rows (RAV/IDC/tx,
+  both levels with their annuitised sub-blocks, FA score, per-scenario
+  lifetime corridor figures, `not_set` for untyped scenarios), one
+  closing `note,caveat` row (the only free-text value, comma-quoted) —
+  because the flat model's 25 identical year rows carried nothing and
+  `#` comment-line inputs forced manual parsing.
+  `Metrics.cffmCsvColumns` → `Metrics.cffmCsvRows` (mirrored as
+  `cffm_csv_rows`, old year-table function deleted from both,
+  `CsvRowsTest` pins the schema and an all-ASCII guarantee). Both
+  calculator CSV downloads (this and the BESS cash flow, whose
+  structure is untouched) now start with a UTF-8 BOM so Excel stops
+  guessing a legacy codepage; the exports' emitted strings are ASCII
+  (em dashes dropped with the old header). Docs: in-app methodology
+  export sentence, methodology.md CSV downloads section, plan/10 D81.
+- **Live-formula workbook export** (D82, owner feedback on D81: the
+  CSV records the figures but cannot show the mechanics): "Export
+  model (Excel)" beside the CSV builds `gb_ldes_minicffm.xlsx`, the
+  BESS working-model discipline verbatim — every derived cell an
+  Excel formula over the Inputs cells, no cached values, the vendored
+  style table reused with no new styles, formulas inside
+  `ops/xlsx_eval.py`'s closed grammar. Three sheets: Cover (caveat,
+  headline mirrors, notes, cell-style map), Inputs (one cell per
+  engine input, fractions behind percent formats, 0 + "not set" for
+  unset numerics; `LDES_WROW`), Levels (`LDES_LROW`: the A1.70 IDC
+  walk, transfer costs, the operations grid, annuity factors and
+  level cells, the central corridor walk with lifetime sums and the
+  FA cell, and two check rows pinning the telescoping identity at
+  each rate). `WorkbookExportTest` evaluates every formula against
+  the Python mirror over a browser-captured fixture
+  (`tests/fixtures/ldes_wb_case_1/`) plus three in-memory input
+  variants. Docs: in-app methodology workbook paragraph,
+  methodology.md exports section (now six related exports), plan/10
+  D82.
+- **Docs**: glossary terms `idc` and `annuity`; in-app methodology
+  section `m-ldes-cffm` (the blocks, the three stated simplifications,
+  the corridor, the disclaimers, the annual-allowance clarification,
+  the export); methodology.md Formulas entries (Mini-CFFM levels,
+  Cap-and-floor corridor, the decommissioning caveat), the CSV
+  downloads section and judgement call 18 (ex-tax + the return-base
+  deviation); README limitations bullet; plan/10 status and D73–D80.
+
+### Rule-based result annotations on both calculators (2026-08-29)
+
+- **A deterministic "Reading:" line under both calculators' result
+  tiles** (plan/10 D83, owner request): one interpretive sentence or
+  three built from enumerable, rule-based templates over the figures
+  each card has already computed at render time — explicitly NOT
+  model-generated (no LLM, no API call, no network; the owner wants
+  interpretive annotations without per-user model costs, and the
+  diagnosis space is small enough that rules cover it). BESS rules:
+  viability against the WACC in pp; a DSCR diagnosis naming which
+  years break and why (part-year commissioning stub charged a full
+  annual payment, augmentation spend inside the debt tenor, or a
+  plain below-target statement — and an all-clear when every service
+  year covers); toll price against the implied year-1 merchant rate;
+  leverage direction (equity vs project IRR). Mini-CFFM rules: the
+  central scenario's corridor position (below floor with lifetime
+  consumer funding, inside, or above cap with the 70/30 split); FA
+  score against the 0.60 threshold with Window 1 context on a fail;
+  floor-above-even-the-high-scenario; the floor's £/kW/yr recovery
+  burden. Pure functions (`bessCalcReading`/`ldesCffmReading`), at
+  most three sentences, silent when inputs are missing, cleared with
+  the rest of the results. Docs: in-app methodology sentence on each
+  card, methodology.md judgement call 19 (rules over generation for
+  cost, determinism and auditability), plan/10 D83.
+
+### BESS CSV export restructured to the parameter-table pattern (2026-08-29)
+
+- **`gb_bess_calculator_<percentile>.csv` now opens with the
+  mini-CFFM export's three-column `section,parameter,value` table
+  instead of the `#` comment-line header** (plan/10 D84, owner
+  request: "we fixed hashtags in LDES's csv, but not in BESS's").
+  One `input` row per key the old header carried, identical names and
+  value semantics (`not_set` for blanks) plus a new
+  `opex_escalation_source` row making the typed-vs-ONS-CPI-default
+  provenance its own value; a new `derived` section with the result
+  tiles' own figures at 4 dp (`npv_gbp`, `irr_pct`, `mirr_pct`,
+  `dpi`, `discounted_payback_years`, `lcos_gbp_per_mwh`, and
+  `equity_irr_pct`/`dscr_min`/`dscr_avg` while the debt layer is
+  active, `not_set` otherwise); the free-prose intro folded into one
+  closing RFC 4180-quoted `note,caveat` row; then one blank separator
+  row and the annual cash flow table exactly as before (engine
+  columns untouched, CsvExportShapeTest still pins them; BOM and
+  all-ASCII discipline kept). Rows built by `bessCalcCsvParamRows`
+  in `app/js/charts.js` — a view-layer builder, deliberately not
+  Python-mirrored (the mirrored part remains the year table's engine
+  columns). Docs: in-app methodology CSV paragraph, methodology.md
+  CSV downloads section and its free-text-exception sentence (now
+  covering both calculators' note rows), plan/10 D84.

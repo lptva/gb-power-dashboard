@@ -535,8 +535,8 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
    inert. Same reason .method-layout and .gloss-layout carry it. */
 .calc-grid { display: grid; grid-template-columns: 380px minmax(0, 1fr);
   gap: 18px; align-items: start; }
-#bess-calc-inputs { display: flex; flex-direction: column; gap: 14px;
-  min-width: 0; }
+#bess-calc-inputs, #ldes-cffm-inputs { display: flex;
+  flex-direction: column; gap: 14px; min-width: 0; }
 /* Pinned below the sticky topbar on the same formula as .method-toc and
    .gloss-nav (--topbar-h is live-measured in app.js; 66px fallback, +12px
    = the jump targets' scroll-margin). The max-height/overflow pair is a
@@ -545,7 +545,7 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
    card pushes it to 634px, which would otherwise cut the export row off
    the bottom with no way to reach it. min-width: 0 keeps ECharts' inline
    pixel widths from widening the track. */
-#bess-calc-results {
+#bess-calc-results, #ldes-cffm-results {
   position: sticky; top: calc(var(--topbar-h, 66px) + 12px);
   max-height: calc(100vh - var(--topbar-h, 66px) - 28px); overflow-y: auto;
   min-width: 0;
@@ -644,6 +644,11 @@ details.calc-group[open] > summary .calc-group-active { display: none; }
    spacing they read as one pair. The £ figures go mono and full-
    brightness inside a dim sentence: the split is scanned, the caveat
    around it is read once. */
+/* D83: the deterministic "Reading:" line under each calculator's
+   tiles — card-meta's grey tone at body size, bold lede. */
+.calc-reading { font-size: 13px; color: var(--text-dim);
+  margin: 0 0 10px; }
+.calc-reading b { color: var(--text); font-weight: 600; }
 .calc-mix-line { font-size: 11px; color: var(--text-dim); margin: 0 0 10px; }
 .calc-mix-line .cm-fig { font-family: var(--font-mono);
   font-variant-numeric: tabular-nums; color: var(--text); }

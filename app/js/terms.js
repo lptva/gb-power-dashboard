@@ -596,4 +596,32 @@ const Terms = {
       "above the cap flows back through it.",
     method: "ldes-capfloor",
   },
+  idc: {
+    label: "Interest during construction (IDC)",
+    short: "The financing cost accrued while an asset is being built, " +
+      "capitalised into the regulatory asset value rather than " +
+      "expensed: capital tied up in construction earns no revenue, so " +
+      "the regime compensates it by growing the RAV.",
+    extra: "In Ofgem's CFFM each construction year's spend earns a " +
+      "half year of IDC (costs land mid-year on average) and the " +
+      "accumulated balance a full year, compounding until operations " +
+      "start. The mini calculator applies the handbook formula with " +
+      "the published indicative rate prefilled; the rate is fixed at " +
+      "each project's FID.",
+    method: "ldes-cffm",
+  },
+  annuity: {
+    label: "Annuity factor (levelised allowance)",
+    short: "The factor that converts a present value into the flat " +
+      "annual payment with the same present value over a fixed term: " +
+      "r / (1 − (1 + r)^−n) at rate r over n years.",
+    extra: "The CFFM flattens each side's building blocks (return, " +
+      "depreciation, opex and decommissioning) into one level annual " +
+      "allowance this way, so a declining return profile becomes a " +
+      "flat £/yr figure with the same present value. Flattening a " +
+      "stream that is already flat leaves it unchanged, which is why " +
+      "only the return block is genuinely reshaped in the mini " +
+      "calculator's breakdown.",
+    method: "ldes-cffm",
+  },
 };
