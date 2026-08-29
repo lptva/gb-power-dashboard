@@ -329,9 +329,12 @@ const Metrics = (() => {
      function here is null-safe and touches neither the DOM nor State:
      the card (charts.js/ui.js) owns input collection, provenance chips
      and rendering; this module owns arithmetic only. All arithmetic is
-     real terms, pre-tax, ungeared, with no residual value and no
-     augmentation capex — see the Methodology entry for the four stated
-     simplifications. ==================================================== */
+     real terms, pre-tax, with no residual value. Project NPV/IRR and
+     every metric built on net_cashflow_gbp stay UNGEARED; the optional
+     toll and debt layer (plan/10 D54/D55, reversing plan/09's
+     out-of-scope line) adds its own columns and equity figures beside
+     them without touching them — see the Methodology entry for the
+     stated simplifications. ============================================ */
 
   /* Fraction of a calendar year remaining on/after an ISO date (inclusive
      of that day) — used to pro-rate year 1 of the cash flow by the
@@ -438,6 +441,57 @@ const Metrics = (() => {
     return n === 1 ? (1 - frac1) + frac1 / 2 : n - 0.5;
   }
 
+  /* Level-annuity debt service (plan/10 D55/D61): the constant annual
+     payment that retires `principal` over `years` at `rate` (a real
+     fraction) — principal x rate / (1 - (1+rate)^-years). rate = 0
+     degenerates to straight-line principal/years, taken as an explicit
+     branch rather than a 0/0. Returns 0 (an inert layer, matching the
+     no-op discipline of the toll and augmentation triples) on
+     missing/nonsense inputs rather than null: callers sum it into
+     signed cash-flow columns. */
+  function annuityPayment(principal, rate, years) {
+    if (!Number.isFinite(principal) || !Number.isFinite(rate)
+      || !Number.isFinite(years) || principal <= 0 || years < 1) {
+      return 0;
+    }
+    if (rate === 0) return principal / years;
+    return principal * rate / (1 - Math.pow(1 + rate, -years));
+  }
+
+  /* DSCR statistics over bessCashflow's rows (plan/10 D60/D65):
+     DSCR_n = net_cashflow_gbp_n / debt service_n over the years where
+     service is actually due. CFADS is deliberately the project net
+     cash flow itself, augmentation capex included in its year — the
+     honest in-model reading; lenders typically carve funded capex out,
+     which the methodology states rather than silently adopting. Null
+     when no year carries debt service. `tollTenor` splits the
+     toll-period and post-toll aggregates the card's tile note reports;
+     0 (no toll) leaves the toll-side aggregates null and everything in
+     the post/merchant bucket. */
+  function dscrStats(rows, tollTenor) {
+    if (!rows || !rows.length) return null;
+    const all = [], tollYrs = [], postYrs = [];
+    let min = null, minYear = null;
+    rows.forEach((row) => {
+      if (row.year < 1) return;
+      const service = -((row.debt_interest_gbp || 0)
+        + (row.debt_principal_gbp || 0));
+      if (service <= 0) return;
+      const d = row.net_cashflow_gbp / service;
+      all.push(d);
+      if (tollTenor >= 1 && row.year <= tollTenor) tollYrs.push(d);
+      else postYrs.push(d);
+      if (min == null || d < min) { min = d; minYear = row.year; }
+    });
+    if (!all.length) return null;
+    const mean = (arr) => (arr.length
+      ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
+    const minOf = (arr) => (arr.length ? Math.min(...arr) : null);
+    return { min, avg: mean(all), minYear,
+             minToll: minOf(tollYrs), avgToll: mean(tollYrs),
+             minPost: minOf(postYrs), avgPost: mean(postYrs) };
+  }
+
   /* Year-by-year cash flow (D32's `bessCashflow`). `inputs`:
        P power MW, E energy MWh, y0 ISO commissioning date (or null),
        T calculation period years, C capex £k/MW, O opex £k/MW/yr,
@@ -483,12 +537,34 @@ const Metrics = (() => {
        tranches, so a fresh tranche partially rejuvenates capability in
        proportion to its size — full replacement approaches age zero,
        a small top-up barely moves it, and with no augmentation the
-       weighted age is exactly n-1, the pre-tranche behaviour.
+       weighted age is exactly n-1, the pre-tranche behaviour,
+       tollShare/tollPrice/tollTenor one optional tolling agreement
+       (plan/10 D58/D59): for years 1..tollTenor a share tollShare (a
+       fraction) of the asset earns a fixed toll of tollPrice £k/MW/yr
+       (numerically identical to £/kW/yr; the market quotes £k/MW/yr) —
+       flat real, pro-rated by year 1's commissioning stub but never
+       degraded, cannibalised or derated (availability guarantees sit
+       with the operator, not this model); the merchant pair
+       availability+arbitrage is scaled by (1-tollShare) instead, and
+       after the tenor the asset is fully merchant again. All three
+       must be set or the agreement is a no-op — the augmentation
+       triple's all-or-nothing discipline,
+       gearing/costOfDebt/debtTenor one optional debt layer (plan/10
+       D59/D61): D0 = gearing x C0 draws down at year 0 and repays as
+       a level annuity at costOfDebt over debtTenor years —
+       contractual-annual, never stub-pro-rated; a tenor past T leaves
+       principal outstanding at the horizon, with no synthetic balloon.
+       All three must be set or the layer is a no-op. The layer sits
+       BELOW the project line: net_cashflow_gbp and every metric built
+       on it stay ungeared; the new signed columns carry the layer and
+       equity_cashflow_gbp is their plain sum with net.
      Returns null if the inputs required to build a single year are
      missing or non-finite (D30: "results render only when the required
-     inputs are present"). Otherwise { c0, rows }: rows[0] is the time-
-     zero capex-only row (year 0, never discounted under either
-     convention — the capex outflow IS time zero); rows[1..T] are the
+     inputs are present"). Otherwise { c0, d0, rows }: rows[0] is the
+     time-zero row — the capex outflow plus, when the debt layer is
+     active, the drawdown and equity contribution (year 0 is never
+     discounted under either convention — time zero IS the reference
+     point); rows[1..T] are the
      operating years, each figure already signed the way the CSV export
      ships it (costs negative, revenues positive) so net_cashflow_gbp is
      a plain sum. IRR is deliberately NOT computed from these discounted
@@ -502,6 +578,8 @@ const Metrics = (() => {
       a, sHi = null, sLo = null, k = 0, gamma = 0, zTotal = 0,
       discounting = "mid", augYear = null, augMwh = 0,
       augCostPerMwh = 0, augDelta = null, rho = 0, opexEsc = 0,
+      tollShare = 0, tollPrice = 0, tollTenor = 0,
+      gearing = 0, costOfDebt = null, debtTenor = 0,
     } = inputs || {};
     const finite = (v) => typeof v === "number" && Number.isFinite(v);
     if (![P, E, T, C, O, r, c, eta, a].every(finite) || T <= 0 || P <= 0) {
@@ -510,14 +588,21 @@ const Metrics = (() => {
     const augActive = finite(augYear) && augYear >= 1
       && augMwh > 0 && augCostPerMwh > 0;
     const d2 = augDelta == null ? delta : augDelta;
+    const tollActive = tollShare > 0 && tollPrice > 0 && tollTenor >= 1;
+    const debtActive = gearing > 0 && finite(costOfDebt) && debtTenor >= 1;
     const round = (v, dp = 2) => +v.toFixed(dp);
     const c0 = C * 1000 * P;
+    const d0 = debtActive ? gearing * c0 : 0;
+    const pay = debtActive ? annuityPayment(d0, costOfDebt, debtTenor) : 0;
+    let bal = d0;
     const frac1 = yearFractionRemaining(y0);
     const rows = [{
       year: 0, capex_gbp: round(-c0), availability_gbp: 0,
       arbitrage_gbp: 0, opex_gbp: 0, tnuos_gbp: 0,
       net_cashflow_gbp: round(-c0), discounted_cashflow_gbp: round(-c0),
       cumulative_discounted_gbp: round(-c0), discharged_mwh: 0, usable_mwh: 0,
+      toll_gbp: 0, debt_drawdown_gbp: round(d0), debt_interest_gbp: 0,
+      debt_principal_gbp: 0, equity_cashflow_gbp: round(-c0 + d0),
     }];
     let cumDisc = -c0;
     const ceiling = arbitrageCeiling(sHi, sLo, eta);
@@ -536,6 +621,16 @@ const Metrics = (() => {
       const availability = a * 1000 * P * g * frac * Math.pow(1 - rho, age);
       const arbitrage = (ceiling != null && k)
         ? dischargedMwh * ceiling * k * g : 0;
+      // Toll £ deliberately OUTSIDE the g/rho/derate scaling the two
+      // lines above carry (D58): flat real over the tenor, pro-rated
+      // only by year 1's commissioning stub — availability guarantees
+      // sit with the operator, so degradation, cannibalisation and the
+      // derate stay on the merchant share alone.
+      const tollOn = tollActive && n <= tollTenor;
+      const sEff = tollOn ? tollShare : 0;
+      const toll = tollOn ? tollPrice * 1000 * P * tollShare * frac : 0;
+      const availabilityNet = availability * (1 - sEff);
+      const arbitrageNet = arbitrage * (1 - sEff);
       // Escalated on OPEX alone (owner request, 2026-08-01): TNUoS below
       // stays on the flat published-tariff figure, and the augmentation
       // capex line further down is a one-off typed cost, not a
@@ -544,13 +639,20 @@ const Metrics = (() => {
       const tnuos = (zTotal || 0) * 1000 * P * frac;
       const capexN = (augActive && n === augYear)
         ? -(augCostPerMwh * 1000 * augMwh) : 0;
-      const net = availability + arbitrage - opex - tnuos + capexN;
+      const net = toll + availabilityNet + arbitrageNet - opex - tnuos + capexN;
       const discounted = net / Math.pow(1 + r, discountExponent(n, frac1, discounting));
       cumDisc += discounted;
+      // Debt walk (D61): contractual-annual, never stub-pro-rated; a
+      // tenor past T just stops here with principal outstanding.
+      const serviceDue = debtActive && n <= debtTenor;
+      const interest = serviceDue ? bal * costOfDebt : 0;
+      const principal = serviceDue ? pay - interest : 0;
+      if (serviceDue) bal -= principal;
+      const equity = net - interest - principal;
       rows.push({
         year: n, capex_gbp: round(capexN),
-        availability_gbp: round(availability),
-        arbitrage_gbp: round(arbitrage),
+        availability_gbp: round(availabilityNet),
+        arbitrage_gbp: round(arbitrageNet),
         opex_gbp: round(-opex),
         tnuos_gbp: round(-tnuos),
         net_cashflow_gbp: round(net),
@@ -558,9 +660,14 @@ const Metrics = (() => {
         cumulative_discounted_gbp: round(cumDisc),
         discharged_mwh: round(dischargedMwh, 3),
         usable_mwh: round(usableMwh, 3),
+        toll_gbp: round(toll),
+        debt_drawdown_gbp: 0,
+        debt_interest_gbp: round(-interest),
+        debt_principal_gbp: round(-principal),
+        equity_cashflow_gbp: round(equity),
       });
     }
-    return { c0, rows };
+    return { c0, d0, rows };
   }
 
   /* NPV at rate `r` of a capex outflow C0 (time zero) plus a plain array
@@ -816,6 +923,7 @@ const Metrics = (() => {
            fmtDate, fmtAxisTick,
            yearFractionRemaining, tnuosCharge, arbitrageCeiling,
            observedArbitrageSpread,
-           bessCashflow, npv, irr, mirr, simplePayback, discountedPayback,
+           bessCashflow, annuityPayment, dscrStats,
+           npv, irr, mirr, simplePayback, discountedPayback,
            pviAtCommissioning, lcos, reanchorNpv };
 })();

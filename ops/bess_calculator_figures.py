@@ -4,6 +4,7 @@ issue #49), for the parity test in tests/test_bess_calculator.py.
 
 MIRRORS app/js/metrics.js (yearFractionRemaining, tnuosCharge,
 arbitrageCeiling, observedArbitrageSpread, discountExponent,
+annuityPayment -> annuity_payment, dscrStats -> dscr_stats,
 bessCashflow, npv, irr, mirr, simplePayback, discountedPayback,
 pviAtCommissioning, lcos, reanchorNpv). If those change, change this.
 Same convention as
@@ -137,6 +138,68 @@ def discount_exponent(n, frac1, discounting):
     return (1 - frac1) + frac1 / 2 if n == 1 else n - 0.5
 
 
+def annuity_payment(principal, rate, years):
+    """Mirrors Metrics.annuityPayment exactly (plan/10 D55/D61): the
+    level annual payment retiring `principal` over `years` at `rate` (a
+    real fraction) — principal x rate / (1 - (1+rate)^-years), with
+    rate = 0 taken as an explicit straight-line principal/years branch
+    rather than a 0/0. Returns 0 (an inert layer) on missing/nonsense
+    inputs rather than None: callers sum it into signed columns."""
+    def _finite(v):
+        return (isinstance(v, (int, float)) and not isinstance(v, bool)
+                and math.isfinite(v))
+    if (not (_finite(principal) and _finite(rate) and _finite(years))
+            or principal <= 0 or years < 1):
+        return 0
+    if rate == 0:
+        return principal / years
+    return principal * rate / (1 - (1 + rate) ** -years)
+
+
+def dscr_stats(rows, toll_tenor):
+    """Mirrors Metrics.dscrStats exactly (plan/10 D60/D65): DSCR_n =
+    net_cashflow_gbp_n / debt service_n over the years service is
+    actually due, where service is -(debt_interest_gbp +
+    debt_principal_gbp) — those columns are signed negative (outflows),
+    like opex_gbp/tnuos_gbp. CFADS is deliberately the project net cash
+    flow itself, augmentation capex included in its year (the honest
+    in-model reading; lenders typically carve funded capex out, which
+    the methodology states rather than silently adopting). None when no
+    year carries debt service. `toll_tenor` splits the toll-period and
+    post-toll aggregates; 0 leaves the toll side None and everything in
+    the post/merchant bucket."""
+    if not rows:
+        return None
+    all_d, toll_yrs, post_yrs = [], [], []
+    min_d, min_year = None, None
+    for row in rows:
+        if row["year"] < 1:
+            continue
+        service = -(row["debt_interest_gbp"] + row["debt_principal_gbp"])
+        if service <= 0:
+            continue
+        d = row["net_cashflow_gbp"] / service
+        all_d.append(d)
+        if toll_tenor >= 1 and row["year"] <= toll_tenor:
+            toll_yrs.append(d)
+        else:
+            post_yrs.append(d)
+        if min_d is None or d < min_d:
+            min_d, min_year = d, row["year"]
+    if not all_d:
+        return None
+
+    def mean(arr):
+        return sum(arr) / len(arr) if arr else None
+
+    def min_of(arr):
+        return min(arr) if arr else None
+
+    return {"min": min_d, "avg": mean(all_d), "minYear": min_year,
+            "minToll": min_of(toll_yrs), "avgToll": mean(toll_yrs),
+            "minPost": min_of(post_yrs), "avgPost": mean(post_yrs)}
+
+
 def bess_cashflow(inputs):
     """Mirrors Metrics.bessCashflow exactly, including its rounding.
     `inputs` is a plain dict with the same keys as the JS side: P, E,
@@ -160,8 +223,27 @@ def bess_cashflow(inputs):
     published tariff and is not escalated, and the augmentation
     tranche's cost is a one-off typed figure with nothing to escalate.
 
+    tollShare/tollPrice/tollTenor (optional, plan/10 D58/D59): one
+    tolling agreement — for years 1..tollTenor a share tollShare (a
+    fraction) earns a fixed toll of tollPrice GBPk/MW/yr (numerically
+    identical to pounds/kW/yr; the market quotes GBPk/MW/yr), flat real,
+    pro-rated by year 1's commissioning stub but never degraded,
+    cannibalised or derated (availability guarantees sit with the
+    operator); the merchant availability+arbitrage pair is scaled by
+    (1-tollShare) instead, and after the tenor the asset is fully
+    merchant again. All three set or the agreement is a no-op.
+    gearing/costOfDebt/debtTenor (optional, plan/10 D59/D61): one debt
+    layer — D0 = gearing x C0 draws down at year 0, repaying as a level
+    annuity at costOfDebt over debtTenor years, contractual-annual,
+    never stub-pro-rated; a tenor past T leaves principal outstanding,
+    no synthetic balloon. All three set or the layer is a no-op. The
+    layer sits BELOW the project line: net_cashflow_gbp and every
+    metric built on it stay ungeared; the new signed columns carry the
+    layer and equity_cashflow_gbp is their plain sum with net.
+
     Returns None if a required input is missing/non-finite, matching
-    metrics.js's null-safety; otherwise {"c0": ..., "rows": [...]}.
+    metrics.js's null-safety; otherwise {"c0": ..., "d0": ...,
+    "rows": [...]}.
     """
     p = inputs.get("P")
     e = inputs.get("E")
@@ -186,6 +268,12 @@ def bess_cashflow(inputs):
     aug_delta = inputs.get("augDelta")
     rho = inputs.get("rho", 0) or 0
     opex_esc = inputs.get("opexEsc", 0) or 0
+    toll_share = inputs.get("tollShare", 0) or 0
+    toll_price = inputs.get("tollPrice", 0) or 0
+    toll_tenor = inputs.get("tollTenor", 0) or 0
+    gearing = inputs.get("gearing", 0) or 0
+    cost_of_debt = inputs.get("costOfDebt")
+    debt_tenor = inputs.get("debtTenor", 0) or 0
 
     def finite(v):
         return isinstance(v, (int, float)) and not isinstance(v, bool)
@@ -198,7 +286,13 @@ def bess_cashflow(inputs):
                   and not isinstance(aug_year, bool)
                   and aug_year >= 1 and aug_mwh > 0 and aug_cost_mwh > 0)
     d2 = delta if aug_delta is None else aug_delta
+    toll_active = toll_share > 0 and toll_price > 0 and toll_tenor >= 1
+    debt_active = gearing > 0 and finite(cost_of_debt) and debt_tenor >= 1
     c0 = c_capex * 1000 * p
+    d0 = gearing * c0 if debt_active else 0
+    pay = (annuity_payment(d0, cost_of_debt, debt_tenor)
+           if debt_active else 0)
+    bal = d0
     frac1 = year_fraction_remaining(y0)
     rows = [{
         "year": 0, "capex_gbp": js_round(-c0, 2), "availability_gbp": 0,
@@ -207,6 +301,9 @@ def bess_cashflow(inputs):
         "discounted_cashflow_gbp": js_round(-c0, 2),
         "cumulative_discounted_gbp": js_round(-c0, 2),
         "discharged_mwh": 0, "usable_mwh": 0,
+        "toll_gbp": 0, "debt_drawdown_gbp": js_round(d0, 2),
+        "debt_interest_gbp": 0, "debt_principal_gbp": 0,
+        "equity_cashflow_gbp": js_round(-c0 + d0, 2),
     }]
     cum_disc = -c0
     ceiling = arbitrage_ceiling(s_hi, s_lo, eta)
@@ -224,6 +321,16 @@ def bess_cashflow(inputs):
         availability = a * 1000 * p * g * frac * (1 - rho) ** age
         arbitrage = (discharged_mwh * ceiling * k * g
                     if (ceiling is not None and k) else 0)
+        # Toll pounds deliberately OUTSIDE the g/rho scaling the two
+        # lines above carry (D58), mirroring Metrics.bessCashflow: flat
+        # real over the tenor, pro-rated only by year 1's commissioning
+        # stub — degradation, cannibalisation and the derate stay on
+        # the merchant share alone.
+        toll_on = toll_active and n <= toll_tenor
+        s_eff = toll_share if toll_on else 0
+        toll = toll_price * 1000 * p * toll_share * frac if toll_on else 0
+        availability_net = availability * (1 - s_eff)
+        arbitrage_net = arbitrage * (1 - s_eff)
         # Escalated on OPEX alone (owner request, 2026-08-01), mirroring
         # Metrics.bessCashflow exactly: TNUoS and the augmentation capex
         # line below are both untouched by opex_esc.
@@ -231,14 +338,23 @@ def bess_cashflow(inputs):
         tnuos = (z_total or 0) * 1000 * p * frac
         capex_n = (-(aug_cost_mwh * 1000 * aug_mwh)
                    if (aug_active and n == aug_year) else 0)
-        net = availability + arbitrage - opex - tnuos + capex_n
+        net = toll + availability_net + arbitrage_net - opex - tnuos + capex_n
         exponent = discount_exponent(n, frac1, discounting)
         discounted = net / (1 + r) ** exponent
         cum_disc += discounted
+        # Debt walk (D61), mirroring Metrics.bessCashflow exactly:
+        # contractual-annual, never stub-pro-rated; a tenor past T just
+        # stops here with principal outstanding.
+        service_due = debt_active and n <= debt_tenor
+        interest = bal * cost_of_debt if service_due else 0
+        principal = pay - interest if service_due else 0
+        if service_due:
+            bal -= principal
+        equity = net - interest - principal
         rows.append({
             "year": n, "capex_gbp": js_round(capex_n, 2),
-            "availability_gbp": js_round(availability, 2),
-            "arbitrage_gbp": js_round(arbitrage, 2),
+            "availability_gbp": js_round(availability_net, 2),
+            "arbitrage_gbp": js_round(arbitrage_net, 2),
             "opex_gbp": js_round(-opex, 2),
             "tnuos_gbp": js_round(-tnuos, 2),
             "net_cashflow_gbp": js_round(net, 2),
@@ -246,8 +362,13 @@ def bess_cashflow(inputs):
             "cumulative_discounted_gbp": js_round(cum_disc, 2),
             "discharged_mwh": js_round(discharged_mwh, 3),
             "usable_mwh": js_round(usable_mwh, 3),
+            "toll_gbp": js_round(toll, 2),
+            "debt_drawdown_gbp": 0,
+            "debt_interest_gbp": js_round(-interest, 2),
+            "debt_principal_gbp": js_round(-principal, 2),
+            "equity_cashflow_gbp": js_round(equity, 2),
         })
-    return {"c0": c0, "rows": rows}
+    return {"c0": c0, "d0": d0, "rows": rows}
 
 
 def npv(c0, cashflows, r, discounting="end", frac1=1.0):
@@ -459,7 +580,17 @@ def compute(inputs):
     (1 + npv/pvi) can use the two re-anchored figures directly: the
     shared factor cancels in the ratio, so dpi is anchor-invariant too,
     without needing to say so at the call site. dpi is None rather than
-    a divide-by-zero/negative-flip when pvi is not positive."""
+    a divide-by-zero/negative-flip when pvi is not positive.
+
+    Toll/debt pass (plan/10 D54/D55): "d0" is the debt drawdown
+    (0 when the layer is inactive); "equity_irr" is irr() over the
+    equity_cashflow_gbp column with c0 - d0 as the time-zero outflow,
+    and is None when d0 == 0 — an ungeared "equity IRR" would just
+    duplicate the project IRR (equity flows ARE the project flows),
+    so the card shows no tile rather than a repeated figure.
+    "dscr_min"/"dscr_avg"/"dscr_min_toll"/"dscr_min_post" come from
+    dscr_stats() over the same rows (all None when no year carries
+    debt service)."""
     cf = bess_cashflow(inputs)
     if cf is None:
         return {"error": "missing input"}
@@ -477,9 +608,24 @@ def compute(inputs):
     pvi_value = reanchor_npv(pvi_at_commissioning_value, r, y0, valuation_date)
     dpi_value = 1 + npv_value / pvi_value if (pvi_value is not None
                                                and pvi_value > 0) else None
+    d0 = cf["d0"]
+    equity_flows = [row["equity_cashflow_gbp"] for row in cf["rows"]
+                    if row["year"] >= 1]
+    # None, not a number, when ungeared: with d0 == 0 the equity flows
+    # are the project flows and an "equity IRR" would silently duplicate
+    # the project IRR — the card shows no tile instead.
+    equity_irr = irr(c0 - d0, equity_flows) if d0 > 0 else None
+    toll_tenor_int = int(inputs.get("tollTenor", 0) or 0)
+    stats = dscr_stats(cf["rows"], toll_tenor_int)
     return {
         "c0": c0,
+        "d0": d0,
         "rows": cf["rows"],
+        "equity_irr": equity_irr,
+        "dscr_min": stats["min"] if stats else None,
+        "dscr_avg": stats["avg"] if stats else None,
+        "dscr_min_toll": stats["minToll"] if stats else None,
+        "dscr_min_post": stats["minPost"] if stats else None,
         "npv": npv_value,
         "npv_at_commissioning": npv_at_commissioning,
         "irr": irr(c0, cashflows),

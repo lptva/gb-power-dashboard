@@ -1220,3 +1220,144 @@ unit-inconsistent with the profitability calculator elsewhere on the tab.
   stacked on opposite sides of zero exactly like the per-product bars.
   State is in-memory only, no persistence. The unit-spread band and p50
   line render unchanged in both views.
+
+### BESS calculator: toll and debt/gearing block (2026-08-28)
+
+Answers the route-to-market question the merchant-only calculator could
+not: what a tolling agreement and a slug of debt do to a battery's
+returns. Reverses plan/09's recorded "no gearing, no debt schedule"
+out-of-scope line via plan/10 (D54–D57 signed off by the owner
+2026-08-28; implementation decisions D58–D66 recorded there), with the
+superseded plan/09 lines annotated in place.
+
+- **Optional "Route to market & financing" input group.** Tolled share,
+  toll price (£/kW/yr, flat real, stub-pro-rated but never degraded,
+  cannibalised or derated — availability guarantees sit with the
+  operator) and toll tenor blend a fixed toll on the tolled share with
+  the merchant availability and arbitrage lines scaled by the untolled
+  remainder; gearing, real pre-tax cost of debt and debt tenor draw
+  D0 = gearing × CAPEX at year 0 and repay it as a level annuity, with
+  no balloon and no mini-perm. Each half activates all-or-nothing on
+  its own triple (the augmentation precedent) and a live line names any
+  missing piece.
+- **Project figures stay ungeared, bit-for-bit.** NPV, IRR, MIRR, the
+  paybacks and LCOS are untouched by the block; the debt sits below the
+  project line in five new always-numeric row columns (toll, debt
+  drawdown, debt interest, debt principal, equity cash flow) feeding an
+  equity-IRR tile and min/avg DSCR read-outs (CFADS = project net cash
+  flow, augmentation capex included; toll-period vs post-toll split).
+  `TollDebtDefaultOffTest` pins the default state equal to the old
+  engine row-by-row, and the untouched `bess_case_1..8` parity fixtures
+  double as the proof.
+- **All five mirrored surfaces moved in one pass:** `metrics.js`,
+  `charts.js` (inputs group, tiles, chart, CSV, workbook),
+  `ops/bess_calculator_figures.py`, the test suite, and the
+  methodology prose (`ui.js` + `methodology.md`, whose Formulas section
+  gains its first calculator entries) plus five new glossary terms.
+- **The Excel export's Financing section is live formulas,** like the
+  rest of the workbook: the DCF revenue block gains a toll row, the
+  debt schedule walks balance/interest/principal cell by cell, equity
+  IRR uses Excel's native IRR() (not confined to the card solver's
+  150% bracket — the card names that case when it occurs), and min/avg
+  DSCR come from MIN and SUMPRODUCT over the schedule rows. Verified by
+  the formula-evaluating workbook fixtures, including a new
+  toll-and-debt case.
+- **Third chart mode: equity IRR vs tolled share** — 0 to 100% in
+  steps of 5, three curves at 0.8×/1.0×/1.2× the anchor toll price
+  (entered price, else the observed year-1 merchant figure), the view
+  that shows where a toll flips from levering returns up to capping
+  them. The sensitivity strip and matrix stay as they were (D64).
+- **CSV export extended, not reshaped:** the five financing columns
+  join the closed numeric schema (zero when the block is inactive) and
+  six new `#` header lines record the inputs, `not_set` when blank.
+
+### BESS calculator: toll price relabelled to £k/MW/yr (2026-08-29)
+
+Owner request, same reader-feedback lineage as the £/MW/day revenue
+pass above: £k/MW/yr is the unit toll quotes are actually made in (the
+Modo research this block is calibrated to quotes it), and it is
+numerically identical to £/kW/yr, so every figure carries over with the
+numeral unchanged — £100/kW/yr is £100k/MW/yr.
+
+- **Display only, no arithmetic.** The engine's `tollPrice × 1000 × P`
+  term, the stored State value, and every fixture input are untouched;
+  `TollBlendTest` and the parity fixtures pass unchanged.
+- **Every surface in one pass:** card label and footnote, toll live
+  line (both sides of the toll-vs-merchant comparison), equity-IRR
+  chart series names and caption, CSV header key (now
+  `toll_price_gbpk_per_mw_yr`, matching the `capex_gbpk_per_mw`
+  convention), workbook Assumptions unit cell (re-captured fixtures,
+  inputs unchanged), engine docstrings, methodology prose and formula
+  entry, the `tolling` glossary entry, and plan/10 (D58 annotated,
+  D67 recorded).
+
+### LDES cap and floor: Window 1 reference card (2026-08-29)
+
+Plan/10 Phase 2 (B1, D68–D70): the regulated counterpart to the toll
+block — Ofgem's LDES cap-and-floor regime, as a vendored reference card
+on the Batteries tab, timed for the window before final awards land
+(expected autumn 2026).
+
+- **New card below the calculator:** a sortable table of the 16
+  minded-to projects (EA rank, project, technology, region, MW,
+  duration, track, first operation; default EA-rank order, click a
+  heading to sort either direction, rank gaps 10/11/13 kept because
+  they are Ofgem's real non-selections), a regime definition run
+  (floor 4.47% / cap 7.48% CPIH-real indicative on 100% of RAV, soft
+  cap 30% retained, 25-yr default, CPIH-indexed, MAT-conditional,
+  BSUoS-funded, FA threshold 0.60 — each term glossary-linked), and an
+  MW-by-technology mini-chart computed from the project list with
+  per-project duration in the tooltip. Badged Reference; the card-meta
+  line carries the minded-to status and supersession date from the
+  payload's `status` block.
+- **Vendored, hand-updated payload:** `app/data/ldes_capfloor.json`
+  (built by `etl/build_ldes_capfloor.py`, registered in the manifest,
+  re-validated non-fatally by `ops/refresh.py`) has no live source to
+  poll — the update trigger is an Ofgem publication, by hand (D70).
+  Lazily fetched via `Data.loadLdesCapfloor()` (the `bess_units`
+  precedent), with the card's own empty state naming the build command
+  and every other Batteries card unaffected by a missing payload.
+- **No £ levels shown or estimated (D69):** Ofgem withholds
+  per-project floor/cap levels as commercially sensitive, and the card
+  deliberately estimates none — recorded as methodology.md judgement
+  call 17. Per-project floor arithmetic waits for Phase 3's
+  all-assumption mini-CFFM.
+- **Seven new glossary terms** (cap and floor, RAV, soft cap, MAT,
+  Financial Assessment score, BCR, BSUoS), a new in-app methodology
+  section (`m-ldes-capfloor`: the regime, what the card does and does
+  not show, provenance and the one-way rule), a static source row in
+  the methodology sources table mirroring the payload's `meta.series`
+  block, and methodology.md's payload field table plus a data-windows
+  row for the event-driven vendored dataset.
+
+### Calculator input groups collapsible; LDES card to its own tab (2026-08-29)
+
+Two owner requests on the same day, both pre-commit UI passes on the
+material above (plan/10 D71–D72).
+
+- **Six collapsible input groups on the BESS calculator (D71).** The
+  input column had grown to 5–9 seconds of scrolling, so each
+  `calc-field-group` is now a native `<details>` disclosure — the D47
+  caption pattern one level up. The asset and Costs and finance default
+  open (they hold the required five inputs, so the missing-required
+  line never names a field hidden on arrival); Operation, Market view,
+  Wholesale arbitrage and Route to market & financing default
+  collapsed. The honesty rule: a collapsed group whose fields carry
+  non-default values shows a small "n set" count in its summary
+  (off family toggles and non-default selects included), updated
+  textContent-only from the existing live-fields pass and cleared by
+  Reset through the same pass — no assumption hides behind a closed
+  group. The form is still built exactly once (D30): open state lives
+  in the DOM, no browser storage, focus and typed values survive every
+  toggle.
+- **LDES cap-and-floor card moved to its own LDES tab (D72,
+  superseding D56's Batteries placement).** LDES is not BESS: the card
+  describes 8–32 h regulated projects and sat below a 1–2 h
+  merchant-battery calculator. New tab button after Batteries, panel
+  markup moved verbatim (ids kept), `ldesCapfloor` re-registered from
+  the bess panel group to a new ldes group so the lazy
+  `Data.loadLdesCapfloor()` fetch fires on the LDES tab's first
+  activation, and the tab joins the GB-only gating (an Ofgem regime
+  has no ENTSO-E counterpart). Methodology and card prose updated to
+  the new location; the Batteries tab keeps its other five cards
+  unchanged.

@@ -1141,11 +1141,38 @@ const UI = (() => {
         "everything the calculator itself outputs is Assumption, per " +
         "the card's own badges.",
     };
+    // The LDES cap-and-floor reference card's source row: STATIC for the
+    // same reason as BESS_CALC_SOURCE_ROW above — app/data/ldes_capfloor.json
+    // is lazily fetched on that card's first render (Data.loadLdesCapfloor),
+    // so it may never have loaded when this page-load render runs and
+    // cannot feed a dynamic row the way the eager battery payloads do.
+    // The text mirrors the payload's own meta.series.ldes_capfloor block
+    // (etl/build_ldes_capfloor.py), which stays the canonical copy; the
+    // two are hand-synced when the vendored table is updated.
+    const LDES_CAPFLOOR_SOURCE_ROW = {
+      name: "LDES cap-and-floor: Window 1 reference (Ofgem)",
+      source: "Ofgem: LDES Window 1 minded-to decisions (26 June 2026) " +
+        "+ Financial Framework decision (23 September 2025)",
+      unit: "mixed (MW, hours, %, years)",
+      resolution: "event/reference",
+      update_frequency: "on Ofgem publication only — updated by hand; " +
+        "next expected: final awards, autumn 2026",
+      quality: "reference (vendored regulatory table — minded-to " +
+        "positions and indicative rates, not final awards)",
+      transformations: "none — transcribed as published; totals " +
+        "cross-checked against the per-project list on every build",
+      notes: "16 of 73 eligible projects, 7,645 MW / ~136.9 GWh. " +
+        "EA-rank gaps are real (ranks 10, 11 and 13 were not " +
+        "selected). Floor/cap returns are indicative and refix at " +
+        "each project's FID; per-project floor/cap levels are " +
+        "withheld by Ofgem as commercially sensitive.",
+    };
     const batterySourceRows = [
       bessActivitySeries,
       bessRevenueSeries && bessRevenueSeries.eac,
       bessRevenueSeries && bessRevenueSeries.bm,
       BESS_CALC_SOURCE_ROW,
+      LDES_CAPFLOOR_SOURCE_ROW,
     ].filter(Boolean).map(sourceRow).join("");
     const sourceRows = Object.values(meta.series).map(sourceRow).join("")
       + batterySourceRows;
@@ -1977,8 +2004,48 @@ const UI = (() => {
          asset shows "not applicable" rather than a zero TNUoS line: post-
          reform, embedded generation sits outside generation TNUoS
          entirely, and the two states must stay visually distinguishable.</p>
-      <p><b>The engine, in one place:</b> real terms, pre-tax, ungeared,
-         no residual value. One optional augmentation event (a year, a
+      <p><b>Route to market and financing:</b> an optional sixth input
+         group lays a tolling agreement and a debt schedule over the
+         merchant arithmetic above, and does nothing until it is filled
+         in. A toll is a fixed fee, in £k/MW/yr here (the market's
+         quoting unit, numerically identical to £/kW/yr), that a trader pays
+         for the rights to operate the asset: contracted revenue for
+         the owner in place of merchant risk. During the toll tenor,
+         each year's revenue is the toll on the tolled share of
+         capacity plus the merchant availability and arbitrage lines
+         scaled by the untolled remainder; after the tenor the asset is
+         fully merchant again. The toll figure is flat in real terms
+         and is never degraded, derated or cannibalised — under a toll
+         the availability guarantee sits with the operator, so the fee
+         does not fall with the cells — while the merchant share keeps
+         all three effects. The debt layer draws gearing times CAPEX at
+         year 0 and repays it as a level annuity at a real pre-tax cost
+         of debt over the debt tenor, a deliberate simplification with
+         no balloon payment and no mini-perm refinancing; a debt tenor
+         running past the calculation period leaves principal
+         outstanding at the horizon, which the card states rather than
+         hides. Cash flow available for debt service (CFADS) is taken
+         as the project's net cash flow in each operating year,
+         augmentation capital included — lenders typically carve funded
+         capex out of CFADS, a convention stated here, not adopted —
+         and DSCR is that cash flow divided by the year's debt service,
+         reported as a minimum and an average, split between the toll
+         period and the merchant years after it. The equity cash flow
+         is the project cash flow adjusted for the debt — the drawdown
+         shrinks the year-0 equity cheque, the service is deducted in
+         each year it falls due — and its IRR sits beside the project
+         figures without touching them: NPV, IRR, MIRR, the paybacks
+         and LCOS all stay ungeared. Activation is all-or-nothing in each half — the toll
+         needs share, price and tenor together, the debt layer gearing,
+         cost of debt and tenor together — and a partial set leaves
+         that half entirely inert, with a live line naming the missing
+         piece. Every input in the group is an Assumption; the merchant
+         anchor underneath stays Observed.</p>
+      <p><b>The engine, in one place:</b> real terms, pre-tax, no
+         residual value; project NPV and IRR stay ungeared — the
+         optional financing block layers a tolled revenue share and a
+         debt schedule on top without touching them. One optional
+         augmentation event (a year, a
          size in MWh and a cost in £k/MWh, all required) adds a second
          cell tranche at the start of that year — a partial top-up, a
          full restore, or an expansion beyond nameplate, uncapped — and
@@ -2057,10 +2124,15 @@ const UI = (() => {
       <p>The export is numeric only: year, capex, availability (plus one
          column per service family), arbitrage, opex, TNUoS, net and
          discounted cash flow, cumulative discounted cash flow,
-         discharged energy and usable energy, plus a header comment block
-         carrying your inputs, including the family toggle state and the
+         discharged energy and usable energy, and five financing
+         columns — toll, debt drawdown, debt interest, debt principal
+         and equity cash flow — which sit at zero whenever the
+         route-to-market group is inactive, plus a header comment block
+         carrying your inputs, including the family toggle state, the
          arbitrage ceiling's own parameters (<code>s_hi</code>,
-         <code>s_lo</code>, the capture rate or the manual spread). No
+         <code>s_lo</code>, the capture rate or the manual spread) and
+         the six route-to-market fields, each written as
+         <code>not_set</code> when left blank. No
          unit, party or site name is ever exported, the same rule the BMU
          snapshot table and the activity/revenue export already apply.</p>
       <p><b>Excel export, a working model rather than a numeric
@@ -2089,10 +2161,87 @@ const UI = (() => {
          grid discounts straight to it - a discount factor above 1
          compounds a pre-valuation year forward; the commissioning-
          anchored figure is kept alongside as a labelled check row,
-         never dropped. The workbook stores no cached values, so a reader
+         never dropped. The route-to-market block carries through as
+         live formulas too: the DCF revenue block gains a toll row and
+         scales the merchant lines by the untolled share, and a
+         Financing section below the project net line rebuilds the
+         debt schedule cell by cell — interest, principal, balance and
+         a per-year DSCR — with headline rows for equity IRR, minimum
+         DSCR and average DSCR beside the ungeared project figures.
+         Equity IRR there uses Excel's own IRR() function, which is
+         not confined to the card solver's -99% to +150% bracket: a
+         heavily geared case the card reports as above that bracket
+         can still show a definite figure in the sheet, and the two
+         are expected to differ in exactly that case. The
+         workbook stores no cached values, so a reader
          that does not recalculate formulas should use the CSV instead.
          It carries the same no-names rule and the same illustrative-
          economics sentence as the card and the CSV.</p>
+
+      <h3 id="m-ldes-capfloor">LDES cap and floor — Window 1 reference</h3>
+      <p>This card lives on its own LDES tab — long-duration storage is
+         not BESS, so it sits beside the Batteries tab rather than on
+         it — and is the regulated counterpart to the Batteries
+         calculator's toll: where a toll swaps merchant risk for a
+         private fixed fee, Ofgem's long-duration electricity storage
+         (LDES) cap-and-floor regime swaps it for a regulated revenue
+         corridor. The card is a vendored reference table — the 16
+         projects Ofgem is minded to award in Window 1, the regime's
+         published parameters, and the capacity mix by technology — and
+         nothing on it is computed, estimated or forecast by this
+         dashboard.</p>
+      <p><b>The regime:</b> a guaranteed revenue
+         <a class="term-link" data-term="capfloor" href="#g-capfloor">
+         floor</a> set near a BBB-debt return (iBoxx GBP Non-Financials
+         15+ BBB, 20-day average before FID; indicative 4.47%
+         CPIH-real) in exchange for a cap set near a regulated equity
+         return (CAPM; indicative 7.48% CPIH-real), both applied to
+         100% of the project's
+         <a class="term-link" data-term="rav" href="#g-rav">regulatory
+         asset value</a>. The cap is a
+         <a class="term-link" data-term="softcap" href="#g-softcap">soft
+         cap</a>: the project retains 30% of revenue above it, so the
+         incentive to dispatch efficiently survives the corridor. The
+         default regime runs 25 years, levels are CPIH-indexed, floor
+         payments are conditional on a
+         <a class="term-link" data-term="mat" href="#g-mat">Minimum
+         Availability Target</a> with clawback if missed, and the whole
+         arrangement is funded through
+         <a class="term-link" data-term="bsuos" href="#g-bsuos">BSUoS</a>
+         with NESO as the intermediary. The project ranking behind the
+         table's EA-rank column weights a
+         <a class="term-link" data-term="bcr" href="#g-bcr">benefit-cost
+         ratio</a> at 40%, and the
+         <a class="term-link" data-term="fascore" href="#g-fascore">
+         Financial Assessment score</a> (assessed lifetime revenue ÷
+         project floor) screens projects against a disclosed 0.60
+         demotion threshold.</p>
+      <p><b>What the card shows, and does not:</b> the table is
+         transcribed from the 26 June 2026 minded-to consultation — 16
+         of 73 eligible projects, 7,645 MW, ~136.9 GWh — and minded-to
+         is not final: the list, tracks and dates are superseded the
+         day Ofgem publishes final awards, expected autumn 2026, and
+         the card's caption says so. The EA-rank gaps (10, 11, 13) are
+         real, not transcription errors: those projects were not
+         selected. Per-project £ floor and cap levels are withheld by
+         Ofgem as commercially sensitive, so the card shows none — and
+         deliberately estimates none, because a dashboard-side estimate
+         would dress an unpublished commercial number in observed
+         clothing. The indicative floor/cap returns shown in the regime
+         strip refix at each project's FID against the then-current
+         iBoxx and gilt rates.</p>
+      <p><b>Provenance and update discipline:</b> the payload
+         (<code>app/data/ldes_capfloor.json</code>, built by
+         <code>etl/build_ldes_capfloor.py</code>) is a hand-updated
+         vendored table with no live source to poll: the daily refresh
+         re-validates and republishes it but can never change its
+         contents, and the update trigger is an Ofgem publication, by
+         hand, dated in the payload. The one-way rule holds here as
+         everywhere: the card reads from the payload and writes to
+         nothing. Sources: Ofgem's LDES Window 1 minded-to decisions
+         (26 June 2026, with the Q&amp;A appendix of 31 July 2026) and
+         the Financial Framework decision (23 September 2025), both
+         linked from the payload's own <code>sources</code> block.</p>
 
       <h3 id="m-overnight">Overnight summary (AI-generated)</h3>
       <p>The collapsible panel below the KPI strip is written by an LLM,
@@ -2607,5 +2756,6 @@ const UI = (() => {
   return { renderDataAge, renderRefreshStatus, renderStressChip,
            renderWarnings, renderGlossary,
            renderGlance, renderOvernight, renderKpis, renderAssumptions,
-           renderMethodology, jumpToMethodology, exportCsv };
+           renderMethodology, jumpToMethodology, jumpToGlossary,
+           exportCsv };
 })();

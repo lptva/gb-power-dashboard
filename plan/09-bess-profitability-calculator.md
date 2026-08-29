@@ -1226,11 +1226,18 @@ re-investigate without new data.
   cannibalisation input is the user's view, not the app's.
 - **Consulting-grade backcasting.** No perfect-foresight dispatch history,
   no "what this unit could have earned", no optimisation.
-- **State of charge, cycling depth, and augmentation.**
+- **State of charge, cycling depth, and augmentation.** (The
+  augmentation exclusion is superseded — one optional augmentation
+  event shipped 2026-07-31 via D42, vintage-revised at D44; state of
+  charge and cycling depth remain out of scope.)
 - **Asset-level P&L and trading-strategy reconstruction.** #24's original
   exclusion stands in full.
 - **Anything presented as advice, valuation, or a transaction model.** No
   tax, no gearing, no debt schedule, no sensitivity-to-terms analysis.
+  (The gearing/debt-schedule exclusion is superseded by plan/10 D55,
+  2026-08-28 — the financing layer ships default-off, so this card's
+  ungeared behaviour is preserved bit-for-bit; tax and advice framing
+  remain out of scope.)
 - **Capacity Market revenue.** The register carries no BM unit field
   (plan/06, verified 2026-07-11) and its storage duration classes are a
   de-rating election that changes between delivery years for 10.0% of sites
@@ -1265,6 +1272,16 @@ flow which never repays renders "no IRR" and "no payback" rather than zeros;
 confirm that reloading the page clears every input; confirm the manifest
 version bump and cache-bust; confirm the Batteries tab, and therefore this
 card, stays hidden on a non-GB zone.
+
+Extended for the plan/10 financing block (2026-08-28): confirm the
+default-off bit-for-bit guarantee — `TollDebtDefaultOffTest` passes and
+the untouched `bess_case_1..8` parity fixtures stay green with no
+re-capture; confirm the equity-IRR and DSCR tiles render their na-states
+rather than zeros (no debt layer, no service due, and the
+above-the-150%-bracket case each named explicitly); open an Excel export
+with the Financing section active in a recalculating application and
+confirm equity IRR, minimum DSCR and average DSCR recalculate live and
+match the card within the workbook tolerance.
 
 ---
 

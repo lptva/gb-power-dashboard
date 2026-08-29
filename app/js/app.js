@@ -183,7 +183,10 @@
   // System stress joins it because every input is a GB-only Elexon feed.
   // Batteries (bess) joins it for the same reason: the BM acceptance-
   // volume fleet tracker is Elexon-only, no ENTSO-E equivalent exists.
-  const GB_ONLY_TABS = ["merit", "spreads", "flows", "stress", "bess"];
+  // LDES joins it because the cap-and-floor reference is an Ofgem
+  // regime — a GB-only card with no ENTSO-E counterpart (D72).
+  const GB_ONLY_TABS = ["merit", "spreads", "flows", "stress", "bess",
+                        "ldes"];
   function applyZoneTabGating(zone) {
     const away = zone !== "GB";
     GB_ONLY_TABS.forEach((t) => {
