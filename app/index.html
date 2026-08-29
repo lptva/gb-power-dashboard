@@ -77,6 +77,7 @@ document.write('<link rel="stylesheet" href="css/style.css'
     <button data-tab="flows">Flows</button>
     <button data-tab="stress">System stress</button>
     <button data-tab="bess">Batteries</button>
+    <button data-tab="ldes">LDES</button>
     <button data-tab="glossary">Glossary</button>
     <button data-tab="methodology">Methodology</button>
   </nav>
@@ -712,7 +713,9 @@ document.write('<link rel="stylesheet" href="css/style.css'
            revenue side on the published record for real units, and reports
            a simple annual cash flow with NPV, IRR, DPI, a discounted
            payback period and
-           an indicative LCOS. Every figure below the inputs is your own
+           an indicative LCOS. Once a tolled share or gearing is set, an
+           equity IRR and debt service cover appear beside them. Every
+           figure below the inputs is your own
            assumption arithmetic.
            <span class="info" data-method="bess-calc">ⓘ</span></p>
         <p class="card-meta" id="bess-calc-caption"></p>
@@ -740,11 +743,13 @@ document.write('<link rel="stylesheet" href="css/style.css'
           <p class="calc-anchor-line" id="bess-calc-anchor"></p>
           <p class="calc-mix-line hidden" id="bess-calc-mix"></p>
           <div id="bess-calc-headline" class="calc-headline"></div>
+          <p class="calc-reading hidden" id="bess-calc-reading"></p>
           <div class="calc-sens hidden" id="bess-calc-sens"></div>
           <div class="calc-chart-toggle hidden" id="bess-calc-chart-toggle">
             <span class="calc-seg" role="group" aria-label="Chart view">
               <button type="button" data-chart-view="cashflow">Cash flow</button>
               <button type="button" data-chart-view="capacity">Capacity</button>
+              <button type="button" data-chart-view="equity">Equity IRR</button>
             </span>
           </div>
           <div class="chart-wrap">
@@ -755,6 +760,88 @@ document.write('<link rel="stylesheet" href="css/style.css'
             <button type="button" id="bess-calc-csv"
               class="calc-csv-btn hidden">Export cash flow (CSV)</button>
             <button type="button" id="bess-calc-xlsx"
+              class="calc-csv-btn hidden">Export model (Excel)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ============ LDES (D72: own tab — long-duration storage, not
+       BESS, so it no longer sits under Batteries) ============ -->
+  <section class="tab-panel hidden" data-panel="ldes">
+    <div class="card span-2">
+      <div class="card-head">
+        <h2>LDES cap and floor — Window 1 (reference)
+          <span class="badge proxy">Reference</span></h2>
+        <p id="ldes-capfloor-desc">Ofgem's long-duration storage regime,
+           the regulated counterpart to the Batteries calculator's toll:
+           a guaranteed
+           revenue floor (a debt-like return) in exchange for a soft cap
+           (an equity-like return, with 30% retained above it), both on
+           the project's regulatory asset value. This card is a vendored
+           reference table of the 16 projects Ofgem is minded to award,
+           the regime's published parameters, and the capacity mix — not
+           final awards, and no per-project £ floor or cap levels, which
+           Ofgem withholds as commercially sensitive, so none are shown
+           or estimated here. Click a column heading to sort the table.
+           <span class="info" data-method="ldes-capfloor">ⓘ</span></p>
+        <p class="card-meta" id="ldes-capfloor-caption"></p>
+      </div>
+      <div id="ldes-capfloor-table"></div>
+      <p id="ldes-capfloor-regime" class="ldes-regime hidden"></p>
+      <div class="chart-wrap">
+        <div class="chart" id="ch-ldes-capfloor"></div>
+      </div>
+      <div class="chart-empty hidden" id="ldes-capfloor-empty">
+        No LDES cap-and-floor dataset available — run
+        <code>python3 etl/build_ldes_capfloor.py</code> to build the
+        vendored reference table.
+      </div>
+    </div>
+
+    <!-- Mini-CFFM calculator (plan/10 Phase 3, B2) — deliberately BELOW
+         the reference card: the reference states what Ofgem published,
+         this card lets the reader apply the published method to their
+         own numbers. All-assumption by construction (D73–D78). -->
+    <div class="card span-2 calc-card">
+      <div class="card-head">
+        <h2>Mini cap-and-floor calculator (indicative)
+          <span class="badge assumption">Assumption</span></h2>
+        <p id="ldes-cffm-desc">Where would the building blocks put a
+           floor and cap for an asset like yours — and does the corridor
+           bite? You describe the build and its costs, the calculator
+           runs Ofgem's published building-blocks arithmetic (RAV with
+           interest during construction, straight-line depreciation, a
+           return at the floor and cap rates, annuitised flat) and holds
+           your gross-margin scenarios against the resulting corridor:
+           floor top-ups below it, the 70% consumer clawback above it,
+           and the Financial Assessment ratio Ofgem screens with. The
+           regime rates are prefilled from the published indicative
+           parameters and badged Reference; every cost and margin input
+           is yours, blank until you type it.
+           <span class="info" data-method="ldes-cffm">ⓘ</span></p>
+        <p class="card-meta">every figure is your own assumption
+           arithmetic on Ofgem's published building-blocks method;
+           ex-tax; not the CFFM, not a valuation</p>
+      </div>
+      <div class="calc-grid">
+        <div id="ldes-cffm-inputs"></div>
+        <div id="ldes-cffm-results">
+          <h4 class="calc-results-head">Results</h4>
+          <div id="ldes-cffm-headline" class="calc-headline"></div>
+          <p class="calc-mix-line hidden" id="ldes-cffm-breakdown"></p>
+          <p class="calc-reading hidden" id="ldes-cffm-reading"></p>
+          <div class="chart-wrap">
+            <div class="chart" id="ch-ldes-cffm"></div>
+            <div class="chart-empty hidden" id="ldes-cffm-empty"></div>
+          </div>
+          <p class="card-meta" id="ldes-cffm-caption"></p>
+          <div class="calc-export-row">
+            <button type="button" id="ldes-cffm-csv"
+              class="calc-csv-btn hidden">Download CSV</button>
+            <button type="button" id="ldes-cffm-xlsx"
               class="calc-csv-btn hidden">Export model (Excel)</button>
           </div>
         </div>

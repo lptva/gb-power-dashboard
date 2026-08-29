@@ -312,6 +312,28 @@ const Data = (() => {
     return bessUnitsPromise;
   }
 
+  /* Lazily load the LDES cap-and-floor Window 1 reference payload
+     (plan/10 B1, D56) on that card's first render — the loadBessUnits
+     pattern above, chosen for the same reason: a vendored reference
+     table nobody scrolling the other Batteries panels pays a byte for.
+     Cached in memory for the session; a transient failure clears the
+     promise so the next render retries. */
+  let ldesCapfloorPromise = null;
+  function loadLdesCapfloor() {
+    if (ldesCapfloorPromise) return ldesCapfloorPromise;
+    const v = manifest ? `?v=${manifest.version}` : "";
+    ldesCapfloorPromise = fetch(`data/ldes_capfloor.json${v}`)
+      .then((resp) => {
+        if (!resp.ok) throw new Error(`ldes_capfloor.json: HTTP ${resp.status}`);
+        return resp.json();
+      })
+      .catch((error) => {
+        ldesCapfloorPromise = null; // allow retry after a transient failure
+        throw error;
+      });
+    return ldesCapfloorPromise;
+  }
+
   /* True when a column carries any real signal (non-null AND non-zero).
      Constant-zero generation columns are TSO placeholders (e.g. IE solar)
      — display paths exclude them; the raw data keeps them. */
@@ -362,7 +384,7 @@ const Data = (() => {
     get bess() { return bess; },
     get bessRevenue() { return bessRevenue; },
     get refreshStatus() { return refreshStatus; },
-    loadEventSlice, loadBessUnits,
+    loadEventSlice, loadBessUnits, loadLdesCapfloor,
     get zone() { return zone; },
     currency, ZONE_INFO,
     FUELS, INTERCONNECTORS, STACK_ORDER, LOW_CARBON,

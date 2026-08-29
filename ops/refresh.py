@@ -228,6 +228,15 @@ def main():
             run_non_fatal([python, str(ROOT / "etl" / "build_bess_units.py")],
                           "bess units refresh")
 
+            # LDES cap-and-floor Window 1 reference card (plan/10 Phase 2,
+            # B1). Vendored table — Ofgem publishes PDFs, so there is no
+            # live source to poll: the step re-validates the vendored
+            # figures against their tripwires and republishes the payload
+            # (+ manifest registration) every run. Updated by hand when
+            # Ofgem publishes (final awards expected autumn 2026).
+            run_non_fatal([python, str(ROOT / "etl" / "build_ldes_capfloor.py")],
+                          "ldes cap-and-floor refresh")
+
             # Counterparty zone context (append-only history, ~6 kB/day/zone).
             # --days 7 keeps runs cheap; the merge handles the overlap.
             for zone in ZONES:

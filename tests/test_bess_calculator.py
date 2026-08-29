@@ -29,11 +29,13 @@ sys.path.insert(0, str(PROJECT_ROOT / "etl"))
 
 import xlsx_eval as xe  # noqa: E402
 from bess_calculator_figures import (  # noqa: E402
+    annuity_payment,
     arbitrage_ceiling,
     bess_cashflow,
     compute,
     discount_exponent,
     discounted_payback,
+    dscr_stats,
     irr,
     mirr,
     js_round,
@@ -94,6 +96,8 @@ CSV_COLUMNS = (
     "year", "capex_gbp", "availability_gbp", "arbitrage_gbp", "opex_gbp",
     "tnuos_gbp", "net_cashflow_gbp", "discounted_cashflow_gbp",
     "cumulative_discounted_gbp", "discharged_mwh", "usable_mwh",
+    "toll_gbp", "debt_drawdown_gbp", "debt_interest_gbp",
+    "debt_principal_gbp", "equity_cashflow_gbp",
 )
 
 
@@ -480,6 +484,329 @@ class DiscountedPaybackPviDpiTest(unittest.TestCase):
                                   places=0)  # the valuation date DOES move NPV
         self.assertAlmostEqual(result_valued["discounted_payback"],
                               result_plain["discounted_payback"], places=9)
+
+
+class TollBlendTest(unittest.TestCase):
+    """Toll and financing pass (plan/10 D58/D59, 2026-08-28): for years
+    1..tollTenor a share tollShare earns a fixed toll of tollPrice
+    £/kW/yr — flat real, pro-rated by year 1's commissioning stub but
+    never degraded, cannibalised or derated (availability guarantees
+    sit with the operator); the merchant availability+arbitrage pair is
+    scaled by (1-tollShare); after the tenor the asset is fully
+    merchant again. All three fields set or the agreement is a no-op —
+    the augmentation triple's discipline (D59)."""
+
+    BASE = {"P": 10, "E": 20, "T": 3, "C": 100, "O": 10, "r": 0.08,
+            "c": 1, "delta": 0, "eta": 0.9, "a": 100, "gamma": 0,
+            "zTotal": 0, "discounting": "end"}
+    TOLL = {"tollShare": 0.5, "tollPrice": 80, "tollTenor": 2}
+
+    def test_year1_toll_and_blended_availability_by_hand(self):
+        # toll_1 = 80 £/kW/yr x 1000 x 10 MW x 0.5 share = 400,000.
+        # availability gross = 100 x 1000 x 10 = 1,000,000; post-blend
+        # column = gross x (1-0.5) = 500,000.
+        cf = bess_cashflow({**self.BASE, **self.TOLL})
+        row1 = cf["rows"][1]
+        self.assertAlmostEqual(row1["toll_gbp"], 400_000.0, places=2)
+        self.assertAlmostEqual(row1["availability_gbp"], 500_000.0, places=2)
+        # net = toll + blended availability - opex (100,000) = 800,000
+        self.assertAlmostEqual(row1["net_cashflow_gbp"], 800_000.0, places=2)
+
+    def test_toll_invariant_under_gamma_delta_rho(self):
+        # Switching gamma/delta/rho on moves the merchant availability
+        # line but must NOT move the toll £ (D58: flat real, never
+        # degraded, cannibalised or derated). Year 2: availability =
+        # 1,000,000 x (1-0.05)^1 [gamma] x (1-0.05)^1 [rho on age n-1=1]
+        # x 0.5 [blend] = 451,250; toll stays 400,000.
+        plain = bess_cashflow({**self.BASE, **self.TOLL})
+        moved = bess_cashflow({**self.BASE, **self.TOLL, "gamma": 0.05,
+                              "delta": 0.05, "rho": 0.05})
+        for n in (1, 2):
+            self.assertEqual(moved["rows"][n]["toll_gbp"],
+                             plain["rows"][n]["toll_gbp"], n)
+        self.assertAlmostEqual(moved["rows"][2]["toll_gbp"], 400_000.0,
+                               places=2)
+        self.assertAlmostEqual(moved["rows"][2]["availability_gbp"],
+                               451_250.0, places=2)
+        self.assertNotEqual(moved["rows"][2]["availability_gbp"],
+                            plain["rows"][2]["availability_gbp"])
+
+    def test_tenor_boundary_year3_fully_merchant(self):
+        # tollTenor=2 on T=3: year 2 still tolls, year 3 has toll_gbp 0
+        # and the availability column back at the UNSCALED merchant
+        # figure (1,000,000) — (1-sEff) with sEff=0 after the tenor.
+        cf = bess_cashflow({**self.BASE, **self.TOLL})
+        self.assertAlmostEqual(cf["rows"][2]["toll_gbp"], 400_000.0,
+                               places=2)
+        self.assertEqual(cf["rows"][3]["toll_gbp"], 0)
+        self.assertAlmostEqual(cf["rows"][3]["availability_gbp"],
+                               1_000_000.0, places=2)
+
+    def test_stub_pro_rates_year1_toll(self):
+        # y0="2026-07-02": 182 of 365 days elapsed in 2026 (not a leap
+        # year), frac1 = 183/365 = 0.5013698630136987 — computed with
+        # year_fraction_remaining, the same function the engine uses.
+        # toll_1 = 400,000 x 183/365 = 200,547.9452... -> 200,547.95.
+        frac1 = year_fraction_remaining("2026-07-02")
+        self.assertAlmostEqual(frac1, 183 / 365, places=12)
+        cf = bess_cashflow({**self.BASE, **self.TOLL, "y0": "2026-07-02"})
+        row1 = cf["rows"][1]
+        self.assertAlmostEqual(row1["toll_gbp"],
+                               js_round(400_000 * frac1, 2), places=2)
+        self.assertAlmostEqual(row1["toll_gbp"], 200_547.95, places=2)
+        # year 2 is a full year again: no stub carried forward
+        self.assertAlmostEqual(cf["rows"][2]["toll_gbp"], 400_000.0,
+                               places=2)
+
+    def test_partial_set_is_a_noop(self):
+        # Share set but price absent (and every other partial triple):
+        # rows bit-identical to a base run (D59, the augmentation
+        # all-or-nothing precedent).
+        plain = bess_cashflow(self.BASE)
+        for partial in ({"tollShare": 0.5}, {"tollPrice": 80},
+                        {"tollTenor": 2},
+                        {"tollShare": 0.5, "tollTenor": 2},
+                        {"tollShare": 0.5, "tollPrice": 80},
+                        {"tollShare": 0.5, "tollPrice": 80, "tollTenor": 0}):
+            cf = bess_cashflow({**self.BASE, **partial})
+            self.assertEqual(cf["rows"], plain["rows"], partial)
+
+
+class DebtScheduleTest(unittest.TestCase):
+    """Toll and financing pass (plan/10 D59/D61, 2026-08-28): D0 =
+    gearing x C0 draws down at year 0 and repays as a level annuity at
+    costOfDebt over debtTenor years — contractual-annual, never
+    stub-pro-rated; a tenor past T leaves principal outstanding with no
+    synthetic balloon. The layer sits BELOW the project line:
+    net_cashflow_gbp stays ungeared."""
+
+    # c0 = 200 £k/MW x 1000 x 10 MW = 2,000,000; gearing 0.5 ->
+    # D0 = 1,000,000. a=60 -> availability 600,000/yr, opex 100,000/yr,
+    # net 500,000/yr flat (no degradation/cannibalisation).
+    BASE = {"P": 10, "E": 20, "T": 6, "C": 200, "O": 10, "r": 0.08,
+            "c": 1, "delta": 0, "eta": 0.9, "a": 60, "gamma": 0,
+            "zTotal": 0, "discounting": "end"}
+    DEBT = {"gearing": 0.5, "costOfDebt": 0.05, "debtTenor": 4}
+
+    def test_annuity_payment_hand_computed(self):
+        # pay = 1,000,000 x 0.05 / (1 - 1.05^-4); 1.05^4 = 1.21550625,
+        # 1.05^-4 = 0.8227024747918819, so the denominator is
+        # 0.1772975252081181 and pay = 0.2820118326... x 1,000,000
+        # = 282,011.8326...
+        pay = annuity_payment(1_000_000, 0.05, 4)
+        self.assertAlmostEqual(pay, 1_000_000 * 0.05 / (1 - 1.05 ** -4),
+                               places=6)
+        self.assertAlmostEqual(pay, 282_011.8326, places=4)
+
+    def test_annuity_payment_zero_rate_is_straight_line(self):
+        self.assertEqual(annuity_payment(1_000_000, 0.0, 4), 250_000.0)
+
+    def test_annuity_payment_nonsense_inputs_are_inert(self):
+        self.assertEqual(annuity_payment(None, 0.05, 4), 0)
+        self.assertEqual(annuity_payment(0, 0.05, 4), 0)
+        self.assertEqual(annuity_payment(1_000_000, 0.05, 0), 0)
+        self.assertEqual(annuity_payment(1_000_000, None, 4), 0)
+
+    def test_year1_interest_and_balance_retires(self):
+        # interest_1 = D0 x 0.05 = 50,000 (column signed -50,000);
+        # principal_1 = pay - 50,000 = 232,011.83; balance walks down
+        # and the principal columns sum to -D0 within rounding.
+        cf = bess_cashflow({**self.BASE, **self.DEBT})
+        self.assertEqual(cf["d0"], 1_000_000.0)
+        self.assertAlmostEqual(cf["rows"][1]["debt_interest_gbp"],
+                               -50_000.0, places=2)
+        pay = annuity_payment(1_000_000, 0.05, 4)
+        self.assertAlmostEqual(cf["rows"][1]["debt_principal_gbp"],
+                               js_round(-(pay - 50_000), 2), places=2)
+        # interest_2 = (1,000,000 - 232,011.8326) x 0.05 = 38,399.41
+        self.assertAlmostEqual(cf["rows"][2]["debt_interest_gbp"],
+                               -38_399.41, places=2)
+        total_principal = sum(r["debt_principal_gbp"] for r in cf["rows"])
+        self.assertAlmostEqual(total_principal, -1_000_000.0, delta=0.05)
+        # after the tenor the columns are dead zero, net stays ungeared
+        for n in (5, 6):
+            self.assertEqual(cf["rows"][n]["debt_interest_gbp"], 0)
+            self.assertEqual(cf["rows"][n]["debt_principal_gbp"], 0)
+            self.assertEqual(cf["rows"][n]["equity_cashflow_gbp"],
+                             cf["rows"][n]["net_cashflow_gbp"])
+
+    def test_zero_rate_branch_in_the_engine(self):
+        # costOfDebt typed as 0 is still an ACTIVE layer (D59: "typed",
+        # not "truthy"): straight-line 250,000/yr principal, no interest.
+        cf = bess_cashflow({**self.BASE, "gearing": 0.5, "costOfDebt": 0.0,
+                           "debtTenor": 4})
+        for n in (1, 2, 3, 4):
+            self.assertEqual(cf["rows"][n]["debt_interest_gbp"], 0.0)
+            self.assertAlmostEqual(cf["rows"][n]["debt_principal_gbp"],
+                                   -250_000.0, places=2)
+
+    def test_year0_drawdown_and_equity_contribution(self):
+        # Year 0: drawdown +D0; equity = -c0 + D0 = -1,000,000. The
+        # project columns are untouched (net_cashflow_gbp stays -c0).
+        cf = bess_cashflow({**self.BASE, **self.DEBT})
+        row0 = cf["rows"][0]
+        self.assertAlmostEqual(row0["debt_drawdown_gbp"], 1_000_000.0,
+                               places=2)
+        self.assertAlmostEqual(row0["equity_cashflow_gbp"], -1_000_000.0,
+                               places=2)
+        self.assertAlmostEqual(row0["net_cashflow_gbp"], -2_000_000.0,
+                               places=2)
+
+    def test_tenor_past_horizon_leaves_principal_outstanding(self):
+        # debtTenor=10 on T=3 (D61): the walk simply stops at the
+        # horizon — no synthetic balloon row, principal repaid < D0.
+        cf = bess_cashflow({**self.BASE, "T": 3, "gearing": 0.5,
+                           "costOfDebt": 0.05, "debtTenor": 10})
+        self.assertEqual(len(cf["rows"]), 4)  # year 0 + 3 years, no extras
+        total_principal = -sum(r["debt_principal_gbp"] for r in cf["rows"])
+        self.assertGreater(total_principal, 0)
+        self.assertLess(total_principal, 1_000_000.0)
+
+    def test_gearing_without_cost_of_debt_is_a_noop(self):
+        # The debt triple follows the same all-or-nothing discipline as
+        # the toll and augmentation triples (D59): gearing alone (no
+        # costOfDebt typed) must be bit-identical to the base run.
+        plain = bess_cashflow(self.BASE)
+        cf = bess_cashflow({**self.BASE, "gearing": 0.5})
+        self.assertEqual(cf["rows"], plain["rows"])
+        self.assertEqual(cf["d0"], 0)
+
+
+class EquityIrrDscrTest(unittest.TestCase):
+    """Toll and financing pass (plan/10 D55/D60/D65, 2026-08-28):
+    equity IRR = irr() over the equity_cashflow_gbp column with
+    c0 - D0 at time zero; DSCR_n = net_cashflow_gbp_n / debt service_n
+    (CFADS = project net cash flow, the honest in-model reading, D60).
+    Positive leverage: with the cost of debt below the project IRR, the
+    equity IRR must land above it."""
+
+    # c0 = 1,000,000; availability 500,000/yr, opex 100,000/yr -> net
+    # 400,000/yr flat over 10 years; project IRR solves
+    # 400,000 x annuity(r,10) = 1,000,000 -> ~38.45%, far above the 5%
+    # cost of debt.
+    BASE = {"P": 10, "E": 20, "T": 10, "C": 100, "O": 10, "r": 0.08,
+            "c": 1, "delta": 0, "eta": 0.9, "a": 50, "gamma": 0,
+            "zTotal": 0, "discounting": "end"}
+    DEBT = {"gearing": 0.5, "costOfDebt": 0.05, "debtTenor": 10}
+
+    def test_positive_leverage_lifts_equity_irr_above_project_irr(self):
+        plain = compute(self.BASE)
+        geared = compute({**self.BASE, **self.DEBT})
+        self.assertIsNotNone(plain["irr"])
+        self.assertIsNotNone(geared["equity_irr"])
+        self.assertGreater(plain["irr"], self.DEBT["costOfDebt"])
+        self.assertGreater(geared["equity_irr"], plain["irr"])
+        # gearing never touches the project line
+        self.assertEqual(geared["irr"], plain["irr"])
+
+    def test_engine_dscr_flat_annuity_case(self):
+        # Level annuity on a flat 400,000 CFADS: service is the constant
+        # pay = 500,000 x 0.05 / (1 - 1.05^-10) = 64,752.29, so every
+        # year's DSCR is 400,000 / 64,752.29 = 6.1774 and min == avg
+        # (bar cent-level column rounding).
+        res = compute({**self.BASE, **self.DEBT})
+        pay = annuity_payment(500_000, 0.05, 10)
+        self.assertAlmostEqual(res["dscr_min"], 400_000 / pay, places=4)
+        self.assertAlmostEqual(res["dscr_min"], res["dscr_avg"], places=4)
+        self.assertIsNone(res["dscr_min_toll"])  # no toll set
+        self.assertEqual(res["dscr_min_post"], res["dscr_min"])
+
+    def test_dscr_stats_hand_figures(self):
+        # Synthetic rows, service 100 in years 1-3 (columns signed
+        # negative), none in year 4: DSCRs 1.5 / 1.2 / 1.8. With
+        # tollTenor=2: min 1.2 (year 2), avg (1.5+1.2+1.8)/3 = 1.5,
+        # minToll min(1.5,1.2) = 1.2, avgToll 1.35, minPost = avgPost
+        # = 1.8.
+        def row(year, net, interest, principal):
+            return {"year": year, "net_cashflow_gbp": net,
+                    "debt_interest_gbp": interest,
+                    "debt_principal_gbp": principal}
+        rows = [row(0, -1000, 0, 0),
+                row(1, 150.0, -50.0, -50.0),
+                row(2, 120.0, -40.0, -60.0),
+                row(3, 180.0, -20.0, -80.0),
+                row(4, 200.0, 0, 0)]
+        stats = dscr_stats(rows, 2)
+        self.assertAlmostEqual(stats["min"], 1.2, places=9)
+        self.assertEqual(stats["minYear"], 2)
+        self.assertAlmostEqual(stats["avg"], 1.5, places=9)
+        self.assertAlmostEqual(stats["minToll"], 1.2, places=9)
+        self.assertAlmostEqual(stats["avgToll"], 1.35, places=9)
+        self.assertAlmostEqual(stats["minPost"], 1.8, places=9)
+        self.assertAlmostEqual(stats["avgPost"], 1.8, places=9)
+        # tollTenor=0: everything lands in the post/merchant bucket
+        merchant = dscr_stats(rows, 0)
+        self.assertIsNone(merchant["minToll"])
+        self.assertAlmostEqual(merchant["minPost"], 1.2, places=9)
+
+    def test_dscr_stats_none_with_no_debt(self):
+        cf = bess_cashflow(self.BASE)
+        self.assertIsNone(dscr_stats(cf["rows"], 0))
+        self.assertIsNone(dscr_stats([], 0))
+        self.assertIsNone(dscr_stats(None, 0))
+
+    def test_equity_irr_none_when_ungeared(self):
+        # d0 == 0: an "equity IRR" would just duplicate the project IRR
+        # (equity flows ARE the project flows) — compute() returns None
+        # and the card shows no tile.
+        res = compute(self.BASE)
+        self.assertEqual(res["d0"], 0)
+        self.assertIsNone(res["equity_irr"])
+        self.assertIsNone(res["dscr_min"])
+        self.assertIsNone(res["dscr_avg"])
+
+
+class TollDebtDefaultOffTest(unittest.TestCase):
+    """Plan/10's standing guarantee: defaults (tolled share 0, gearing
+    0) reproduce today's engine EXACTLY — bit-for-bit row equality, not
+    merely almost-equal — so the untouched bess_case_1..8 parity
+    fixtures stay valid without recapture."""
+
+    BASE = {"P": 10.0, "E": 20.0, "T": 10, "C": 300.0, "O": 15.0,
+            "r": 0.09, "c": 1.0, "delta": 0.05, "eta": 0.8, "a": 50.0,
+            "gamma": 0.02, "zTotal": 5.0, "discounting": "mid",
+            "y0": "2026-07-02", "opexEsc": 0.02, "rho": 0.01,
+            "augYear": 5, "augMwh": 3.0, "augCostPerMwh": 150.0}
+
+    EXPLICIT_OFF = {"tollShare": 0, "tollPrice": 0, "tollTenor": 0,
+                    "gearing": 0, "costOfDebt": None, "debtTenor": 0}
+
+    def test_no_keys_vs_explicit_zeros_exact_equality(self):
+        plain = bess_cashflow(self.BASE)
+        explicit = bess_cashflow({**self.BASE, **self.EXPLICIT_OFF})
+        self.assertEqual(plain["c0"], explicit["c0"])
+        self.assertEqual(plain["d0"], explicit["d0"])
+        self.assertEqual(plain["d0"], 0)
+        self.assertEqual(plain["rows"], explicit["rows"])  # exact, per row
+
+    def test_new_columns_all_zero_and_equity_equals_net(self):
+        cf = bess_cashflow(self.BASE)
+        for row in cf["rows"]:
+            self.assertEqual(row["toll_gbp"], 0, row["year"])
+            self.assertEqual(row["debt_drawdown_gbp"], 0, row["year"])
+            self.assertEqual(row["debt_interest_gbp"], 0, row["year"])
+            self.assertEqual(row["debt_principal_gbp"], 0, row["year"])
+            self.assertEqual(row["equity_cashflow_gbp"],
+                             row["net_cashflow_gbp"], row["year"])
+
+    def test_old_fixture_inputs_still_reproduce_expected_rows(self):
+        # Belt for the braces JsPythonParityTest already provides: an
+        # OLD fixture inputs dict (no toll/debt keys anywhere) must
+        # still produce rows matching its captured expected.json values
+        # for every ORIGINAL key.
+        inputs = json.loads(
+            (FIXTURES / "bess_case_1" / "inputs.json").read_text())
+        expected = json.loads(
+            (FIXTURES / "bess_case_1" / "expected.json").read_text())
+        cf = bess_cashflow(inputs)
+        self.assertEqual(cf["c0"], expected["c0"])
+        self.assertEqual(cf["d0"], 0)
+        self.assertEqual(len(cf["rows"]), len(expected["rows"]))
+        for i, (got_row, want_row) in enumerate(zip(cf["rows"],
+                                                    expected["rows"])):
+            for key, want in want_row.items():
+                self.assertAlmostEqual(got_row[key], want, delta=1e-6,
+                                       msg=f"rows[{i}].{key}")
 
 
 class ArbitrageMarginFormulaTest(unittest.TestCase):
@@ -1068,9 +1395,32 @@ class WorkbookExport(unittest.TestCase):
     augmentation capex column, LCOS's augmentation term, the MIRR rows
     and the first-crossing payback guard through the generic headline
     and cash-flow parity loops below.
+    bess_wb_case_5 (toll and financing pass, plan/10 D54-D66,
+    2026-08-29): the full toll triple (share, price, tenor) plus the
+    full debt triple (gearing, cost of debt, debt tenor) at MODERATE
+    gearing (so the native-IRR equity headline stays well inside the
+    card solver's 150% bracket and the two agree), on a transmission-
+    connected asset with mid-year discounting and a capture rate —
+    exercises the tolled-share helper, the toll revenue row, the
+    (1 - share) merchant scaling, the whole Financing section walk and
+    the three geared headline rows. Inputs carry the resolved engine
+    keys tollShare/tollPrice/tollTenor/gearing/costOfDebt/debtTenor
+    (fractions and whole years, exactly as the Assumptions cells store
+    them).
+
+    All five re-captured 2026-08-29 (toll and financing layout pass),
+    same discipline: inputs.json unchanged for cases 1/2/4 (and 3, in
+    its own class below).
+
+    Re-captured again later on 2026-08-29 (toll unit relabel, plan/10
+    D67): the Assumptions toll-price unit cell now reads GBPk/MW/yr
+    (numerically identical to GBP/kW/yr — display only). One cell
+    changed per workbook, verified by a cell-level diff against the
+    previous capture; every inputs.json is unchanged.
     """
 
-    WB_CASES = ("bess_wb_case_1", "bess_wb_case_2", "bess_wb_case_4")
+    WB_CASES = ("bess_wb_case_1", "bess_wb_case_2", "bess_wb_case_4",
+                "bess_wb_case_5")
     # Nine parts since the named-styles pass: the theme joins, because
     # the owner's vendored cell styles resolve several colours through it.
     EXPECTED_PARTS = {
@@ -1163,13 +1513,12 @@ class WorkbookExport(unittest.TestCase):
                                               "sheet%d row %d cell order" % (i, r))
                             prev_col = col
 
-    # 6. NPV, IRR, MIRR, discounted payback, PVI, DPI and indicative LCOS
-    # all match the engine. Row numbers are the DPP/PVI/DPI pass's
-    # layout (BESS_DROW's own comment in app/js/charts.js): resultsBanner
-    # through payback keep their previous numbers (54-58: deleting the
-    # undiscounted cumulative row freed exactly the row the new pviRow
-    # helper needed), and pvi/dpi are two new rows inserted after
-    # payback, pushing lcos from 59 to 61.
+    # 6. NPV, IRR, MIRR, discounted payback, PVI, DPI, indicative LCOS,
+    # equity IRR and min/avg DSCR all match the engine. Row numbers are
+    # the toll-and-financing pass's layout (BESS_DROW's own comment in
+    # app/js/charts.js): two new revenue rows and the ten-row Financing
+    # section push npv/irr/mirr/payback/pvi/dpi/lcos from 55-61 to
+    # 67-73, and the three geared headline rows append at 74-76.
     def test_headline_formulas_match_engine(self):
         for case in self.WB_CASES:
             with self.subTest(case=case):
@@ -1177,16 +1526,16 @@ class WorkbookExport(unittest.TestCase):
                 g = xe.Grid(c["model"], c["names"])
                 res = compute(c["inputs"])
 
-                npv_got = g.value("DCF", "E55")
+                npv_got = g.value("DCF", "E67")
                 self.assertAlmostEqual(npv_got, res["npv"], delta=self._tol(res["npv"]))
 
-                irr_got = g.value("DCF", "E56")
+                irr_got = g.value("DCF", "E68")
                 if res["irr"] is None:
                     self.assertEqual(irr_got, "no IRR")
                 else:
                     self.assertAlmostEqual(irr_got, res["irr"], delta=self._tol(res["irr"]))
 
-                mirr_got = g.value("DCF", "E57")
+                mirr_got = g.value("DCF", "E69")
                 if res["mirr"] is None:
                     self.assertEqual(mirr_got, "n/a")
                 else:
@@ -1196,27 +1545,54 @@ class WorkbookExport(unittest.TestCase):
                 # Discounted payback period (DPP) replaces simple payback
                 # in the workbook: compared against the mirror's own
                 # discounted_payback(), interpolated on discounted flows.
-                pay_got = g.value("DCF", "E58")
+                pay_got = g.value("DCF", "E70")
                 if res["discounted_payback"] is None:
                     self.assertEqual(pay_got, "no payback")
                 else:
                     self.assertAlmostEqual(pay_got, res["discounted_payback"],
                                           delta=self._tol(res["discounted_payback"]))
 
-                pvi_got = g.value("DCF", "E59")
+                pvi_got = g.value("DCF", "E71")
                 self.assertAlmostEqual(pvi_got, res["pvi"], delta=self._tol(res["pvi"]))
 
-                dpi_got = g.value("DCF", "E60")
+                dpi_got = g.value("DCF", "E72")
                 if res["dpi"] is None:
                     self.assertEqual(dpi_got, "n/a")
                 else:
                     self.assertAlmostEqual(dpi_got, res["dpi"], delta=self._tol(res["dpi"]))
 
-                lcos_got = g.value("DCF", "E61")
+                lcos_got = g.value("DCF", "E73")
                 if res["lcos"] is None:
                     self.assertEqual(lcos_got, "n/a")
                 else:
                     self.assertAlmostEqual(lcos_got, res["lcos"], delta=self._tol(res["lcos"]))
+
+                # Toll and financing pass (plan/10 D55/D60): the three
+                # geared headline rows. Ungeared cases must read the
+                # named "n/a (ungeared)" state on all three (never a
+                # blank, an error or a fake number); the geared case is
+                # compared against the Python mirror's equity_irr and
+                # dscr_min/dscr_avg within the workbook tolerance.
+                eq_irr_got = g.value("DCF", "E74")
+                if res["equity_irr"] is None and res["d0"] == 0:
+                    self.assertEqual(eq_irr_got, "n/a (ungeared)")
+                else:
+                    self.assertAlmostEqual(eq_irr_got, res["equity_irr"],
+                                          delta=self._tol(res["equity_irr"]))
+
+                dscr_min_got = g.value("DCF", "E75")
+                if res["dscr_min"] is None and res["d0"] == 0:
+                    self.assertEqual(dscr_min_got, "n/a (ungeared)")
+                else:
+                    self.assertAlmostEqual(dscr_min_got, res["dscr_min"],
+                                          delta=self._tol(res["dscr_min"]))
+
+                dscr_avg_got = g.value("DCF", "E76")
+                if res["dscr_avg"] is None and res["d0"] == 0:
+                    self.assertEqual(dscr_avg_got, "n/a (ungeared)")
+                else:
+                    self.assertAlmostEqual(dscr_avg_got, res["dscr_avg"],
+                                          delta=self._tol(res["dscr_avg"]))
 
     # 7. every year column of the net-cash-flow row matches bess_cashflow.
     def test_cash_flow_row_matches_engine(self):
@@ -1229,9 +1605,11 @@ class WorkbookExport(unittest.TestCase):
                 for row in cf["rows"]:
                     # DPP/PVI/DPI pass (2026-08-01): the Total column is
                     # gone, so year 0 sits back at F (col 6) and year n
-                    # at 6+n.
+                    # at 6+n. Toll and financing pass (2026-08-29): the
+                    # net cash flow row moved from 35 to 37 (two new
+                    # revenue rows above it).
                     col = xe.col_name(6 + row["year"])
-                    got = g.value("DCF", col + "35")
+                    got = g.value("DCF", col + "37")
                     want = row["net_cashflow_gbp"]
                     self.assertAlmostEqual(got, want, delta=max(1e-6 * abs(want), 0.01),
                                           msg="%s year %d" % (case, row["year"]))
@@ -1255,7 +1633,7 @@ class WorkbookExport(unittest.TestCase):
                     model = copy.deepcopy(c["model"])
                     model["Assumptions"][midflag_row][col] = {"t": "n", "v": float(flag_value)}
                     g = xe.Grid(model, c["names"])
-                    return g.value("DCF", "E55"), g.value("DCF", "E56")
+                    return g.value("DCF", "E67"), g.value("DCF", "E68")
 
                 npv_mid, irr_mid = figures(1)
                 npv_end, irr_end = figures(0)
@@ -1297,10 +1675,11 @@ class WorkbookExport(unittest.TestCase):
                 model = copy.deepcopy(c["model"])
                 model["Assumptions"][midflag_row][xe.col_num("E")] = {"t": "n", "v": 0.0}
                 g = xe.Grid(model, c["names"])
-                # DPP/PVI/DPI pass: the checks banner and its rows moved
-                # from 61-64 to 63-66 (two new headline rows, pvi/dpi,
-                # inserted above them); the NPV() check row is E64.
-                self.assertAlmostEqual(g.value("DCF", "E55"), g.value("DCF", "E64"),
+                # Toll and financing pass: the checks banner and its
+                # rows moved from 63-66 to 78-81 (the Financing section
+                # plus the two revenue rows and three geared headline
+                # rows all sit above them); the NPV() check row is E79.
+                self.assertAlmostEqual(g.value("DCF", "E67"), g.value("DCF", "E79"),
                                       delta=0.01)
 
     # 10. no unit/party name or post-code pattern anywhere in the file.
@@ -1523,9 +1902,11 @@ class WorkbookExport(unittest.TestCase):
     # sixth row (C6-C11/E6-E11) — NPV, IRR, MIRR, DPP, DPI, LCOS — each
     # an ![M]Link mirror of the DCF sheet's own headline row, styled per
     # the magnitude the DCF cell itself carries (whole GBP, 1 dp percent,
-    # 1 dp ratio). Row and style indices read off what the builder
-    # actually emits (charts.js's cover.Cn/En assignments and BESS_XF),
-    # not independently guessed.
+    # 1 dp ratio). Toll and financing pass (plan/10, 2026-08-29): two
+    # geared mirrors join at C12-C13 (Equity IRR, Min DSCR), same
+    # ![M]Link discipline. Row and style indices read off what the
+    # builder actually emits (charts.js's cover.Cn/En assignments and
+    # BESS_XF), not independently guessed.
     COVER_HEADLINE = {
         6: ("NPV at valuation date", 47),        # linkNum
         7: ("Internal rate of return", 56),       # linkPct
@@ -1533,9 +1914,11 @@ class WorkbookExport(unittest.TestCase):
         9: ("Discounted payback (years)", 55),    # link1dp
         10: ("Profitability index (DPI)", 55),    # link1dp
         11: ("Indicative LCOS (£/MWh)", 47), # linkNum
+        12: ("Equity IRR", 56),                   # linkPct
+        13: ("Min DSCR (x)", 55),                 # link1dp
     }
 
-    def test_cover_headline_six_rows_with_styles(self):
+    def test_cover_headline_rows_with_styles(self):
         for case in self.WB_CASES:
             with self.subTest(case=case):
                 model = self.cases[case]["model"]
@@ -1551,10 +1934,11 @@ class ValuationDateWorkbookTest(unittest.TestCase):
     """Owner request, 2026-07: D35-D40's Excel export gains a Valuation
     date input, a Re-anchoring factor cell and an "NPV at valuation date"
     headline, with the commissioning-anchored figure kept as a labelled
-    check row (DCF!E65 as of the DPP/PVI/DPI pass, 2026-08-01, moved from
-    E63 by the two new pvi/dpi headline rows; see BESS_AROW/BESS_DROW's
-    comments in app/js/charts.js for why the row layout could grow inside
-    the Assumptions sheet's "Costs and finance" section).
+    check row (DCF!E80 as of the toll-and-financing pass, plan/10,
+    2026-08-29, moved from E65 by the two new revenue rows, the
+    Financing section and the three geared headline rows; see
+    BESS_AROW/BESS_DROW's comments in app/js/charts.js for the full
+    shift history).
 
     Valuation-date-anchored grid pass (owner decision, 2026-08-01): the
     headline no longer multiplies a commissioning-anchored SUM by a
@@ -1659,13 +2043,13 @@ class ValuationDateWorkbookTest(unittest.TestCase):
     def test_headline_is_reanchored_and_check_row_is_commissioning(self):
         res = compute(self.inputs)
         npv_headline_row = self._find_row(self.model, "DCF", "C", "NPV at valuation date")
-        self.assertEqual(npv_headline_row, 55)  # valuation-date-anchored-grid layout
+        self.assertEqual(npv_headline_row, 67)  # toll-and-financing layout
         npv_got = self.grid.value("DCF", "E%d" % npv_headline_row)
         self.assertAlmostEqual(npv_got, res["npv"], delta=self._tol(res["npv"]))
 
         check_row = self._find_row(
             self.model, "DCF", "C", "Check: net present value at commissioning")
-        self.assertEqual(check_row, 65)  # DPP/PVI/DPI layout (was 63)
+        self.assertEqual(check_row, 80)  # toll-and-financing layout (was 65)
         check_got = self.grid.value("DCF", "E%d" % check_row)
         self.assertAlmostEqual(check_got, res["npv_at_commissioning"],
                               delta=self._tol(res["npv_at_commissioning"]))
@@ -1698,34 +2082,34 @@ class ValuationDateWorkbookTest(unittest.TestCase):
         self.assertGreater(got, 1.0)
 
     def test_irr_payback_lcos_unaffected_by_reanchoring(self):
-        # Row numbers below are the DPP/PVI/DPI pass's layout (BESS_DROW's
-        # comment); what this test actually guards is that none of these
-        # figures differ from the commissioning-basis engine figures
-        # (reanchorNpv must never be applied to any of them — DPP is
-        # anchor-invariant by construction, not because it happens to
-        # dodge re-anchoring).
+        # Row numbers below are the toll-and-financing pass's layout
+        # (BESS_DROW's comment); what this test actually guards is that
+        # none of these figures differ from the commissioning-basis
+        # engine figures (reanchorNpv must never be applied to any of
+        # them — DPP is anchor-invariant by construction, not because it
+        # happens to dodge re-anchoring).
         res = compute(self.inputs)
         irr_row = self._find_row(
             self.model, "DCF", "C", "Internal rate of return (end-of-period basis)")
-        self.assertEqual(irr_row, 56)
-        self.assertAlmostEqual(self.grid.value("DCF", "E56"), res["irr"],
+        self.assertEqual(irr_row, 68)
+        self.assertAlmostEqual(self.grid.value("DCF", "E68"), res["irr"],
                               delta=self._tol(res["irr"]))
 
         mirr_row = self._find_row(
             self.model, "DCF", "C", "MIRR (finance and reinvestment at WACC)")
-        self.assertEqual(mirr_row, 57)
-        self.assertAlmostEqual(self.grid.value("DCF", "E57"), res["mirr"],
+        self.assertEqual(mirr_row, 69)
+        self.assertAlmostEqual(self.grid.value("DCF", "E69"), res["mirr"],
                               delta=self._tol(res["mirr"]))
 
         payback_row = self._find_row(
             self.model, "DCF", "C", "Discounted payback period (DPP)")
-        self.assertEqual(payback_row, 58)
-        self.assertEqual(self.grid.value("DCF", "E58"), "no payback")
+        self.assertEqual(payback_row, 70)
+        self.assertEqual(self.grid.value("DCF", "E70"), "no payback")
         self.assertIsNone(res["discounted_payback"])
 
         lcos_row = self._find_row(self.model, "DCF", "C", "Indicative LCOS")
-        self.assertEqual(lcos_row, 61)  # was 59, before the pvi/dpi insertion
-        self.assertAlmostEqual(self.grid.value("DCF", "E61"), res["lcos"],
+        self.assertEqual(lcos_row, 73)  # was 61, before the financing pass
+        self.assertAlmostEqual(self.grid.value("DCF", "E73"), res["lcos"],
                               delta=self._tol(res["lcos"]))
 
 

@@ -428,8 +428,73 @@ const Terms = {
     label: "Weighted average cost of capital (WACC)",
     short: "The discount rate applied to a project's future cash flows: " +
       "roughly, the blended return its financing needs to clear.",
-    extra: "A single user-entered rate here, real-terms and pre-tax, with " +
-      "no separate debt/equity split modelled.",
+    extra: "A single user-entered rate here, real-terms and pre-tax. " +
+      "The optional financing block models an explicit debt layer " +
+      "beside it, but every project-level metric stays discounted at " +
+      "this one rate; only the equity cash flow and its IRR see the " +
+      "debt/equity split.",
+    method: "bess-calc",
+  },
+  tolling: {
+    label: "Tolling agreement",
+    short: "A fixed fee, priced in £k/MW/yr on this card, that a trader " +
+      "pays a battery owner for the rights to operate the asset over " +
+      "an agreed tenor: contracted revenue for the owner, merchant " +
+      "risk and upside for the trader.",
+    extra: "The calculator's optional route-to-market group blends a " +
+      "toll on the tolled share of capacity with the observed merchant " +
+      "anchor scaled by the untolled remainder. The toll figure is " +
+      "flat in real terms and never degraded, derated or cannibalised " +
+      "— availability guarantees sit with the operator — and every " +
+      "field in the group is an Assumption. £k/MW/yr is the unit toll " +
+      "quotes are made in, and it is numerically identical to £/kW/yr: " +
+      "£50k/MW/yr is £50/kW/yr.",
+    method: "bess-calc",
+  },
+  gearing: {
+    label: "Gearing",
+    short: "The share of a project's capital cost funded by debt " +
+      "rather than equity. Higher gearing levers equity returns in " +
+      "both directions.",
+    extra: "Here, a fraction of CAPEX drawn as debt at year 0 and " +
+      "repaid as a level annuity at the cost-of-debt input, with no " +
+      "balloon and no refinancing. Project NPV and IRR stay ungeared; " +
+      "only the equity cash flow and its IRR feel the leverage.",
+    method: "bess-calc",
+  },
+  dscr: {
+    label: "Debt service cover ratio (DSCR)",
+    short: "A year's cash flow available for debt service divided by " +
+      "that year's debt service, interest plus principal. Below 1, the " +
+      "project cannot pay its lenders out of that year's operations.",
+    extra: "Reported as a minimum and an average, split between the " +
+      "toll period and the merchant years after it. The numerator here " +
+      "is the project's whole net cash flow, augmentation capex " +
+      "included — lenders typically carve funded capex out, a " +
+      "convention stated rather than adopted.",
+    method: "bess-calc",
+  },
+  cfads: {
+    label: "Cash flow available for debt service (CFADS)",
+    short: "The cash a project generates in a year before any debt " +
+      "drawdown or repayment: the numerator of DSCR.",
+    extra: "Taken on this card as the project's net cash flow in each " +
+      "operating year, augmentation capital included — the honest " +
+      "in-model reading, since the engine has no tax or working-" +
+      "capital lines to adjust for. Lenders typically carve funded " +
+      "capex out of CFADS; that convention is stated, not adopted.",
+    method: "bess-calc",
+  },
+  equityIrr: {
+    label: "Equity IRR",
+    short: "The internal rate of return on the equity cash flow alone: " +
+      "project cash flow less debt service, measured against the " +
+      "equity share of the upfront cost (CAPEX less the debt drawdown).",
+    extra: "Found by the same bisection over -99% to +150% as project " +
+      "IRR. The Excel export's native IRR() is not confined to that " +
+      "bracket, so a heavily geared case the card names as above the " +
+      "solver bracket can still show a figure in the workbook. With " +
+      "gearing at zero, equity IRR equals project IRR.",
     method: "bess-calc",
   },
   tnuos: {
@@ -444,5 +509,119 @@ const Terms = {
       "Distribution-connected assets sit outside generation TNUoS " +
       "post-TCR and show \"not applicable\" rather than a zero charge.",
     method: "bess-calc",
+  },
+  capfloor: {
+    label: "Cap and floor",
+    gb: true,
+    short: "Ofgem's revenue-corridor regime for long-duration storage " +
+      "(and, earlier, interconnectors): a guaranteed revenue floor set " +
+      "near a debt-like return, in exchange for a cap set near a " +
+      "regulated equity return, both applied to 100% of the project's " +
+      "regulatory asset value.",
+    extra: "Window 1's indicative rates are 4.47% (floor) and 7.48% " +
+      "(cap), CPIH-real, refixed at each project's FID. The default " +
+      "regime runs 25 years, levels are CPIH-indexed, floor top-ups " +
+      "are funded through BSUoS and conditional on a Minimum " +
+      "Availability Target, and the cap is soft: the project keeps " +
+      "30% of revenue above it.",
+    method: "ldes-capfloor",
+  },
+  rav: {
+    label: "Regulatory asset value (RAV)",
+    gb: true,
+    short: "The capital base a regulated return is earned on: for the " +
+      "LDES regime, development, construction, replacement and " +
+      "decommissioning expenditure plus interest during construction " +
+      "and transaction costs.",
+    extra: "Both the floor and the cap return apply to 100% of RAV. " +
+      "Cost overruns can enter the RAV only up to the project's " +
+      "submitted P90 cost ceiling.",
+    method: "ldes-capfloor",
+  },
+  softcap: {
+    label: "Soft cap",
+    gb: true,
+    short: "A revenue cap that shares rather than confiscates: above " +
+      "the cap level, the LDES project keeps 30% of additional " +
+      "revenue and returns 70% to consumers.",
+    extra: "The retention exists to preserve the incentive to keep " +
+      "dispatching efficiently once the cap is reached — a hard cap " +
+      "would make every extra MWh worthless to the operator.",
+    method: "ldes-capfloor",
+  },
+  mat: {
+    label: "Minimum Availability Target (MAT)",
+    gb: true,
+    short: "The availability condition on the revenue floor: floor " +
+      "payments are only due while the asset meets its minimum " +
+      "availability, with clawback if the target is missed.",
+    extra: "It keeps the floor from paying an asset that is not " +
+      "actually available to the system — the regulated analogue of " +
+      "the availability guarantee a toll places on the operator.",
+    method: "ldes-capfloor",
+  },
+  fascore: {
+    label: "Financial Assessment score",
+    gb: true,
+    short: "Ofgem's screening ratio for Window 1 projects: assessed " +
+      "lifetime revenue divided by the project's floor. Below the " +
+      "disclosed 0.60 threshold a project is demoted in the " +
+      "assessment.",
+    extra: "The per-project floor levels behind the score are withheld " +
+      "as commercially sensitive; only the threshold and each " +
+      "project's band were published. Frontier Legacy was included on " +
+      "technology-diversity grounds despite a below-threshold score.",
+    method: "ldes-capfloor",
+  },
+  bcr: {
+    label: "Benefit-cost ratio (BCR)",
+    short: "The present value of a project's modelled system benefits " +
+      "divided by the present value of its costs, taken at the " +
+      "central (P50) case.",
+    extra: "The largest single weight (40%) in the economic assessment " +
+      "behind the Window 1 ranking, computed from NESO's welfare " +
+      "cost-benefit analysis against a marginal-addition " +
+      "counterfactual.",
+    method: "ldes-capfloor",
+  },
+  bsuos: {
+    label: "BSUoS",
+    gb: true,
+    short: "Balancing Services Use of System: the charge through which " +
+      "NESO recovers the cost of balancing the GB system, levied on " +
+      "final demand.",
+    extra: "The LDES cap-and-floor regime is funded through BSUoS, " +
+      "with NESO acting as the intermediary between projects and the " +
+      "charge: floor top-ups are paid from it, and revenue returned " +
+      "above the cap flows back through it.",
+    method: "ldes-capfloor",
+  },
+  idc: {
+    label: "Interest during construction (IDC)",
+    short: "The financing cost accrued while an asset is being built, " +
+      "capitalised into the regulatory asset value rather than " +
+      "expensed: capital tied up in construction earns no revenue, so " +
+      "the regime compensates it by growing the RAV.",
+    extra: "In Ofgem's CFFM each construction year's spend earns a " +
+      "half year of IDC (costs land mid-year on average) and the " +
+      "accumulated balance a full year, compounding until operations " +
+      "start. The mini calculator applies the handbook formula with " +
+      "the published indicative rate prefilled; the rate is fixed at " +
+      "each project's FID.",
+    method: "ldes-cffm",
+  },
+  annuity: {
+    label: "Annuity factor (levelised allowance)",
+    short: "The factor that converts a present value into the flat " +
+      "annual payment with the same present value over a fixed term: " +
+      "r / (1 − (1 + r)^−n) at rate r over n years.",
+    extra: "The CFFM flattens each side's building blocks (return, " +
+      "depreciation, opex and decommissioning) into one level annual " +
+      "allowance this way, so a declining return profile becomes a " +
+      "flat £/yr figure with the same present value. Flattening a " +
+      "stream that is already flat leaves it unchanged, which is why " +
+      "only the return block is genuinely reshaped in the mini " +
+      "calculator's breakdown.",
+    method: "ldes-cffm",
   },
 };

@@ -457,6 +457,18 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
 #bess-fleet-table thead th { position: sticky; top: 0;
   background: var(--bg-card); z-index: 1; }
 
+/* LDES cap-and-floor reference card (Batteries tab, plan/10 B1): the
+   project table reuses .util-table and scrolls internally at phone
+   width; its headings are click-to-sort. The regime strip is a
+   definition run between the table and the mini-chart. */
+#ldes-capfloor-table { overflow-x: auto; }
+#ldes-capfloor-table th[data-sort] { cursor: pointer; user-select: none; }
+#ldes-capfloor-table th[data-sort]:hover { color: var(--text); }
+.ldes-regime { margin: 12px 0 2px; font-size: 12.5px;
+  color: var(--text-dim); line-height: 1.7; }
+.ldes-regime b { color: var(--text); font-weight: 600;
+  font-variant-numeric: tabular-nums; }
+
 .banner {
   border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px;
 }
@@ -523,8 +535,8 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
    inert. Same reason .method-layout and .gloss-layout carry it. */
 .calc-grid { display: grid; grid-template-columns: 380px minmax(0, 1fr);
   gap: 18px; align-items: start; }
-#bess-calc-inputs { display: flex; flex-direction: column; gap: 14px;
-  min-width: 0; }
+#bess-calc-inputs, #ldes-cffm-inputs { display: flex;
+  flex-direction: column; gap: 14px; min-width: 0; }
 /* Pinned below the sticky topbar on the same formula as .method-toc and
    .gloss-nav (--topbar-h is live-measured in app.js; 66px fallback, +12px
    = the jump targets' scroll-margin). The max-height/overflow pair is a
@@ -533,7 +545,7 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
    card pushes it to 634px, which would otherwise cut the export row off
    the bottom with no way to reach it. min-width: 0 keeps ECharts' inline
    pixel widths from widening the track. */
-#bess-calc-results {
+#bess-calc-results, #ldes-cffm-results {
   position: sticky; top: calc(var(--topbar-h, 66px) + 12px);
   max-height: calc(100vh - var(--topbar-h, 66px) - 28px); overflow-y: auto;
   min-width: 0;
@@ -543,6 +555,33 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
   padding: 10px 12px 4px; }
 .calc-field-group h4 { font-size: 11px; text-transform: uppercase;
   letter-spacing: .05em; color: var(--text-dim); margin: 0 0 8px; }
+/* D71: the six input groups are themselves <details> (the calc-note-d
+   chevron pattern one level up), so collapsed groups read as a compact
+   list. The h4 keeps its look but hands its bottom margin to the open
+   summary, so spacing is unchanged when a group is open. The "n set"
+   marker is the collapsed-group honesty rule: it only shows while the
+   group is closed — open, the fields themselves are visible. */
+details.calc-group > summary {
+  list-style: none; cursor: pointer;
+  display: flex; align-items: baseline; gap: 6px;
+}
+details.calc-group > summary::-webkit-details-marker { display: none; }
+details.calc-group > summary::before {
+  content: "\25B8"; font-size: 9px; color: var(--text-dim);
+}
+details.calc-group[open] > summary::before { content: "\25BE"; }
+details.calc-group > summary h4 { margin: 0; }
+details.calc-group[open] > summary { margin-bottom: 8px; }
+details.calc-group:not([open]) { padding-bottom: 10px; }
+details.calc-group > summary:hover h4 { color: var(--text); }
+details.calc-group > summary:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px;
+}
+.calc-group-active {
+  margin-left: auto; font-size: 10px; color: var(--accent);
+  white-space: nowrap;
+}
+details.calc-group[open] > summary .calc-group-active { display: none; }
 .calc-field { display: flex; flex-direction: column; gap: 3px;
   margin-bottom: 11px; }
 .calc-field-label { display: flex; justify-content: space-between;
@@ -605,6 +644,11 @@ main { max-width: 1480px; margin: 0 auto; padding: 16px 20px 40px; }
    spacing they read as one pair. The £ figures go mono and full-
    brightness inside a dim sentence: the split is scanned, the caveat
    around it is read once. */
+/* D83: the deterministic "Reading:" line under each calculator's
+   tiles — card-meta's grey tone at body size, bold lede. */
+.calc-reading { font-size: 13px; color: var(--text-dim);
+  margin: 0 0 10px; }
+.calc-reading b { color: var(--text); font-weight: 600; }
 .calc-mix-line { font-size: 11px; color: var(--text-dim); margin: 0 0 10px; }
 .calc-mix-line .cm-fig { font-family: var(--font-mono);
   font-variant-numeric: tabular-nums; color: var(--text); }

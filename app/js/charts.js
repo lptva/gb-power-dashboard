@@ -2916,6 +2916,143 @@ const Charts = (() => {
     return { year, note, warn: false };
   }
 
+  /* The ONE place the route-to-market & financing block is interpreted
+     for the card's prose (plan/10 D58/D59/D65), modelled on
+     bessCalcAugYearResolved above: both live lines under the new field
+     group read from here, so the na-reasons, the implied-merchant
+     comparison and the max-debt read-out can never drift from what the
+     engine itself did with the same fields. `inputs`/`cf` are the
+     engine inputs and cash flow the caller already resolved (null
+     before the required five exist) — the merchant comparison re-runs
+     the engine once fully merchant (tollShare 0), everything else
+     reads the rows the headline is built from. Returns
+     { toll: <string>, debt: <string> }, each empty when its fields are
+     all blank — the optional-field silence every other live line
+     keeps. */
+  function bessCalcFinancingResolved(c, inputs, cf) {
+    const out = { toll: "", debt: "" };
+    const tenorTyped = c.tollTenor != null ? Math.floor(c.tollTenor) : null;
+
+    // ---- Toll line (all-three-or-no-op, the augmentation triple's
+    // discipline) ----
+    const tollNames = ["share", "price", "tenor"];
+    const tollVals = [c.tollShare, c.tollPrice, c.tollTenor];
+    const tollMissing = tollNames.filter((_, i) => tollVals[i] == null);
+    if (tollMissing.length < 3) {
+      if (tollMissing.length) {
+        out.toll = `toll needs share, price and tenor — ${
+          tollMissing.join(" and ")} missing`;
+      } else if (!(c.tollShare > 0 && c.tollPrice > 0 && tenorTyped >= 1)) {
+        out.toll = "the toll is inactive at these values: share, price " +
+          "and tenor must all be positive";
+      } else if (!inputs || !cf) {
+        out.toll = "toll set — enter the required inputs above to see it " +
+          "against the observed merchant rate";
+      } else {
+        // Year 1's fully-merchant £k/MW/yr from a tollShare:0 re-run of
+        // the SAME inputs, un-stubbed by frac1 (the capacity bars' own
+        // un-stub precedent) so a flat £k/MW/yr toll is read against a
+        // genuine per-year rate, not a part-year stub. (£k/MW/yr is
+        // numerically identical to £/kW/yr — the numeral never moves.)
+        const merchantCf = Metrics.bessCashflow({ ...inputs, tollShare: 0 });
+        const mY1 = merchantCf && merchantCf.rows[1];
+        const mFrac = Metrics.yearFractionRemaining(inputs.y0);
+        const merchantRate = (mY1 && inputs.P > 0 && mFrac > 0)
+          ? (mY1.availability_gbp + mY1.arbitrage_gbp)
+            / (1000 * inputs.P * mFrac)
+          : null;
+        let text = merchantRate != null && merchantRate > 0
+          ? `toll £${c.tollPrice}k/MW/yr vs observed year-1 merchant ` +
+            `£${merchantRate.toFixed(1)}k/MW/yr (${
+              Math.round((c.tollPrice / merchantRate) * 100)}%)`
+          : `toll £${c.tollPrice}k/MW/yr — no positive observed merchant ` +
+            "rate to compare against";
+        if (tenorTyped > inputs.T) {
+          text += ` · ${tenorTyped - inputs.T} of the tenor's years fall ` +
+            `beyond the ${inputs.T}-year period and never land`;
+        }
+        out.toll = text;
+      }
+    }
+
+    // ---- Debt line (same triple discipline; D65's merchant-leverage
+    // note stated, never blocked) ----
+    const debtNames = ["gearing", "cost of debt", "debt tenor"];
+    const debtVals = [c.gearing, c.costOfDebt, c.debtTenor];
+    const debtMissing = debtNames.filter((_, i) => debtVals[i] == null);
+    const debtSet = debtNames.filter((_, i) => debtVals[i] != null);
+    const debtTenorTyped = c.debtTenor != null
+      ? Math.floor(c.debtTenor) : null;
+    const tollActiveHere = c.tollShare > 0 && c.tollPrice > 0
+      && tenorTyped >= 1;
+    if (debtMissing.length === 3) {
+      if (c.targetDscr != null) {
+        out.debt = "target DSCR is a sizing read-out — set gearing, " +
+          "cost of debt and debt tenor to size against it";
+      }
+    } else if (debtMissing.length) {
+      out.debt = `${debtSet.join(" and ")} set but no ${
+        debtMissing.join(" or ")} — the debt layer is inactive`;
+    } else if (!(c.gearing > 0 && debtTenorTyped >= 1)) {
+      out.debt = "the debt layer is inactive at these values: gearing " +
+        "must be positive and the tenor at least one year";
+    } else if (!inputs || !cf) {
+      out.debt = "debt set — enter the required inputs above to see the " +
+        "drawn amount";
+    } else if (cf.d0 > 0) {
+      const fmtD0 = bessCalcCompactGbp([cf.d0]);
+      let text = `debt drawn at year 0: ${fmtD0(cf.d0)} ` +
+        `(${Math.round(inputs.gearing * 100)}% of CAPEX)`;
+      if (inputs.debtTenor > inputs.T) {
+        // Principal repaid is the signed (negative) column summed; what
+        // is left at the horizon is the drawdown plus that sum.
+        const repaid = cf.rows.reduce(
+          (s, r) => s + (r.debt_principal_gbp || 0), 0);
+        const outstanding = cf.d0 + repaid;
+        if (outstanding > 0.005) {
+          const fmtOut = bessCalcCompactGbp([outstanding]);
+          text += ` · ${fmtOut(outstanding)} of principal remains ` +
+            `outstanding at year ${inputs.T}; no balloon is modelled`;
+        }
+      }
+      if (!tollActiveHere) {
+        text += " · debt sized against a fully merchant cash flow — " +
+          "lenders would size smaller";
+      }
+      out.debt = text;
+    }
+
+    // ---- Max-debt-at-target-DSCR read-out (UI only — targetDscr never
+    // enters the engine). net_cashflow_gbp is ungeared by construction
+    // (the debt layer sits below the project line), so the prospective
+    // service years read straight off the headline's own rows. ----
+    if (c.targetDscr > 0 && debtMissing.length === 0
+        && debtTenorTyped >= 1 && inputs && cf) {
+      const svcEnd = Math.min(inputs.debtTenor, inputs.T);
+      const svcNets = cf.rows.filter((r) => r.year >= 1 && r.year <= svcEnd)
+        .map((r) => r.net_cashflow_gbp);
+      if (svcNets.length) {
+        const minNet = Math.min(...svcNets);
+        const sep = out.debt ? " · " : "";
+        if (minNet > 0) {
+          const serviceMax = minNet / c.targetDscr;
+          const rd = inputs.costOfDebt;
+          const dMax = rd === 0 ? serviceMax * inputs.debtTenor
+            : serviceMax * (1 - Math.pow(1 + rd, -inputs.debtTenor)) / rd;
+          const fmtMax = bessCalcCompactGbp([dMax]);
+          out.debt += `${sep}${fmtMax(dMax)} supportable at ${
+            c.targetDscr.toFixed(2)}x target (≈${
+            Math.round((dMax / cf.c0) * 100)}% gearing)`;
+        } else {
+          out.debt += `${sep}no debt is supportable at ${
+            c.targetDscr.toFixed(2)}x target: the weakest service-year ` +
+            "cash flow is not positive";
+        }
+      }
+    }
+    return out;
+  }
+
   /* Assembles Metrics.bessCashflow's input object from State.calc + the
      lazily-fetched payload. Every field NOT in the required-five list
      (D30) falls back to a neutral "nothing assumed" default (0, or the
@@ -2970,11 +3107,25 @@ const Charts = (() => {
     const opexEscDefault = bessCalcOpexEscDefault(payload);
     const opexEsc = c.opexEsc != null ? c.opexEsc / 100
       : (opexEscDefault != null ? opexEscDefault / 100 : 0);
+    // Route to market & financing (plan/10 D58/D59): percentages to
+    // fractions, tenors floored to whole years, all inert when blank —
+    // the engine's own all-three-or-no-op triples do the activation.
+    // targetDscr deliberately NEVER enters the engine: it is a sizing
+    // read-out on the live line (bessCalcFinancingResolved), not an
+    // assumption the cash flow acts on.
+    const tollShare = c.tollShare != null ? c.tollShare / 100 : 0;
+    const tollPrice = c.tollPrice != null ? c.tollPrice : 0;
+    const tollTenor = c.tollTenor != null ? Math.floor(c.tollTenor) : 0;
+    const gearing = c.gearing != null ? c.gearing / 100 : 0;
+    const costOfDebt = c.costOfDebt != null ? c.costOfDebt / 100 : null;
+    const debtTenor = c.debtTenor != null ? Math.floor(c.debtTenor) : 0;
     return { P, E, y0: c.commission || null, T, C, O, r: r / 100, c: cycles,
              delta, eta, a: a != null ? a : 0, gamma, zTotal,
              sHi: arb.sHi, sLo: arb.sLo, k: arb.k,
              discounting: bessCalcDiscounting(c),
-             augYear, augMwh, augCostPerMwh, augDelta, rho, opexEsc };
+             augYear, augMwh, augCostPerMwh, augDelta, rho, opexEsc,
+             tollShare, tollPrice, tollTenor, gearing, costOfDebt,
+             debtTenor };
   }
 
   /* One NPV under one perturbed assumption, through the IDENTICAL chain
@@ -3191,11 +3342,18 @@ const Charts = (() => {
 
   /* Built once and never re-rendered (D30). The <details> captions (D47)
      therefore keep their open state across every subsequent render for
-     free — nothing stores it, the DOM is it. */
+     free — nothing stores it, the DOM is it. D71 extends the same
+     native-details pattern to the six field groups themselves: the two
+     groups holding the required five inputs (The asset, Costs and
+     finance) default open, the other four collapsed, and a collapsed
+     group's summary carries an "n set" marker (updated textContent-only
+     from updateBessCalcLiveFields) so no non-default assumption can
+     hide behind a closed group. */
   function bessCalcInputsHtml() {
     return `
-      <div class="calc-field-group">
-        <h4>The asset</h4>
+      <details class="calc-field-group calc-group" open>
+        <summary><h4>The asset</h4><span
+          class="calc-group-active"></span></summary>
         <div class="calc-field">
           <div class="calc-field-label"><span>Power (MW)</span></div>
           <input type="number" data-calc="power" min="0" step="0.1"
@@ -3222,10 +3380,11 @@ const Charts = (() => {
             placeholder="defaults to useful life">
           <div class="calc-live" id="calc-period-live"></div>
         </div>
-      </div>
+      </details>
 
-      <div class="calc-field-group">
-        <h4>Costs and finance</h4>
+      <details class="calc-field-group calc-group" open>
+        <summary><h4>Costs and finance</h4><span
+          class="calc-group-active"></span></summary>
         <div class="calc-field">
           <div class="calc-field-label"><span>CAPEX (£k/MW)</span></div>
           <input type="number" data-calc="capex" min="0" step="1"
@@ -3366,10 +3525,11 @@ const Charts = (() => {
             step="0.1" placeholder="defaults to cycles x duration / 24">
           <div class="calc-live" id="calc-loadfactor-live"></div>
         </div>
-      </div>
+      </details>
 
-      <div class="calc-field-group">
-        <h4>Operation</h4>
+      <details class="calc-field-group calc-group">
+        <summary><h4>Operation</h4><span
+          class="calc-group-active"></span></summary>
         <div class="calc-field">
           <div class="calc-field-label"><span>Cycles per day</span></div>
           <input type="number" data-calc="cycles" min="0" max="10" step="0.1"
@@ -3400,10 +3560,11 @@ const Charts = (() => {
               rejuvenates it in proportion to its size.</div>
           </details>
         </div>
-      </div>
+      </details>
 
-      <div class="calc-field-group">
-        <h4>Market view</h4>
+      <details class="calc-field-group calc-group">
+        <summary><h4>Market view</h4><span
+          class="calc-group-active"></span></summary>
         <div class="calc-field">
           <div class="calc-field-label"><span>Availability percentile</span></div>
           <select data-calc="percentile">
@@ -3455,10 +3616,11 @@ const Charts = (() => {
               value.</div>
           </details>
         </div>
-      </div>
+      </details>
 
-      <div class="calc-field-group">
-        <h4>Wholesale arbitrage (perfect-foresight ceiling)</h4>
+      <details class="calc-field-group calc-group">
+        <summary><h4>Wholesale arbitrage (perfect-foresight
+          ceiling)</h4><span class="calc-group-active"></span></summary>
         <div class="calc-field">
           <div class="calc-field-label"><span>Observed spread</span></div>
           <div class="calc-live" id="calc-arb-observed-live"></div>
@@ -3508,7 +3670,82 @@ const Charts = (() => {
             <span class="badge hidden" id="calc-arb-margin-badge"></span></div>
           <div class="calc-live" id="calc-arb-margin-live"></div>
         </div>
-      </div>`;
+      </details>
+
+      <details class="calc-field-group calc-group">
+        <summary><h4>Route to market &amp; financing
+          <span class="badge assumption">Assumption</span></h4><span
+          class="calc-group-active"></span></summary>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Tolled share (%)</span></div>
+          <input type="number" data-calc="tollShare" min="0" max="100"
+            step="1" placeholder="e.g. 70 to 100">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Toll price (£k/MW/yr)</span></div>
+          <input type="number" data-calc="tollPrice" min="0" step="1"
+            placeholder="e.g. 40 to 70">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Toll tenor (years)</span></div>
+          <input type="number" data-calc="tollTenor" min="1" step="1"
+            placeholder="e.g. 5 to 10">
+          <div class="calc-live" id="calc-toll-live"></div>
+          <details class="calc-note-d">
+            <summary>What the toll £ does and does not carry</summary>
+            <div class="calc-note">Share, price and tenor must all be set
+              to take effect. Over the tenor the tolled share earns the
+              toll £ flat in real terms — never degraded, cannibalised or
+              derated, because availability guarantees sit with the
+              operator, not this model — while the merchant lines are
+              scaled to the untolled share. £k/MW/yr is the unit toll
+              quotes are made in; it is numerically identical to £/kW/yr,
+              so a per-kW reader loses nothing: £50k/MW/yr is
+              £50/kW/yr.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Gearing (% of CAPEX)</span></div>
+          <input type="number" data-calc="gearing" min="0" max="100"
+            step="1" placeholder="e.g. 40 to 60">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Cost of debt
+            (%, real pre-tax)</span></div>
+          <input type="number" data-calc="costOfDebt" min="0" step="0.1"
+            placeholder="e.g. 4 to 6">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Debt tenor (years)</span></div>
+          <input type="number" data-calc="debtTenor" min="1" step="1"
+            placeholder="e.g. 7 to 15">
+          <div class="calc-live" id="calc-debt-live"></div>
+          <details class="calc-note-d">
+            <summary>How the debt layer is modelled</summary>
+            <div class="calc-note">Gearing, cost of debt and tenor must
+              all be set to take effect. The drawdown at year 0 repays as
+              a level annuity — contractual-annual, never pro-rated by
+              the commissioning stub — with no balloon and no mini-perm
+              refinancing modelled: a tenor past the calculation period
+              simply leaves principal outstanding at the horizon, and the
+              line under this field says so. Project NPV and IRR stay
+              ungeared; the layer adds an equity cash flow beside them.</div>
+          </details>
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Target DSCR (x)</span></div>
+          <input type="number" data-calc="targetDscr" min="0" step="0.05"
+            placeholder="e.g. 1.3">
+          <details class="calc-note-d">
+            <summary>A sizing read-out, not an input to the engine</summary>
+            <div class="calc-note">Never enters the cash flow: it only
+              drives the read-out above, which states the maximum debt the
+              weakest service-year cash flow could support at this cover
+              ratio, and the gearing that debt would imply. The gearing
+              field above is what the engine actually draws.</div>
+          </details>
+        </div>
+      </details>`;
   }
 
   function resetBessCalcForm() {
@@ -3802,6 +4039,64 @@ const Charts = (() => {
     // of this function, so they cannot disagree with one another.
     const estBadge = document.getElementById("bess-calc-badge-estimated");
     if (estBadge) estBadge.classList.toggle("hidden", !arb.estimatedActive);
+
+    // Route to market & financing live lines (plan/10): both read from
+    // bessCalcFinancingResolved, the one place the toll and debt
+    // triples are interpreted — bessCalcAugYearResolved's discipline.
+    // One extra bessCashflow pass per render (plus one fully-merchant
+    // pass inside the helper when the toll is active): arithmetic
+    // noise, the sensitivity strip's own argument.
+    const tollLiveEl = document.getElementById("calc-toll-live");
+    const debtLiveEl = document.getElementById("calc-debt-live");
+    if (tollLiveEl || debtLiveEl) {
+      const finPayload = bessUnitsState === "ready" ? bessUnitsPayload : null;
+      const finInputs = (finPayload && !bessCalcMissingLabels(c).length)
+        ? bessCalcEngineInputs(c, finPayload) : null;
+      const finCf = finInputs ? Metrics.bessCashflow(finInputs) : null;
+      const fin = bessCalcFinancingResolved(c, finInputs, finCf);
+      if (tollLiveEl) tollLiveEl.textContent = fin.toll;
+      if (debtLiveEl) debtLiveEl.textContent = fin.debt;
+    }
+
+    updateBessCalcGroupMarkers(c);
+  }
+
+  /* D71's honesty rule: a collapsed input group whose fields carry
+     non-default values says so in its summary ("n set"), so no active
+     assumption can hide behind a closed group. Pure textContent updates
+     on the once-built form (D30) — nothing here rebuilds anything, and
+     the marker is hidden by CSS while the group is open (the fields
+     speak for themselves there; badge/marker only what is active).
+     "Set" means departed from the shipped default: null for the typed
+     fields, the structural defaults below for the selects and
+     cannibalisation, checked for the family toggles (so an off-toggle
+     counts). Runs from updateBessCalcLiveFields, i.e. on every render,
+     which is what clears the markers after a reset. */
+  const BESS_CALC_STRUCTURAL_DEFAULTS = {
+    connType: "T", zone: 1, percentile: "p50",
+    discounting: "mid", cannibalisation: 0,
+  };
+  function bessCalcFieldIsSet(el, c) {
+    const key = el.dataset.calc;
+    const value = c[key];
+    if (el.type === "checkbox") return value === false;
+    if (key in BESS_CALC_STRUCTURAL_DEFAULTS) {
+      return value != null && value !== BESS_CALC_STRUCTURAL_DEFAULTS[key];
+    }
+    return value != null;
+  }
+  function updateBessCalcGroupMarkers(c) {
+    document.querySelectorAll("#bess-calc-inputs details.calc-group")
+      .forEach((group) => {
+        const marker = group.querySelector(".calc-group-active");
+        if (!marker) return;
+        let n = 0;
+        group.querySelectorAll("[data-calc]").forEach((el) => {
+          if (bessCalcFieldIsSet(el, c)) n += 1;
+        });
+        const text = n ? `${n} set` : "";
+        if (marker.textContent !== text) marker.textContent = text;
+      });
   }
 
   /* D21/Part C: per-family availability £, year by year, aligned with
@@ -3818,6 +4113,12 @@ const Charts = (() => {
       && payload.percentiles.families[State.get().calc.percentile];
     const gamma = inputs.gamma || 0;
     const frac1 = Metrics.yearFractionRemaining(inputs.y0);
+    // Same toll blend as the engine (plan/10 D58), read from the SAME
+    // resolved inputs it used: in toll years each family carries the
+    // (1 - tollShare) untolled factor the post-blend availability_gbp
+    // column already carries, so the six families keep summing to it.
+    const tollActive = inputs.tollShare > 0 && inputs.tollPrice > 0
+      && inputs.tollTenor >= 1;
     const out = {};
     BESS_FAMILY_CODES.forEach((f) => { out[f] = []; });
     rows.forEach((row) => {
@@ -3828,12 +4129,132 @@ const Charts = (() => {
       }
       const g = Math.pow(1 - gamma, n - 1);
       const frac = n === 1 ? frac1 : 1;
+      const sEff = (tollActive && n <= inputs.tollTenor)
+        ? inputs.tollShare : 0;
       BESS_FAMILY_CODES.forEach((f) => {
         const perYr = toggles[f] ? (families[f] || 0) * 365 : 0;
-        out[f].push(+(perYr * 1000 * inputs.P * g * frac).toFixed(2));
+        out[f].push(+(perYr * 1000 * inputs.P * g * frac * (1 - sEff))
+          .toFixed(2));
       });
     });
     return out;
+  }
+
+  /* The BESS CSV's parameter block (D84, owner request 2026-08-29:
+     the mini-CFFM's section,parameter,value pattern applied to the
+     BESS export, replacing the `#` comment-line header that forced
+     manual parsing). Pure and DOM-free so it is unit-testable, but a
+     VIEW-LAYER row builder with no Python mirror by design: the
+     schema-pinned, mirrored part of this export is the year table's
+     engine columns (CSV_COLUMNS in ops/bess_calculator_figures.py);
+     this function only serialises the card's already-computed inputs
+     and headline figures. Row order mirrors Metrics.cffmCsvRows:
+     header row, `input` rows (every key the old `#` block carried,
+     identical names and value semantics — not_set for blanks,
+     not_applicable / not_available / defaults_to_degradation where
+     the old lines used them — plus opex_escalation_source, which
+     states the provenance the old opexEscLine folded into its value:
+     "typed", or the shipped ONS CPI default with its period), then
+     the `derived` section (the tiles' own figures, 4 dp; the
+     financing keys read not_set while the debt layer is inactive),
+     then ONE `note,caveat` row carrying the illustrative-economics
+     disclaimer — the export's only free-text value and the only one
+     the serialiser must comma-quote (RFC 4180, the LDES precedent).
+     family_toggles joins with ";" rather than "," for exactly that
+     reason: same information, no second quoted value. Everything
+     stays ASCII (the Excel-mojibake rule). `d` (derived) values are
+     numbers or null; null exports as not_set. */
+  function bessCalcCsvParamRows({ c, inputs, toggles, arb, opexEscDefault,
+    cpiPeriod, augResolved, tnuos, d }) {
+    const rows = [["section", "parameter", "value"]];
+    const input = (key, v) => rows.push(["input", key, v]);
+    input("power_mw", c.power);
+    input("energy_mwh", c.energy);
+    input("commissioning_date", c.commission || "not_set");
+    input("valuation_date", c.valuationDate || "commissioning");
+    input("useful_life_years", c.life);
+    input("calculation_period_years", inputs.T);
+    input("capex_gbpk_per_mw", c.capex);
+    input("opex_gbpk_per_mw_yr", c.opex != null ? c.opex : 0);
+    // Owner request, 2026-08-01, carried over from the `#` header: the
+    // EFFECTIVE OPEX escalation rate — the typed value verbatim, or
+    // the shipped ONS CPI default — with its provenance stated, now as
+    // its own input row rather than a parenthetical inside the value.
+    input("opex_escalation_pct_per_yr", c.opexEsc != null ? c.opexEsc
+      : opexEscDefault != null ? +opexEscDefault.toFixed(1) : "not_set");
+    input("opex_escalation_source", c.opexEsc != null ? "typed"
+      : opexEscDefault != null
+        ? `default: CPI 12-month rate (ONS ${cpiPeriod})` : "not_set");
+    // Owner request, 2026-08-01, unchanged semantics: the RESOLVED
+    // model year; when a calendar-year entry actually resolved, a
+    // second row states what was typed so the export is checkable
+    // against the field. An unresolvable entry exports not_set with
+    // no such row, same as a blank field.
+    input("augmentation_year",
+      augResolved.year != null ? augResolved.year : "not_set");
+    if (augResolved.year != null && c.augYear != null
+        && Math.floor(c.augYear) >= 1000) {
+      input("augmentation_year_entered", Math.floor(c.augYear));
+    }
+    input("augmentation_mwh", c.augMwh != null ? c.augMwh : "not_set");
+    input("augmentation_cost_gbpk_per_mwh",
+      c.augCostMwh != null ? c.augCostMwh : "not_set");
+    input("augmentation_degradation_pct_per_yr",
+      c.augDelta != null ? c.augDelta : "defaults_to_degradation");
+    input("wacc_pct", c.wacc);
+    input("discounting", bessCalcDiscounting(c));
+    input("connection_type", c.connType);
+    input("tnuos_zone", c.connType === "T" ? c.zone : "not_applicable");
+    input("tnuos_load_factor_pct", +(bessCalcLoadFactor(c) * 100).toFixed(1));
+    input("cycles_per_day", c.cycles != null ? c.cycles : 0);
+    input("round_trip_efficiency_pct",
+      c.efficiency != null ? c.efficiency : 0);
+    input("degradation_pct_per_yr",
+      c.degradation != null ? c.degradation : 0);
+    input("availability_derate_pct_per_yr",
+      c.derate != null ? c.derate : 0);
+    input("availability_percentile", c.percentile);
+    input("family_toggles", BESS_FAMILY_CODES.map((f) =>
+      `${f}:${toggles[f] ? "on" : "off"}`).join(";"));
+    input("cannibalisation_pct_per_yr",
+      c.cannibalisation != null ? c.cannibalisation : 0);
+    input("s_hi_gbp_per_mwh",
+      arb.sHi != null ? +arb.sHi.toFixed(2) : "not_available");
+    input("s_lo_gbp_per_mwh",
+      arb.sLo != null ? +arb.sLo.toFixed(2) : "not_available");
+    input("capture_rate_pct",
+      c.captureRate != null ? c.captureRate : "not_set");
+    input("manual_spread_gbp_per_mwh",
+      c.manualSpread != null ? c.manualSpread : "not_set");
+    input("toll_share_pct", c.tollShare != null ? c.tollShare : "not_set");
+    input("toll_price_gbpk_per_mw_yr",
+      c.tollPrice != null ? c.tollPrice : "not_set");
+    input("toll_tenor_years",
+      c.tollTenor != null ? c.tollTenor : "not_set");
+    input("gearing_pct", c.gearing != null ? c.gearing : "not_set");
+    input("cost_of_debt_pct",
+      c.costOfDebt != null ? c.costOfDebt : "not_set");
+    input("debt_tenor_years",
+      c.debtTenor != null ? c.debtTenor : "not_set");
+    input("tnuos_charging_year", `FY${tnuos.year_fy}`);
+    input("tnuos_publication", tnuos.publication);
+    const derived = (key, v) => rows.push(["derived", key,
+      v != null && Number.isFinite(v) ? +v.toFixed(4) : "not_set"]);
+    derived("npv_gbp", d.npv);
+    derived("irr_pct", d.irr != null ? d.irr * 100 : null);
+    derived("mirr_pct", d.mirr != null ? d.mirr * 100 : null);
+    derived("dpi", d.dpi);
+    derived("discounted_payback_years", d.payback);
+    derived("lcos_gbp_per_mwh", d.lcos);
+    derived("equity_irr_pct", d.equityIrr != null ? d.equityIrr * 100 : null);
+    derived("dscr_min", d.dscrMin);
+    derived("dscr_avg", d.dscrAvg);
+    rows.push(["note", "caveat",
+      "BESS profitability calculator export: illustrative economics " +
+      "from the assumptions above, anchored on what comparable units " +
+      "observably earned - not investment advice, not a valuation, " +
+      "and not a forecast"]);
+    return rows;
   }
 
   function downloadBessCalcCsv() {
@@ -3846,7 +4267,9 @@ const Charts = (() => {
     const columns = { year: [], capex_gbp: [], availability_gbp: [],
       arbitrage_gbp: [], opex_gbp: [], tnuos_gbp: [], net_cashflow_gbp: [],
       discounted_cashflow_gbp: [], cumulative_discounted_gbp: [],
-      discharged_mwh: [], usable_mwh: [] };
+      discharged_mwh: [], usable_mwh: [], toll_gbp: [],
+      debt_drawdown_gbp: [], debt_interest_gbp: [], debt_principal_gbp: [],
+      equity_cashflow_gbp: [] };
     cf.rows.forEach((row) => {
       Object.keys(columns).forEach((key) => columns[key].push(row[key]));
     });
@@ -3858,76 +4281,64 @@ const Charts = (() => {
     });
 
     const arb = bessCalcArbitrage(c);
-    // Owner request, 2026-08-01: the EFFECTIVE OPEX escalation rate —
-    // the typed value verbatim, or the shipped ONS CPI default with its
-    // provenance stated inline (this line is the only place the export
-    // says which one is in force; the workbook's own Source cell does
-    // the equivalent job — see field(A.opexEsc, ...) below).
-    const opexEscDefaultForCsv = bessCalcOpexEscDefault(bessUnitsPayload);
-    const opexEscLine = c.opexEsc != null
-      ? `# opex_escalation_pct_per_yr=${c.opexEsc}`
-      : opexEscDefaultForCsv != null
-        ? `# opex_escalation_pct_per_yr=${opexEscDefaultForCsv.toFixed(1)} ` +
-          `(default: CPI 12-month rate, ONS, ${bessUnitsPayload.inflation.cpi_period})`
-        : "# opex_escalation_pct_per_yr=not_set";
-    // Owner request, 2026-08-01: the RESOLVED model year, through the
-    // one helper the engine inputs and the workbook also call — never
-    // the raw typed value, which may be a calendar year. When a
-    // calendar-year entry actually resolved, the comment line directly
-    // after states what was typed, so the export is checkable against
-    // the field; an unresolvable entry (no commissioning date to anchor
-    // it, or outside the T-year period) exports "not_set" with no such
-    // line, same as a blank field.
-    const augResolved = bessCalcAugYearResolved(c);
-    const augYearIsCalendar = c.augYear != null && Math.floor(c.augYear) >= 1000;
-    const augYearLines = [
-      `# augmentation_year=${augResolved.year != null ? augResolved.year : "not_set"}`,
-    ];
-    if (augResolved.year != null && augYearIsCalendar) {
-      augYearLines.push(`# augmentation_year_entered=${Math.floor(c.augYear)}`);
+    /* Derived headline figures for the parameter block (D84): the SAME
+       Metrics calls, inputs and conventions the result tiles use at
+       render time — commissioning-basis NPV re-anchored to the
+       valuation date in effect, convention-independent IRR, the DPI
+       ratio on the commissioning basis, discounted payback off
+       cf.rows' own discounted figures, LCOS with the observed s_lo
+       only when the observed feed is actually in use — plus MIRR,
+       which the DPI tile replaced on screen but the workbook (and now
+       this export) still carries. Financing figures only while the
+       debt layer is drawn (cf.d0 > 0), exactly the tile gate; a null
+       (no IRR, above-bracket equity IRR, no debt-service year)
+       exports as not_set. */
+    const yearsForCsv = cf.rows.filter((r) => r.year >= 1);
+    const cashflowsForCsv = yearsForCsv.map((r) => r.net_cashflow_gbp);
+    const frac1ForCsv = Metrics.yearFractionRemaining(inputs.y0);
+    const npvAtCommissioningCsv = Metrics.npv(cf.c0, cashflowsForCsv,
+      inputs.r, inputs.discounting, frac1ForCsv);
+    const pviForCsv = Metrics.pviAtCommissioning(cf.c0, cf.rows,
+      inputs.r, inputs.discounting, frac1ForCsv);
+    const d = {
+      npv: Metrics.reanchorNpv(npvAtCommissioningCsv, inputs.r, inputs.y0,
+        bessCalcEffectiveValuationDate(c)),
+      irr: Metrics.irr(cf.c0, cashflowsForCsv),
+      mirr: Metrics.mirr(cf.c0, cashflowsForCsv, inputs.r),
+      dpi: pviForCsv > 0 ? 1 + npvAtCommissioningCsv / pviForCsv : null,
+      payback: Metrics.discountedPayback(cf.rows),
+      lcos: Metrics.lcos(cf.c0, cf.rows, inputs.r, inputs.eta,
+        arb.observedFeedActive ? arb.sLo : null),
+      equityIrr: null, dscrMin: null, dscrAvg: null,
+    };
+    if (cf.d0 > 0) {
+      d.equityIrr = Metrics.irr(cf.c0 - cf.d0,
+        yearsForCsv.map((r) => r.equity_cashflow_gbp));
+      const tollTenorInForce = (inputs.tollShare > 0 && inputs.tollPrice > 0
+        && inputs.tollTenor >= 1) ? inputs.tollTenor : 0;
+      const ds = Metrics.dscrStats(cf.rows, tollTenorInForce);
+      if (ds) { d.dscrMin = ds.min; d.dscrAvg = ds.avg; }
     }
-    const header = [
-      "# BESS profitability calculator export. Illustrative economics from",
-      "# the assumptions below, anchored on what comparable units",
-      "# observably earned. Not investment advice, not a valuation, and",
-      "# not a forecast.",
-      `# power_mw=${c.power}`,
-      `# energy_mwh=${c.energy}`,
-      `# commissioning_date=${c.commission || "not_set"}`,
-      `# valuation_date=${c.valuationDate || "commissioning"}`,
-      `# useful_life_years=${c.life}`,
-      `# calculation_period_years=${inputs.T}`,
-      `# capex_gbpk_per_mw=${c.capex}`,
-      `# opex_gbpk_per_mw_yr=${c.opex != null ? c.opex : 0}`,
-      opexEscLine,
-      ...augYearLines,
-      `# augmentation_mwh=${c.augMwh != null ? c.augMwh : "not_set"}`,
-      `# augmentation_cost_gbpk_per_mwh=${c.augCostMwh != null ? c.augCostMwh : "not_set"}`,
-      `# augmentation_degradation_pct_per_yr=${c.augDelta != null
-        ? c.augDelta : "defaults_to_degradation"}`,
-      `# wacc_pct=${c.wacc}`,
-      `# discounting=${bessCalcDiscounting(c)}`,
-      `# connection_type=${c.connType}`,
-      `# tnuos_zone=${c.connType === "T" ? c.zone : "not_applicable"}`,
-      `# tnuos_load_factor_pct=${(bessCalcLoadFactor(c) * 100).toFixed(1)}`,
-      `# cycles_per_day=${c.cycles != null ? c.cycles : 0}`,
-      `# round_trip_efficiency_pct=${c.efficiency != null ? c.efficiency : 0}`,
-      `# degradation_pct_per_yr=${c.degradation != null ? c.degradation : 0}`,
-      `# availability_derate_pct_per_yr=${c.derate != null ? c.derate : 0}`,
-      `# availability_percentile=${c.percentile}`,
-      `# family_toggles=${BESS_FAMILY_CODES.map((f) =>
-        `${f}:${toggles[f] ? "on" : "off"}`).join(",")}`,
-      `# cannibalisation_pct_per_yr=${c.cannibalisation != null ? c.cannibalisation : 0}`,
-      `# s_hi_gbp_per_mwh=${arb.sHi != null ? arb.sHi.toFixed(2) : "not_available"}`,
-      `# s_lo_gbp_per_mwh=${arb.sLo != null ? arb.sLo.toFixed(2) : "not_available"}`,
-      `# capture_rate_pct=${c.captureRate != null ? c.captureRate : "not_set"}`,
-      `# manual_spread_gbp_per_mwh=${c.manualSpread != null ? c.manualSpread : "not_set"}`,
-      `# tnuos_charging_year=FY${bessUnitsPayload.tnuos.year_fy}`,
-      `# tnuos_publication=${bessUnitsPayload.tnuos.publication}`,
-    ].join("\n");
 
-    const csv = header + "\n" + Metrics.toCsv(columns);
-    const blob = new Blob([csv], { type: "text/csv" });
+    const paramRows = bessCalcCsvParamRows({
+      c, inputs, toggles, arb,
+      opexEscDefault: bessCalcOpexEscDefault(bessUnitsPayload),
+      cpiPeriod: bessUnitsPayload.inflation.cpi_period,
+      augResolved: bessCalcAugYearResolved(c),
+      tnuos: bessUnitsPayload.tnuos, d,
+    });
+    // The note row's caveat is the parameter block's one free-text
+    // value; RFC 4180 quoting keeps its commas out of the column
+    // structure (the LDES serialiser, verbatim). One blank separator
+    // row, then the UNCHANGED year table over the engine columns.
+    const paramCsv = paramRows.map((row) => row.map((v) =>
+      typeof v === "string" && v.includes(",") ? `"${v}"` : v)
+      .join(",")).join("\n");
+    const csv = paramCsv + "\n\n" + Metrics.toCsv(columns);
+    // "\uFEFF": the UTF-8 BOM. Excel offered a bare UTF-8 CSV guesses a
+    // legacy codepage and mangles anything non-ASCII (the 2026-08-29
+    // mojibake report); the BOM makes the encoding explicit.
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `gb_bess_calculator_${c.percentile}.csv`;
@@ -3995,6 +4406,14 @@ const Charts = (() => {
      Augmentation year onward shifts down by 1. As before, the DCF sheet
      references these cells only symbolically via `Assumptions!$E$${A.xxx}`,
      so this map is the whole change. */
+  /* Toll and financing pass (plan/10 D54-D66, 2026-08-29): section 7
+     "Route to market and financing" is APPENDED below Network (rows
+     63-71) precisely so no existing row above it moves — six always-
+     numeric inputs (0 when unset, Source "not set", the capture-rate
+     convention; percentages stored as FRACTIONS, the wacc/captureRate
+     convention this sheet already uses everywhere) and two derived
+     cells, the debt drawdown D0 and the level-annuity debt service the
+     DCF sheet's Financing section reads. */
   const BESS_AROW = {
     power: 7, energy: 8, duration: 9, commission: 10, period: 11,
     capex: 14, opex: 15, opexEsc: 16, augYear: 17, augMwh: 18, augCostMwh: 19,
@@ -4007,6 +4426,9 @@ const Charts = (() => {
     sHi: 47, sLo: 48, captureRate: 49, manualSpread: 50, margin: 51,
     connType: 54, zone: 55, loadFactor: 56,
     zPeak: 57, zSharedYr: 58, zNotSharedYr: 59, zResidual: 60, zTotal: 61,
+    tollShare: 64, tollPrice: 65, tollTenor: 66,
+    gearing: 67, costOfDebt: 68, debtTenor: 69,
+    debtD0: 70, debtSvc: 71,
   };
 
   /* DCF-sheet row map, taken from the M3 build spec's own object (its
@@ -4076,6 +4498,21 @@ const Charts = (() => {
      `dpi`, are inserted into the results block after `payback`
      (Discounted payback replaces Simple payback in place), pushing
      `lcos` and everything below it down by 2. */
+  /* Toll and financing pass (plan/10 D54-D66, 2026-08-29): two NEW
+     revenue rows — the tolled-share-in-force helper directly above a
+     Toll revenue row, kept contiguous with Availability/Arbitrage so
+     the Total revenue SUM still spans one block — push everything from
+     the costs banner down by 2, and a NEW numbered "Financing" section
+     (banner + CFADS, the debt interest/principal/service walk, the
+     declining balance, a numeric service flag, per-year DSCR and the
+     equity cash flow) sits between Net cash flow and Discounting,
+     pushing Discounting onward down by 10 more (+12 in all). Three new
+     headline rows (equity IRR, minimum and average DSCR) append to the
+     results block after LCOS, so the checks shift by +15. The section
+     banners below Financing renumber (Discounting 4->5, Headline
+     results 5->6, Checks 6->7). tests/test_bess_calculator.py's
+     hardcoded row assertions were updated alongside, as with every
+     previous layout change. */
   const BESS_DROW = {
     genBanner: 4,
     genPeriod: 5, genCommission: 6, genWacc: 7, genMidflag: 8, genFrac1: 9,
@@ -4084,19 +4521,22 @@ const Charts = (() => {
     calYear: 13,
     revBanner: 15, frac: 16, gamma: 17, tr1: 18, tr2: 19, wage: 20,
     usable: 21, discharged: 22,
-    avail: 24, arb: 25, rev: 26,
-    costsBanner: 28, opex: 29, tnuos: 30, cost: 31,
-    netop: 33, capex: 34, netcf: 35,
-    discBanner: 37, permid: 38, perend: 39,
-    perapp: 40, factor: 41, pv: 42, cumpv: 43,
-    flag: 45, factorEnd: 46, charge: 47, lcosCost: 48, lcosEnergy: 49,
-    mirrPos: 50, mirrNeg: 51,
-    pviRow: 52,
-    resultsBanner: 54, npv: 55, irr: 56, mirr: 57, payback: 58,
-    pvi: 59, dpi: 60, lcos: 61,
-    checksBanner: 63, npvChk: 64,
-    npvAtCommission: 65,
-    mirrChk: 66,
+    tollShareInForce: 24, toll: 25, avail: 26, arb: 27, rev: 28,
+    costsBanner: 30, opex: 31, tnuos: 32, cost: 33,
+    netop: 35, capex: 36, netcf: 37,
+    finBanner: 39, cfads: 40, debtInterest: 41, debtPrincipal: 42,
+    debtService: 43, debtBalance: 44, svcFlag: 45, dscr: 46, equityCf: 47,
+    discBanner: 49, permid: 50, perend: 51,
+    perapp: 52, factor: 53, pv: 54, cumpv: 55,
+    flag: 57, factorEnd: 58, charge: 59, lcosCost: 60, lcosEnergy: 61,
+    mirrPos: 62, mirrNeg: 63,
+    pviRow: 64,
+    resultsBanner: 66, npv: 67, irr: 68, mirr: 69, payback: 70,
+    pvi: 71, dpi: 72, lcos: 73,
+    equityIrr: 74, dscrMin: 75, dscrAvg: 76,
+    checksBanner: 78, npvChk: 79,
+    npvAtCommission: 80,
+    mirrChk: 81,
   };
 
   function bessColLetter(n) {
@@ -4245,6 +4685,14 @@ const Charts = (() => {
     cover.E10 = F(`DCF!$E$${D.dpi}`, X.link1dp);
     cover.C11 = S("Indicative LCOS (£/MWh)", X.labelBold);
     cover.E11 = F(`DCF!$E$${D.lcos}`, X.linkNum);
+    // Toll and financing pass (plan/10 D55): two geared mirrors under
+    // the six project figures, reading the DCF sheet's own guarded
+    // headline cells — an ungeared model shows their "n/a (ungeared)"
+    // named state here too, never a blank or a zero.
+    cover.C12 = S("Equity IRR", X.labelBold);
+    cover.E12 = F(`DCF!$E$${D.equityIrr}`, X.linkPct);
+    cover.C13 = S("Min DSCR (x)", X.labelBold);
+    cover.E13 = F(`DCF!$E$${D.dscrMin}`, X.link1dp);
 
     const notes = [
       "Blue cells on a yellow fill are inputs. Every other number is a formula.",
@@ -4264,9 +4712,11 @@ const Charts = (() => {
         "compounded forward to it. The commissioning-anchored figure is kept " +
         "as a check row on the DCF sheet; the CSV export's discounted " +
         "columns remain commissioning-anchored.",
-      "Convention: real (uninflated) sterling, pre-tax, ungeared. Enter a " +
-        "real pre-tax WACC. No terminal or residual value is included: the " +
-        "calculation period is the whole life modelled.",
+      "Convention: real (uninflated) sterling, pre-tax. Enter a real " +
+        "pre-tax WACC. Project NPV and IRR are ungeared; the Financing " +
+        "section adds a debt layer and an equity cash flow beside them " +
+        "without touching them. No terminal or residual value is included: " +
+        "the calculation period is the whole life modelled.",
       "Year 0 and year 1 can share a calendar year: year 0 is the " +
         "commissioning instant, year 1 the remainder of that calendar year.",
       "TNUoS is held flat at the stated charging year's tariffs for the whole " +
@@ -4275,6 +4725,11 @@ const Charts = (() => {
         "net of charging (s_hi less s_lo / eta), and cycling attributed to " +
         "availability services is treated as energy-neutral. LCOS, by " +
         "contrast, prices every discharged MWh's charge at s_lo.",
+      "The toll is flat real over its tenor and never degraded; the " +
+        "merchant share alone carries degradation, cannibalisation and the " +
+        "derate. The debt layer repays as a level annuity with no balloon: " +
+        "a debt tenor past the calculation period leaves principal " +
+        "outstanding.",
       `Data window: ${payload.window.from} to ${payload.window.to}`,
       `Calculator support data built: ${payload.built_at}`,
       `TNUoS charging year: FY${payload.tnuos.year_fy} ` +
@@ -4285,8 +4740,11 @@ const Charts = (() => {
     // Owner's frame revision (2026-08-01, PVI/DPI pass): the headline
     // block grew a sixth row (C6-C11, was C6-C10), so notes and
     // everything below it shift down by 1 to keep the blank spacer row
-    // between the headline block and the notes.
-    notes.forEach((text, i) => { cover["C" + (13 + i)] = S(text, X.comment); });
+    // between the headline block and the notes. Toll and financing pass
+    // (plan/10): two more headline rows (C12-C13), so the notes start
+    // at C15 now — the style-map block below already keys off
+    // notes.length, so it follows on its own.
+    notes.forEach((text, i) => { cover["C" + (15 + i)] = S(text, X.comment); });
 
     /* The owner's "Cell style map", verbatim: a swatch cell in column C
        carrying the style, its plain-English name in column D. Kept
@@ -4294,7 +4752,7 @@ const Charts = (() => {
        use, because it is the house vocabulary, not a key to this one
        file. `mapRow` writes both cells; the swatch is a real value or
        formula so the number format shows too. */
-    const mapTop = 13 + notes.length + 1;
+    const mapTop = 15 + notes.length + 1;
     const mapRow = (row, swatch, text, textStyle) => {
       if (swatch) cover["C" + row] = swatch;
       cover["D" + row] = S(text, textStyle == null ? X.mapText : textStyle);
@@ -4529,6 +4987,46 @@ const Charts = (() => {
         `$E$${A.zPeak}+$E$${A.loadFactor}*($E$${A.zSharedYr}+$E$${A.zNotSharedYr})` +
         `+$E$${A.zResidual})`, X.formulaNum), "derived");
 
+    // Toll and financing pass (plan/10 D54-D66): six always-numeric
+    // inputs on the capture-rate convention (0 when unset, the Source
+    // cell reads "not set"; percentages stored as FRACTIONS like wacc
+    // and captureRate above — the engine-resolved inputs.* values are
+    // written directly). The two derived cells below them are what the
+    // DCF sheet's Financing section reads: the drawdown D0 and the
+    // level annuity retiring it — principal x rate / (1-(1+rate)^-n)
+    // with the rate-0 straight-line branch spelled out, POWER's
+    // exponent written 0-tenor because the closed evaluator grammar
+    // (ops/xlsx_eval.py) has no unary minus.
+    section(63, 7, "Route to market and financing");
+    field(A.tollShare, "Tolled share of revenue", "%",
+      N(inputs.tollShare, X.inputPct),
+      c.tollShare != null ? "assumption" : "not set");
+    field(A.tollPrice, "Toll price", "GBPk/MW/yr",
+      N(inputs.tollPrice, X.inputNum),
+      c.tollPrice != null ? "assumption" : "not set");
+    field(A.tollTenor, "Toll tenor", "years",
+      N(inputs.tollTenor, X.inputNum),
+      c.tollTenor != null ? "assumption" : "not set");
+    field(A.gearing, "Gearing", "% of CAPEX",
+      N(inputs.gearing, X.inputPct),
+      c.gearing != null ? "assumption" : "not set");
+    field(A.costOfDebt, "Cost of debt", "% real pre-tax",
+      N(inputs.costOfDebt != null ? inputs.costOfDebt : 0, X.inputPct),
+      c.costOfDebt != null ? "assumption" : "not set");
+    field(A.debtTenor, "Debt tenor", "years",
+      N(inputs.debtTenor, X.inputNum),
+      c.debtTenor != null ? "assumption" : "not set");
+    field(A.debtD0, "Debt drawdown (D0)", "GBP",
+      F(`$E$${A.gearing}*$E$${A.capex}*1000*$E$${A.power}`, X.formulaNum),
+      "derived");
+    field(A.debtSvc, "Debt service, level annuity", "GBP/yr",
+      F(`IF($E$${A.debtTenor}<=0,0,IF($E$${A.costOfDebt}=0,` +
+        `$E$${A.debtD0}/$E$${A.debtTenor},` +
+        `$E$${A.debtD0}*$E$${A.costOfDebt}/` +
+        `(1-POWER(1+$E$${A.costOfDebt},0-$E$${A.debtTenor}))))`,
+        X.formulaNum),
+      "derived");
+
     /* ------------------------------------------------------------ DCF */
     const d = {};
     d.C2 = S("DCF", X.title);
@@ -4701,15 +5199,36 @@ const Charts = (() => {
       (col) => `(${col}${D.tr1}+${col}${D.tr2})*${col}${D.frac}`, X.formulaNum, 0);
     yearRow(D.discharged, "Discharged energy", "MWh",
       (col) => `365*Assumptions!$E$${A.cycles}*${col}${D.usable}`, X.formulaNum, 0);
+    // Toll and financing pass (plan/10 D58/D59): the tolled share in
+    // force is the activation triple (share, price, tenor all positive)
+    // AND the year-number header inside the tenor, resolved once in a
+    // visible helper row every revenue formula below reads — the toll
+    // itself is flat real, pro-rated only by the year-1 commissioning
+    // stub (never degraded, cannibalised or derated: availability
+    // guarantees sit with the operator), and the merchant pair is
+    // scaled by the (1 - share) untolled remainder. Toll through
+    // Arbitrage stay one contiguous block so Total revenue is still a
+    // single SUM.
+    yearRow(D.tollShareInForce, "Tolled share in force", "x",
+      (col) => `IF(AND(Assumptions!$E$${A.tollShare}>0,` +
+        `Assumptions!$E$${A.tollPrice}>0,` +
+        `Assumptions!$E$${A.tollTenor}>=1,` +
+        `${col}$${D.hdr}<=Assumptions!$E$${A.tollTenor}),` +
+        `Assumptions!$E$${A.tollShare},0)`, X.formula2dp, 0);
+    yearRow(D.toll, "Toll revenue", "GBP",
+      (col) => `Assumptions!$E$${A.tollPrice}*1000*Assumptions!$E$${A.power}*` +
+        `${col}${D.tollShareInForce}*${col}${D.frac}`, X.formulaNum, 0);
     yearRow(D.avail, "Availability revenue", "GBP",
       (col) => `Assumptions!$E$${A.availRevYr}*1000*Assumptions!$E$${A.power}*` +
         `${col}${D.gamma}*${col}${D.frac}*` +
-        `(1-Assumptions!$E$${A.derate})^${col}${D.wage}`, X.formulaNum, 0);
+        `(1-Assumptions!$E$${A.derate})^${col}${D.wage}*` +
+        `(1-${col}${D.tollShareInForce})`, X.formulaNum, 0);
     yearRow(D.arb, "Arbitrage revenue", "GBP",
       (col) => `${col}${D.discharged}*Assumptions!$E$${A.margin}*` +
-        `Assumptions!$E$${A.captureRate}*${col}${D.gamma}`, X.formulaNum, 0);
+        `Assumptions!$E$${A.captureRate}*${col}${D.gamma}*` +
+        `(1-${col}${D.tollShareInForce})`, X.formulaNum, 0);
     yearRow(D.rev, "Total revenue", "GBP",
-      (col) => `SUM(${col}${D.avail}:${col}${D.arb})`, X.formulaNum, 0);
+      (col) => `SUM(${col}${D.toll}:${col}${D.arb})`, X.formulaNum, 0);
     dcfBanner(D.costsBanner, 3, "Costs");
     // OPEX escalation (owner request, 2026-08-01): POWER(1+esc, year-1)
     // so year 1 is always the unescalated base, matching
@@ -4750,7 +5269,69 @@ const Charts = (() => {
       d[col + D.netcf] = F(`${col}${D.netop}+${col}${D.capex}`, X.keyRow);
     }
 
-    dcfBanner(D.discBanner, 4, "Discounting");
+    /* Financing section (plan/10 D55/D60/D61): the debt layer sits
+       BELOW the project net line and never touches it — project NPV,
+       IRR, MIRR, DPP, PVI, DPI and LCOS all keep reading the ungeared
+       rows above. CFADS is a visible link to net cash flow (the
+       in-model honest reading, D60: augmentation capex included in its
+       year; lenders typically carve funded capex out, which the
+       methodology states rather than silently adopting). The walk is
+       contractual-annual (D61): interest reads the PREVIOUS column's
+       closing balance (year 0's balance is the Assumptions D0 cell, so
+       there is no circularity), principal is the level annuity less
+       interest, and the balance steps down by subtraction; a debt
+       tenor past the calculation period simply stops at the last
+       column with principal outstanding — no synthetic balloon. The
+       service flag is kept NUMERIC (0/1) because the average-DSCR
+       headline SUMPRODUCTs over it and the evaluator grammar's
+       SUMPRODUCT needs all-numeric operands; the per-year DSCR row, by
+       contrast, blanks ("") the years with no service due, which both
+       Excel's MIN and the evaluator's ignore. */
+    dcfBanner(D.finBanner, 4, "Financing");
+    yearRow(D.cfads, "CFADS (equals net cash flow before financing)", "GBP",
+      (col) => `${col}${D.netcf}`, X.formulaNum,
+      F(`F${D.netcf}`, X.formulaNum));
+    d["C" + D.debtInterest] = S("Debt interest", X.label);
+    d["D" + D.debtInterest] = S("GBP", X.unitsDcf);
+    d["F" + D.debtInterest] = N(0, X.hardNum);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n), prev = bessColLetter(5 + n);
+      d[col + D.debtInterest] = F(
+        `IF(${col}$${D.hdr}<=Assumptions!$E$${A.debtTenor},` +
+        `${prev}${D.debtBalance}*Assumptions!$E$${A.costOfDebt},0)`,
+        X.formulaNum);
+    }
+    yearRow(D.debtPrincipal, "Debt principal repayment", "GBP",
+      (col) => `IF(${col}$${D.hdr}<=Assumptions!$E$${A.debtTenor},` +
+        `Assumptions!$E$${A.debtSvc}-${col}${D.debtInterest},0)`,
+      X.formulaNum, 0);
+    yearRow(D.debtService, "Debt service", "GBP",
+      (col) => `${col}${D.debtInterest}+${col}${D.debtPrincipal}`,
+      X.formulaNum, 0);
+    d["C" + D.debtBalance] = S("Debt balance, end of year", X.label);
+    d["D" + D.debtBalance] = S("GBP", X.unitsDcf);
+    d["F" + D.debtBalance] = F(`Assumptions!$E$${A.debtD0}`, X.linkNum);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n), prev = bessColLetter(5 + n);
+      d[col + D.debtBalance] = F(
+        `${prev}${D.debtBalance}-${col}${D.debtPrincipal}`, X.formulaNum);
+    }
+    yearRow(D.svcFlag, "Debt service due this year", "flag",
+      (col) => `IF(${col}${D.debtService}>0,1,0)`, X.formulaNum, 0);
+    yearRow(D.dscr, "DSCR (CFADS / debt service)", "x",
+      (col) => `IF(${col}${D.debtService}>0,` +
+        `${col}${D.netcf}/${col}${D.debtService},"")`, X.formula2dp,
+      S("", X.hardNum));
+    d["C" + D.equityCf] = S("Equity cash flow", X.labelBold);
+    d["D" + D.equityCf] = S("GBP", X.unitsBold);
+    d["F" + D.equityCf] = F(`F${D.netcf}+Assumptions!$E$${A.debtD0}`, X.keyRow);
+    for (let n = 1; n <= T; n++) {
+      const col = bessColLetter(6 + n);
+      d[col + D.equityCf] = F(
+        `${col}${D.netcf}-${col}${D.debtService}`, X.keyRow);
+    }
+
+    dcfBanner(D.discBanner, 5, "Discounting");
     yearRow(D.permid, "Discount period, mid-year", "x",
       (col) => `IF(${col}$${D.hdr}=1,1-$D$${D.genFrac1}/2,${col}$${D.hdr}-0.5)`, X.formula2dp, 0);
     yearRow(D.perend, "Discount period, end of period", "x",
@@ -4880,7 +5461,7 @@ const Charts = (() => {
       d[col + D.pviRow] = F(`-(${col}${D.capex})*${col}${D.factor}`, X.formulaNum);
     }
 
-    dcfBanner(D.resultsBanner, 5, "Headline results");
+    dcfBanner(D.resultsBanner, 6, "Headline results");
     // Valuation-date-anchored grid pass (owner decision, 2026-08-01),
     // fixing a hand-edit bug: the row above is already valuation-
     // anchored via the Discount factor row, so the headline is a plain
@@ -4934,7 +5515,39 @@ const Charts = (() => {
     d["E" + D.lcos] = F(
       `IFERROR((-F${D.capex}+SUM(${g1}${D.lcosCost}:${lastCol}${D.lcosCost}))/` +
       `SUM(${g1}${D.lcosEnergy}:${lastCol}${D.lcosEnergy}),"n/a")`, X.keyNum);
-    dcfBanner(D.checksBanner, 6, "Checks");
+    // Toll and financing pass (plan/10 D55/D60): three geared headline
+    // rows, each guarded by the Assumptions D0 cell so an ungeared
+    // model reads a named state rather than an error or a fake number
+    // (the "no IRR"/"no payback" precedent above). Equity IRR is the
+    // NATIVE IRR() over the equity row including year 0 (drawdown less
+    // capex). Minimum DSCR is a plain MIN over the per-year DSCR row:
+    // its no-service years hold "", which MIN ignores in Excel and in
+    // the evaluator alike. Average DSCR is sum-of-CFADS over
+    // sum-of-service (equal to the mean of annual DSCRs for a level
+    // annuity, D60) via SUMPRODUCT over the numeric service flag —
+    // never over the DSCR row itself, whose "" cells would misalign
+    // SUMPRODUCT's operands.
+    d["C" + D.equityIrr] = S("Equity IRR (end-of-period basis)", X.labelBold);
+    d["D" + D.equityIrr] = S("%", X.unitsBold);
+    d["E" + D.equityIrr] = F(
+      `IF(Assumptions!$E$${A.debtD0}=0,"n/a (ungeared)",` +
+      `IFERROR(IRR(F${D.equityCf}:${lastCol}${D.equityCf}),"n/a"))`,
+      X.keyPct);
+    d["C" + D.dscrMin] = S("Minimum DSCR", X.labelBold);
+    d["D" + D.dscrMin] = S("x", X.unitsBold);
+    d["E" + D.dscrMin] = F(
+      `IF(Assumptions!$E$${A.debtD0}=0,"n/a (ungeared)",` +
+      `IFERROR(MIN(${g1}${D.dscr}:${lastCol}${D.dscr}),"n/a"))`,
+      X.keyMult);
+    d["C" + D.dscrAvg] = S("Average DSCR", X.labelBold);
+    d["D" + D.dscrAvg] = S("x", X.unitsBold);
+    d["E" + D.dscrAvg] = F(
+      `IF(Assumptions!$E$${A.debtD0}=0,"n/a (ungeared)",` +
+      `IFERROR(SUMPRODUCT(${g1}${D.svcFlag}:${lastCol}${D.svcFlag},` +
+      `${g1}${D.netcf}:${lastCol}${D.netcf})/` +
+      `SUM(${g1}${D.debtService}:${lastCol}${D.debtService}),"n/a"))`,
+      X.keyMult);
+    dcfBanner(D.checksBanner, 7, "Checks");
     d["C" + D.npvChk] = S("Check: Excel NPV() on the end-of-period convention",
       X.check);
     d["D" + D.npvChk] = S("GBP", X.check);
@@ -5029,6 +5642,138 @@ const Charts = (() => {
     URL.revokeObjectURL(a.href);
   }
 
+  /* The deterministic "Reading:" line under the tiles (plan/10 D83,
+     owner request 2026-08-29). A pure function over figures the card
+     has ALREADY computed this render — plain conditional templates,
+     evaluated in the page, with no model call, no API and no network
+     behind them: the owner asked for interpretive annotations and
+     explicitly not for per-user LLM costs, and the diagnosis space
+     here is small and enumerable, so rules cover it. Rules fire only
+     when their inputs exist, nothing divides by a zero or a null, and
+     at most the three highest-priority firing sentences render.
+     `s` (all null-safe unless stated):
+       npv/irr headline figures (£ / fraction); wacc fraction, required;
+       dscrRows [{year, dscr, net}] over the years debt service is due
+       ([] when ungeared); targetDscr the sizing target (x) or null;
+       stubFrac year 1's commissioning fraction (1 when no date);
+       augYear the resolved active augmentation year or null;
+       tollPrice £k/MW/yr (0 when no toll in force); merchantY1Rate the
+       implied un-stubbed year-1 merchant rate £k/MW/yr (availability +
+       arbitrage per MW before toll scaling); eqIrr fraction;
+       costOfDebt fraction.
+     Returns the HTML string, or null when no rule fires. */
+  function bessCalcReading(s) {
+    if (!s || s.npv == null || !Number.isFinite(s.wacc)) return null;
+    const pct = (v) => `${(v * 100).toFixed(1)}%`;
+    const pp = (a, b) => `${Math.abs((a - b) * 100).toFixed(1)}pp`;
+    const x2 = (v) => `${v.toFixed(2)}x`;
+    const sentences = [];
+
+    // 1. Viability: NPV sign and IRR against the WACC.
+    const pos = s.npv >= 0;
+    if (s.irr != null) {
+      const clears = s.irr >= s.wacc;
+      if (pos && clears) {
+        sentences.push(`The project clears the ${pct(s.wacc)} WACC by ` +
+          `${pp(s.irr, s.wacc)} (IRR ${pct(s.irr)}), and the NPV is ` +
+          `positive.`);
+      } else if (!pos && !clears) {
+        sentences.push(`The project does not clear the ${pct(s.wacc)} ` +
+          `WACC — the ${pct(s.irr)} IRR is ${pp(s.irr, s.wacc)} short, ` +
+          `and the NPV is negative.`);
+      } else {
+        // NPV follows the card's discounting convention; IRR is always
+        // plain annual compounding — this close to break-even the two
+        // can genuinely split, and saying so beats picking a winner.
+        sentences.push(`NPV is ${pos ? "positive" : "negative"} while ` +
+          `the ${pct(s.irr)} IRR sits ${pp(s.irr, s.wacc)} ` +
+          `${clears ? "above" : "below"} the ${pct(s.wacc)} WACC — the ` +
+          `discounting convention can split the two this close to ` +
+          `break-even.`);
+      }
+    } else {
+      sentences.push(`NPV is ${pos ? "positive" : "negative"}, and no ` +
+        `IRR exists for this cash-flow shape.`);
+    }
+
+    // 2. DSCR diagnosis — name WHICH years break, not just the minimum.
+    const rowsD = s.dscrRows || [];
+    if (rowsD.length) {
+      let min = rowsD[0];
+      rowsD.forEach((row) => { if (row.dscr < min.dscr) min = row; });
+      const y1 = rowsD.find((row) => row.year === 1);
+      const augRow = s.augYear != null
+        ? rowsD.find((row) => row.year === s.augYear && row.net < 0)
+        : null;
+      // The stub comparison excludes an augmentation-explained year:
+      // its one-off capex can sit far below every operating year's
+      // cover, and it has its own clause — leaving it in would mask
+      // the stub diagnosis exactly when both apply.
+      const later = rowsD.filter((row) => row.year >= 2
+        && !(augRow && row.year === augRow.year));
+      const minLater = later.length
+        ? Math.min(...later.map((row) => row.dscr)) : null;
+      const stub = y1 != null && s.stubFrac < 0.9 && minLater != null
+        && y1.dscr < minLater;
+      const clauses = [];
+      if (stub) {
+        clauses.push(`year 1's ${x2(y1.dscr)} cover is a part-year ` +
+          `commissioning stub charged a full annual debt payment — a ` +
+          `convention, not a cash shortfall (from year 2 the minimum ` +
+          `is ${x2(minLater)})`);
+      }
+      if (augRow) {
+        clauses.push(`year ${augRow.year}'s augmentation spend falls ` +
+          `inside the debt tenor, taking that year's cover to ` +
+          `${x2(augRow.dscr)}`);
+      }
+      if (clauses.length) {
+        const first = clauses[0].charAt(0).toUpperCase()
+          + clauses[0].slice(1);
+        sentences.push(clauses.length > 1
+          ? `${first}; and ${clauses[1]}.` : `${first}.`);
+      } else {
+        const hasTarget = s.targetDscr != null && s.targetDscr > 0;
+        const threshold = hasTarget ? s.targetDscr : 1;
+        if (min.dscr < threshold) {
+          sentences.push(`The minimum DSCR of ${x2(min.dscr)} ` +
+            `(year ${min.year}) sits below ` + (hasTarget
+              ? `your ${x2(s.targetDscr)} target.`
+              : `1.00x — that year's cash flow does not cover its ` +
+                `debt service.`));
+        } else {
+          sentences.push(`Every service year covers its debt — minimum ` +
+            `DSCR ${x2(min.dscr)}` + (hasTarget
+              ? ` against your ${x2(s.targetDscr)} target.` : `.`));
+        }
+      }
+    }
+
+    // 3. Toll price against the implied year-1 merchant rate.
+    if (s.tollPrice > 0 && s.merchantY1Rate > 0) {
+      const share = Math.round(
+        (s.tollPrice / s.merchantY1Rate) * 100);
+      sentences.push(`The toll prices at ${share}% of the implied ` +
+        `year-1 merchant rate — ` + (s.tollPrice >= s.merchantY1Rate
+          ? `above it, so on these inputs the trade of upside for ` +
+            `certainty favours the tolled share.`
+          : `below it, so on these inputs the tolled share gives up ` +
+            `expected revenue for its certainty.`));
+    }
+
+    // 4. Leverage direction, equity IRR against project IRR.
+    if (s.eqIrr != null && s.irr != null && s.costOfDebt != null) {
+      sentences.push(s.eqIrr >= s.irr
+        ? `Equity IRR sits above project IRR — leverage is working for ` +
+          `the equity at ${pct(s.costOfDebt)} debt.`
+        : `Equity IRR sits below project IRR — at ${pct(s.costOfDebt)} ` +
+          `debt, the leverage is amplifying the shortfall.`);
+    }
+
+    if (!sentences.length) return null;
+    return `<b>Reading:</b> ${sentences.slice(0, 3).join(" ")}`;
+  }
+
   function bessCalculator() {
     wireBessCalc();
     ensureBessUnitsLoaded();
@@ -5052,6 +5797,7 @@ const Charts = (() => {
     // captionEl: a stale results panel missing these two must still
     // render the five headline figures, not refuse the whole card.
     const mixEl = document.getElementById("bess-calc-mix");
+    const readingEl = document.getElementById("bess-calc-reading");
     const sensEl = document.getElementById("bess-calc-sens");
     // The chart-view toggle row (D20, Feature 2): hidden together with
     // chartEl in every branch below, never shown while the chart itself
@@ -5060,6 +5806,10 @@ const Charts = (() => {
     const chartToggleEl = document.getElementById("bess-calc-chart-toggle");
     const clearExtras = () => {
       if (mixEl) { mixEl.textContent = ""; mixEl.classList.add("hidden"); }
+      if (readingEl) {
+        readingEl.textContent = "";
+        readingEl.classList.add("hidden");
+      }
       if (sensEl) { sensEl.innerHTML = ""; sensEl.classList.add("hidden"); }
       if (chartToggleEl) chartToggleEl.classList.add("hidden");
     };
@@ -5205,6 +5955,66 @@ const Charts = (() => {
     const paybackNote = paybackValue == null
       ? "discounted at WACC" : `discounted at WACC · ${inputs.T} yr modelled`;
 
+    /* Route to market & financing tiles (plan/10 D55): rendered only
+       while the debt layer is actually drawn (d0 > 0) — badge only what
+       is active. A toll alone already flows through NPV/IRR via the
+       blend and earns no tile of its own; project NPV/IRR above stay
+       ungeared either way (the layer sits below the project line). */
+    const tollTenorInForce = (inputs.tollShare > 0 && inputs.tollPrice > 0
+      && inputs.tollTenor >= 1) ? inputs.tollTenor : 0;
+    let financeTiles = "";
+    // Captured for the D83 reading line below — the tile block's own
+    // equity IRR, never a second computation.
+    let readingEqIrr = null;
+    if (cf.d0 > 0) {
+      const eqFlows = years.map((r) => r.equity_cashflow_gbp);
+      const c0e = cf.c0 - cf.d0;
+      const eqIrr = Metrics.irr(c0e, eqFlows);
+      readingEqIrr = eqIrr;
+      const gearNote = `geared ${Math.round(inputs.gearing * 100)}%, ` +
+        `debt ${(inputs.costOfDebt * 100).toFixed(1)}%`;
+      let eqValue, eqNote, eqNeutral = false;
+      if (eqIrr != null) {
+        eqValue = `${(eqIrr * 100).toFixed(1)}%`;
+        // Read against the PROJECT IRR in the tile two to its left, the
+        // leverage question this tile exists to answer — irrNote's own
+        // vs-the-neighbour idiom. Bare gearing facts when the project
+        // has no IRR to read against.
+        eqNote = irrValue != null
+          ? `${eqIrr >= irrValue ? "+" : "-"}${
+              Math.abs((eqIrr - irrValue) * 100).toFixed(1)}pp vs ` +
+            `project IRR · ${gearNote}`
+          : gearNote;
+      } else if (Metrics.npv(c0e, eqFlows, 1.5) > 0) {
+        // Metrics.irr brackets [-0.99, 1.50]; a heavily geared thin
+        // equity slice can genuinely return more than 150% — stated
+        // rather than misreported as "no IRR" (plan/10's known quirk).
+        eqValue = ">150%";
+        eqNote = `above the 150% solver bracket · ${gearNote}`;
+      } else {
+        eqValue = "n/a";
+        eqNeutral = true;
+        eqNote = `no equity IRR · ${gearNote}`;
+      }
+      const ds = Metrics.dscrStats(cf.rows, tollTenorInForce);
+      const x2 = (v) => `${v.toFixed(2)}x`;
+      const dscrNote = ds
+        ? `avg ${x2(ds.avg)}` +
+          (tollTenorInForce >= 1 && ds.avgToll != null
+            ? ` · toll yrs ${x2(ds.avgToll)}` + (ds.avgPost != null
+                ? ` / merchant ${x2(ds.avgPost)}` : "")
+            : "")
+        : "no year carries debt service";
+      financeTiles = `
+      <div class="calc-stat"><span class="cs-label">Equity IRR</span>
+        <span class="cs-value${eqNeutral ? " neutral" : ""}">${eqValue}</span>
+        <span class="cs-note">${eqNote}</span></div>
+      <div class="calc-stat"><span class="cs-label">DSCR</span>
+        <span class="cs-value${ds ? "" : " neutral"}">${
+          ds ? `min ${x2(ds.min)}` : "n/a"}</span>
+        <span class="cs-note">${dscrNote}</span></div>`;
+    }
+
     headlineEl.innerHTML = `
       <div class="calc-stat"><span class="cs-label">NPV</span>
         <span class="cs-value">${fmtGbp(npvValue)}</span>
@@ -5226,7 +6036,7 @@ const Charts = (() => {
         <span class="cs-value">${fmtLcos(lcosValue)}</span>
         <span class="cs-note">${lcosValue == null ? "" : (lcosSlo != null
           ? "includes charging-energy cost (observed s_lo)"
-          : "excludes charging-energy cost (no observed s_lo in use)")}</span></div>`;
+          : "excludes charging-energy cost (no observed s_lo in use)")}</span></div>${financeTiles}`;
 
     /* Owner review, 2026-08-01: the year-1 revenue split. Year 1 is the
        commissioning stub whenever a commissioning date is set — the
@@ -5241,23 +6051,53 @@ const Charts = (() => {
       const y1 = cf.rows[1];
       const av = y1 ? y1.availability_gbp : 0;
       const ar = y1 ? y1.arbitrage_gbp : 0;
+      const tl = y1 ? y1.toll_gbp : 0;
       const fig = (v) => `<span class="cm-fig">${fmtGbp(v)}</span>`;
       const ceilingNow = Metrics.arbitrageCeiling(
         inputs.sHi, inputs.sLo, inputs.eta);
       const caveat = `the arbitrage figure is your ` +
         `${((inputs.k || 0) * 100).toFixed(0)}% capture rate applied to a ` +
         "perfect-foresight ceiling, not a forecast";
+      const whyNil = !(inputs.k > 0) ? "no capture rate set"
+        : ceilingNow == null ? "no arbitrage ceiling in use"
+        : !(inputs.c > 0) ? "no cycles per day set, so nothing is discharged"
+        : "nothing at these assumptions";
       let mixHtml;
-      if (av === 0 && ar === 0) {
+      if (tl > 0) {
+        /* Toll branch (plan/10 D58): the toll leads, and the merchant
+           figures are stated for what they now are — the untolled
+           share's, not the whole asset's. Same percentage discipline as
+           the merchant-only branches below: shares only when every
+           component shown is positive. */
+        const untolled = Math.round((1 - inputs.tollShare) * 100);
+        const scaleNote = "the merchant lines are scaled to the " +
+          `untolled ${untolled}% share`;
+        if (av === 0 && ar === 0) {
+          mixHtml = `Year 1 revenue: toll ${fig(tl)} (100%) — fully ` +
+            "tolled; no merchant line contributes at these assumptions.";
+        } else if (av > 0 && ar > 0) {
+          const total = tl + av + ar;
+          const pT = Math.round((tl / total) * 100);
+          const pA = Math.round((av / total) * 100);
+          mixHtml = `Year 1 revenue: toll ${fig(tl)} (${pT}%) · ` +
+            `availability ${fig(av)} (${pA}%) · arbitrage ${fig(ar)} ` +
+            `(${100 - pT - pA}%) — ${scaleNote}; ${caveat}.`;
+        } else if (av > 0 && ar === 0) {
+          const pT = Math.round((tl / (tl + av)) * 100);
+          mixHtml = `Year 1 revenue: toll ${fig(tl)} (${pT}%) · ` +
+            `availability ${fig(av)} (${100 - pT}%) · arbitrage nil ` +
+            `(${whyNil}) — ${scaleNote}.`;
+        } else {
+          mixHtml = `Year 1 revenue: toll ${fig(tl)} · availability ` +
+            `${fig(av)} · arbitrage ${fig(ar)} (no split shown: a ` +
+            `component is negative) — ${scaleNote}.`;
+        }
+      } else if (av === 0 && ar === 0) {
         mixHtml = "Year 1 revenue: none — neither availability nor " +
           "arbitrage contributes at these assumptions.";
       } else if (ar === 0) {
-        const why = !(inputs.k > 0) ? "no capture rate set"
-          : ceilingNow == null ? "no arbitrage ceiling in use"
-          : !(inputs.c > 0) ? "no cycles per day set, so nothing is discharged"
-          : "nothing at these assumptions";
         mixHtml = `Year 1 revenue: availability ${fig(av)} · ` +
-          `arbitrage nil (${why}).`;
+          `arbitrage nil (${whyNil}).`;
       } else if (av > 0 && ar > 0) {
         const pctA = Math.round((av / (av + ar)) * 100);
         mixHtml = `Year 1 revenue: availability ${fig(av)} (${pctA}%) · ` +
@@ -5268,6 +6108,49 @@ const Charts = (() => {
       }
       mixEl.innerHTML = mixHtml;
       mixEl.classList.remove("hidden");
+    }
+
+    /* The D83 reading line: built from the SAME figures this render
+       just computed (no second derivation path) and handed to the pure
+       rule function above — deterministic templates, no model call. */
+    if (readingEl) {
+      const dscrRows = [];
+      if (cf.d0 > 0) {
+        cf.rows.forEach((row) => {
+          if (row.year < 1) return;
+          const service = -((row.debt_interest_gbp || 0)
+            + (row.debt_principal_gbp || 0));
+          if (service > 0) {
+            dscrRows.push({ year: row.year,
+                            dscr: row.net_cashflow_gbp / service,
+                            net: row.net_cashflow_gbp });
+          }
+        });
+      }
+      // The implied year-1 merchant rate, £k/MW/yr: the whole-asset
+      // availability figure (year 1 carries no degradation, derate or
+      // cannibalisation yet) plus the arbitrage line per MW, both
+      // BEFORE toll scaling and un-stubbed — the like-for-like number
+      // a quoted toll price compares against.
+      const ceilingY1 = Metrics.arbitrageCeiling(
+        inputs.sHi, inputs.sLo, inputs.eta);
+      const merchantY1Rate = (inputs.a || 0)
+        + ((ceilingY1 != null && inputs.k > 0 && inputs.P > 0)
+          ? (365 * inputs.c * inputs.E * ceilingY1 * inputs.k)
+            / (inputs.P * 1000)
+          : 0);
+      const reading = bessCalcReading({
+        npv: npvValue, irr: irrValue, wacc: inputs.r,
+        dscrRows, targetDscr: c.targetDscr,
+        stubFrac: frac1,
+        augYear: (inputs.augYear >= 1 && inputs.augMwh > 0
+          && inputs.augCostPerMwh > 0) ? inputs.augYear : null,
+        tollPrice: tollTenorInForce >= 1 ? inputs.tollPrice : 0,
+        merchantY1Rate,
+        eqIrr: readingEqIrr, costOfDebt: inputs.costOfDebt,
+      });
+      readingEl.innerHTML = reading || "";
+      readingEl.classList.toggle("hidden", !reading);
     }
 
     /* Four one-assumption sensitivities under the tiles (owner review,
@@ -5418,6 +6301,97 @@ const Charts = (() => {
             itemStyle: { color: css("--accent") } },
         ],
       }), true);
+    } else if (bessCalcChartView === "equity") {
+      /* Equity-IRR view (plan/10 D63): equity IRR against the tolled
+         share, 0-100% in 5pp steps, one curve per toll price around the
+         anchor — the entered toll price, else the observed year-1
+         merchant £k/MW/yr (the same comparison figure the toll live
+         line shows; numerically identical to £/kW/yr). Every point re-runs the FULL engine chain with only
+         tollShare/tollPrice (and the defaulted tenor) overridden on the
+         headline's own resolved inputs, so a point can never disagree
+         with what typing those values would show — 63 bessCashflow
+         passes per render, arithmetic noise by the sensitivity matrix's
+         own argument. Own axes, %-vs-% one unit apiece (the house rule
+         the capacity branch above states); never xAxisYears. */
+      const tenorForChart = inputs.tollTenor >= 1
+        ? inputs.tollTenor : inputs.T;
+      // Merchant anchor from a fully-merchant re-run of the same
+      // inputs, un-stubbed by frac1 so it is a genuine per-year rate
+      // (the capacity bars' own un-stub precedent above).
+      const merchantCf = Metrics.bessCashflow({ ...inputs, tollShare: 0 });
+      const mY1 = merchantCf && merchantCf.rows[1];
+      const merchantRate = (mY1 && inputs.P > 0 && frac1 > 0)
+        ? (mY1.availability_gbp + mY1.arbitrage_gbp)
+          / (1000 * inputs.P * frac1)
+        : null;
+      const anchor = inputs.tollPrice > 0 ? inputs.tollPrice
+        : (merchantRate > 0 ? merchantRate : null);
+      const shares = Array.from({ length: 21 }, (_, i) => i * 5);
+      const equityIrrAt = (sharePct, price) => {
+        const run = Metrics.bessCashflow({ ...inputs,
+          tollShare: sharePct / 100, tollPrice: price,
+          tollTenor: tenorForChart });
+        if (!run) return null;
+        const eqF = run.rows.filter((r) => r.year >= 1)
+          .map((r) => r.equity_cashflow_gbp);
+        const v = Metrics.irr(run.c0 - run.d0, eqF);
+        // Null (no IRR, or beyond the 150% bracket) renders as a gap
+        // in the line — connectNulls stays false — never as a zero.
+        return v == null ? null : +(v * 100).toFixed(2);
+      };
+      const prices = anchor != null ? [0.8, 1.0, 1.2].map((m) =>
+        anchor * m) : [];
+      const priceColours = [css("--text-dim"), css("--accent"), css("--pos")];
+      const eqSeries = prices.map((p, i) => line(
+        `toll £${p.toFixed(0)}k/MW/yr`, shares,
+        shares.map((s) => equityIrrAt(s, p)), priceColours[i]));
+      // The stated-assumptions sub-caption: what the curves are
+      // anchored on, the defaulted tenor when none is typed, and the
+      // ungeared identity when no debt is drawn — each stated rather
+      // than left to be discovered.
+      const capParts = [];
+      if (anchor == null) {
+        capParts.push("no toll price entered and no positive observed " +
+          "merchant rate to anchor the curves on");
+      } else {
+        capParts.push(inputs.tollPrice > 0
+          ? `curves at 0.8x / 1.0x / 1.2x your toll price`
+          : "curves at 0.8x / 1.0x / 1.2x the observed year-1 " +
+            "merchant rate");
+      }
+      if (inputs.tollTenor < 1) {
+        capParts.push(`toll tenor unset — modelled over the full ` +
+          `${inputs.T}-year period`);
+      }
+      if (!(cf.d0 > 0)) {
+        capParts.push("ungeared — equity IRR equals project IRR");
+      }
+      chart("ch-bess-calc").setOption(base({
+        legend: legendBar({ data: eqSeries.map((s) => s.name) }),
+        title: { text: capParts.join(" · "), bottom: 0, left: 8,
+          textStyle: { color: css("--text-dim"), fontSize: 11,
+            fontWeight: "normal" } },
+        grid: { left: 56, right: 70, top: 48, bottom: 58 },
+        tooltip: {
+          trigger: "axis",
+          backgroundColor: css("--bg-raised"),
+          borderColor: css("--border"),
+          textStyle: { color: css("--text"), fontSize: 12 },
+          confine: true,
+          formatter: (params) => `Tolled share ${params[0].value[0]}%` +
+            params.map((p) => `<br>${p.marker}${p.seriesName}: ${
+              p.value[1] == null ? "no IRR"
+                : `${(+p.value[1]).toFixed(1)}%`}`).join(""),
+        },
+        xAxis: { type: "value", name: "tolled share %",
+          nameTextStyle: { color: css("--text-dim") },
+          min: 0, max: 100, interval: 20,
+          axisLine: { lineStyle: { color: css("--border") } },
+          axisLabel: { color: css("--text-dim"), fontFamily: MONO },
+          splitLine: { show: false } },
+        yAxis: valueAxis("equity IRR %"),
+        series: eqSeries,
+      }), true);
     } else {
       /* Year 0's capex on the cash-flow chart (owner decision,
          2026-08-01, option 2 of the design discussion): capex_gbp
@@ -5438,8 +6412,12 @@ const Charts = (() => {
       // one of them alone). Both are one pass over <= ~15 rows, cheap
       // enough to just take whichever is larger rather than argue
       // in advance about which one a given cash flow needs.
-      const barKeys = ["availability_gbp", "arbitrage_gbp", "opex_gbp",
-        "tnuos_gbp", "capex_gbp"];
+      // Toll series (plan/10 D58) only while a toll actually pays —
+      // the default (merchant-only) card must render identically, with
+      // no zero-height series parking a "Toll" entry in the legend.
+      const tollInChart = chartRows.some((r) => (r.toll_gbp || 0) !== 0);
+      const barKeys = ["toll_gbp", "availability_gbp", "arbitrage_gbp",
+        "opex_gbp", "tnuos_gbp", "capex_gbp"];
       const annualRows = chartRows.filter((r) => r.year >= 1);
       const maxAnnual = annualRows.reduce((m, r) => {
         const perSeries = barKeys.reduce(
@@ -5470,7 +6448,10 @@ const Charts = (() => {
       const fmtCapexClamp = bessCalcCompactGbp([capexYear0]);
 
       chart("ch-bess-calc").setOption(base({
-        legend: legendBar({ data: ["Availability", "Arbitrage", "OPEX", "TNUoS",
+        // legendBar is a scroll legend (single row, paged arrows), so a
+        // seventh entry pages rather than wrapping over the plot.
+        legend: legendBar({ data: [...(tollInChart ? ["Toll"] : []),
+          "Availability", "Arbitrage", "OPEX", "TNUoS",
           "Capex", "Cumulative discounted"] }),
         grid: { left: 56, right: 70, top: 48, bottom: 42 },
         tooltip: {
@@ -5498,6 +6479,13 @@ const Charts = (() => {
           valueAxis("£m cumulative", { position: "right",
             axisLabel: mnLabel, splitLine: { show: false } })],
         series: [
+          // Toll leads the stack when active, matching the mix line's
+          // own toll-first ordering. Amber (#e8b64f, the standing
+          // annotation colour elsewhere on this dashboard) — contracted
+          // revenue, visually apart from the merchant green/blue pair.
+          ...(tollInChart ? [{ name: "Toll", type: "bar", stack: "cf",
+            data: chartRows.map((r) => r.toll_gbp),
+            itemStyle: { color: "#e8b64f" } }] : []),
           { name: "Availability", type: "bar", stack: "cf",
             data: chartRows.map((r) => r.availability_gbp),
             itemStyle: { color: css("--pos") } },
@@ -5558,6 +6546,1468 @@ const Charts = (() => {
     }
   }
 
+  /* ===================== LDES cap-and-floor reference card ==================
+     plan/10 Phase 2 (B1, D56 superseded by D72 — the card now lives on
+     its own LDES tab, D68–D70). Vendored Ofgem Window 1 reference:
+     a sortable table of the 16 minded-to projects, a definition run of the
+     regime parameters, and an MW-by-technology mini-chart, all rendered
+     from app/data/ldes_capfloor.json, LAZILY fetched on this card's first
+     render via Data.loadLdesCapfloor() (the bess_units precedent, D33) so
+     the eager page payload is unchanged. Reference data only: nothing here
+     is computed, forecast or estimated, and per-project £ floor/cap levels
+     are withheld by Ofgem as commercially sensitive (D69), so none appear
+     anywhere on the card. A missing/failed payload shows this card's own
+     empty state; every other card on the tab is unaffected. */
+
+  let ldesState = "idle"; // idle | loading | ready | error
+  let ldesPayload = null;
+  // Sort state is presentation, not an assumption — module-local (never
+  // State.calc), surviving re-renders the way the calc view toggles do.
+  let ldesSortKey = "ea_rank"; // D68: default EA-rank order, ascending
+  let ldesSortAsc = true;
+  let ldesWired = false;
+
+  function ensureLdesLoaded() {
+    if (ldesState !== "idle") return;
+    ldesState = "loading";
+    Data.loadLdesCapfloor().then((payload) => {
+      ldesPayload = payload;
+      ldesState = "ready";
+      ldesCapfloor();
+    }).catch((error) => {
+      console.error("ldes_capfloor.json failed to load:", error);
+      ldesState = "error";
+      ldesCapfloor();
+    });
+  }
+
+  const LDES_COLUMNS = [
+    { key: "ea_rank", label: "EA rank", num: true,
+      title: "Ofgem economic-assessment rank across the 73 eligible"
+        + " projects (weights: BCR 40%, security of supply 19%,"
+        + " ancillary/reserve capability 15%, system operability 12%,"
+        + " whole-energy-system impact 8%, ready-to-fund 4%, optional"
+        + " value 1%). Gaps are real: ranks 10, 11 and 13 were not"
+        + " selected." },
+    { key: "name", label: "Project" },
+    { key: "technology", label: "Technology" },
+    { key: "region", label: "Region" },
+    { key: "mw", label: "MW", num: true },
+    { key: "duration_h", label: "Duration h", num: true,
+      title: "Storage duration at full power, hours (the Window 1"
+        + " eligibility floor is 8 h)." },
+    { key: "track", label: "Track", num: true,
+      title: "Ofgem delivery track: 1 targets first operation by 2030,"
+        + " 2 by 2033." },
+    { key: "first_operation", label: "First op", num: true,
+      title: "Target first-operation year from the minded-to list." },
+  ];
+
+  function wireLdesCard() {
+    if (ldesWired) return;
+    const container = document.getElementById("ldes-capfloor-table");
+    const regimeEl = document.getElementById("ldes-capfloor-regime");
+    if (!container || !regimeEl) return;
+    // Delegated on the container div, which survives every innerHTML
+    // re-render of the table itself (the bess-fleet wiring precedent).
+    container.addEventListener("click", (event) => {
+      const th = event.target.closest("th[data-sort]");
+      if (!th) return;
+      const key = th.dataset.sort;
+      if (key === ldesSortKey) ldesSortAsc = !ldesSortAsc;
+      else { ldesSortKey = key; ldesSortAsc = true; }
+      ldesCapfloor();
+    });
+    // Regime-strip glossary links: same jump the methodology prose
+    // term-links make (ui.js finalizeMethodologyLayout), delegated here
+    // because this strip lives on a card, not on the methodology body.
+    regimeEl.addEventListener("click", (event) => {
+      const link = event.target.closest(".term-link");
+      if (!link) return;
+      event.preventDefault();
+      document.querySelector('#tabs button[data-tab="glossary"]').click();
+      UI.jumpToGlossary("g-" + link.dataset.term);
+    });
+    ldesWired = true;
+  }
+
+  function ldesCapfloor() {
+    const container = document.getElementById("ldes-capfloor-table");
+    if (!container) return;
+    const empty = document.getElementById("ldes-capfloor-empty");
+    const regimeEl = document.getElementById("ldes-capfloor-regime");
+    const captionEl = document.getElementById("ldes-capfloor-caption");
+    const chartEl = document.getElementById("ch-ldes-capfloor");
+    wireLdesCard();
+    ensureLdesLoaded();
+    if (ldesState === "idle" || ldesState === "loading") return;
+
+    const payload = ldesState === "ready" ? ldesPayload : null;
+    const projects = payload && Array.isArray(payload.projects)
+      ? payload.projects : null;
+    const ok = !!(projects && projects.length && payload.regime
+      && payload.status && payload.totals);
+    empty.classList.toggle("hidden", ok);
+    container.classList.toggle("hidden", !ok);
+    regimeEl.classList.toggle("hidden", !ok);
+    chartEl.parentElement.classList.toggle("hidden", !ok);
+    if (!ok) {
+      container.innerHTML = "";
+      regimeEl.innerHTML = "";
+      if (captionEl) captionEl.textContent = "";
+      return;
+    }
+
+    /* ---- caption from the payload's status block ---- */
+    const st = payload.status, totals = payload.totals;
+    if (captionEl) {
+      const stage = st.stage === "minded-to"
+        ? "Minded-to positions" : st.stage;
+      captionEl.textContent = `${stage}, published `
+        + `${Metrics.fmtDate(st.published)} · consultation closed `
+        + `${Metrics.fmtDate(st.consultation_closed)} · final awards `
+        + `expected ${st.final_awards_expected} · ${totals.projects} `
+        + `projects, ${(+totals.mw).toLocaleString("en-GB")} MW · `
+        + "vendored from Ofgem, updated by hand";
+    }
+
+    /* ---- sortable project table ---- */
+    const col = LDES_COLUMNS.find((c) => c.key === ldesSortKey)
+      || LDES_COLUMNS[0];
+    const dir = ldesSortAsc ? 1 : -1;
+    const rows = [...projects].sort((a, b) => {
+      const va = a[col.key], vb = b[col.key];
+      const cmp = col.num
+        ? (va ?? Infinity) - (vb ?? Infinity)
+        : String(va ?? "").localeCompare(String(vb ?? ""), "en-GB");
+      // Ties (and any tie-shaped NaN) fall back to EA rank so the order
+      // is deterministic in both directions.
+      return (cmp ? dir * cmp : a.ea_rank - b.ea_rank) || 0;
+    });
+    const num = (v) => (v == null ? "—"
+      : (+v).toLocaleString("en-GB", { maximumFractionDigits: 2 }));
+    const heads = LDES_COLUMNS.map((c) => {
+      const arrow = c.key === ldesSortKey
+        ? (ldesSortAsc ? " ▴" : " ▾") : "";
+      return `<th data-sort="${c.key}"${c.num ? ' class="num"' : ""}`
+        + `${c.title ? ` title="${c.title}"` : ""}>${c.label}${arrow}</th>`;
+    }).join("");
+    const bodyRows = rows.map((p) => `<tr>
+        <td class="num">${p.ea_rank}</td>
+        <td>${p.name}</td>
+        <td>${p.technology}</td>
+        <td>${p.region}</td>
+        <td class="num">${num(p.mw)}</td>
+        <td class="num">${num(p.duration_h)}</td>
+        <td class="num">${p.track}</td>
+        <td class="num">${p.first_operation}</td>
+      </tr>`).join("");
+    container.innerHTML = `<table class="util-table">
+      <thead><tr>${heads}</tr></thead>
+      <tbody>${bodyRows}</tbody></table>`;
+
+    /* ---- regime parameters strip (definition run) ---- */
+    const r = payload.regime;
+    const term = (key, text) => `<a class="term-link" data-term="${key}"`
+      + ` href="#g-${key}">${text}</a>`;
+    regimeEl.innerHTML =
+      `${term("capfloor", "Cap and floor")} on 100% of `
+      + `${term("rav", "RAV")}: floor `
+      + `<b>${r.floor_return_pct_cpih_real_indicative}%</b> / cap `
+      + `<b>${r.cap_return_pct_cpih_real_indicative}%</b> `
+      + `${r.indexation}-real (indicative, set at FID) · `
+      + `${term("softcap", "soft cap")}: `
+      + `<b>${r.soft_cap_retention_pct}%</b> retained above the cap · `
+      + `<b>${r.duration_years_default}-yr</b> default regime, `
+      + `${r.indexation}-indexed · floor conditional on the `
+      + `${term("mat", "MAT")} · funded via `
+      + `${term("bsuos", "BSUoS")} · `
+      + `${term("fascore", "FA")} screening threshold `
+      + `<b>${(+r.fa_threshold).toFixed(2)}</b>`;
+
+    /* ---- MW-by-technology mini-chart ---- */
+    // Computed from the project list, never hard-coded; ascending so the
+    // largest technology lands on the top category row. One unit per
+    // axis (MW); per-project duration lives in the tooltip.
+    const groups = new Map();
+    projects.forEach((p) => {
+      const g = groups.get(p.technology)
+        || { mw: 0, list: [] };
+      g.mw += p.mw;
+      g.list.push(p);
+      groups.set(p.technology, g);
+    });
+    const cats = [...groups.entries()].sort((a, b) => a[1].mw - b[1].mw);
+    const fmtMw = (v) => (+v).toLocaleString("en-GB");
+    chart("ch-ldes-capfloor").setOption(base({
+      grid: { left: 170, right: 70, top: 26, bottom: 30 },
+      tooltip: {
+        trigger: "item",
+        backgroundColor: css("--bg-raised"),
+        borderColor: css("--border"),
+        textStyle: { color: css("--text"), fontSize: 12 },
+        confine: true,
+        formatter: (p) => {
+          const g = groups.get(p.name);
+          if (!g) return "";
+          const lines = [...g.list]
+            .sort((a, b) => b.mw - a.mw)
+            .map((u) => `${u.name}<span style="float:right;`
+              + `margin-left:16px">${fmtMw(u.mw)} MW · `
+              + `${u.duration_h} h</span>`);
+          return `<div style="margin-bottom:3px"><b>${p.name}</b> — `
+            + `${fmtMw(g.mw)} MW, ${g.list.length} project`
+            + `${g.list.length > 1 ? "s" : ""}</div>${lines.join("<br>")}`;
+        },
+      },
+      xAxis: valueAxis("MW", { min: 0 }),
+      yAxis: {
+        type: "category",
+        data: cats.map(([tech]) => tech),
+        axisLine: { lineStyle: { color: css("--border") } },
+        // "Vanadium flow/zinc hybrid" outruns the 170px gutter in mono;
+        // wrap at word boundaries inside the margin instead of clipping.
+        axisLabel: { color: css("--text-dim"), fontFamily: MONO,
+          width: 150, overflow: "break", lineHeight: 15 },
+        axisTick: { show: false },
+      },
+      series: [{
+        name: "MW",
+        type: "bar",
+        data: cats.map(([, g]) => g.mw),
+        barMaxWidth: 26,
+        itemStyle: { color: css("--accent-top"), borderRadius: [0, 3, 3, 0] },
+        label: {
+          show: true, position: "right", color: css("--text-dim"),
+          fontFamily: MONO, formatter: (p) => fmtMw(p.value),
+        },
+      }],
+    }), true);
+  }
+
+  /* ================= Mini-CFFM calculator (plan/10 Phase 3, B2) =======
+     The UI over Metrics.cffmLevels/cffmCorridor: an all-assumption card
+     below the Window 1 reference card. Its state is a MODULE-SCOPE
+     object, deliberately not State.calc — that namespace is the BESS
+     card's (its reset, its defaults map, its group markers all iterate
+     it), and a second card writing into it would entangle two forms
+     that share nothing. Same no-browser-storage rule; same D30
+     build-once form; same D71 collapsible groups with "n set" markers;
+     percent fields are stored as typed percents and divided by 100 only
+     in ldesCffmEngineInputs, the one place the engine's fraction
+     convention is honoured. The prefilled regime figures are Ofgem's
+     published indicative parameters (Financial Framework decision,
+     23 Sep 2025) and are badged Reference (the TNUoS-vendoring
+     precedent); clearing one is a departure the group marker counts.
+     D78 shipped no exports; D80 (owner feedback, same day) added the
+     CSV download below, and D81 (owner feedback, 2026-08-29) reshaped
+     it to a section,parameter,value table with the rows factored into
+     Metrics.cffmCsvRows so the schema is pinned by the Python-mirror
+     tests. */
+
+  const LDES_CFFM_DEFAULTS = {
+    floorRate: 4.47, capRate: 7.48, idcRate: 6.1, gearing: 37.5,
+    txDebtRate: 2.5, txEquityRate: 5, opYears: 25, residualValue: 0,
+  };
+
+  const ldesCffmCalc = {
+    mw: null, constructionYears: null, capex: null, devex: null,
+    opexFixed: null, decom: null,
+    gmLow: null, gmCentral: null, gmHigh: null,
+    ...LDES_CFFM_DEFAULTS,
+  };
+
+  let ldesCffmWired = false;
+
+  /* £m/yr display, 1dp above £10m, 2dp below — the card's figures span
+     roughly £1m to £100m/yr and one rule for both ends misprints one of
+     them. */
+  function ldesCffmFmtM(v) {
+    if (v == null) return "—";
+    const abs = Math.abs(v);
+    const dp = abs >= 10 ? 1 : 2;
+    return `${v < 0 ? "-" : ""}£${abs.toLocaleString("en-GB",
+      { minimumFractionDigits: dp, maximumFractionDigits: dp })}m`;
+  }
+
+  // £m/yr level to £/kW/yr: level x 1e6 / (MW x 1000) = level x 1000 / MW.
+  function ldesCffmPerKw(levelMYr, mw) {
+    return (levelMYr == null || !mw || mw <= 0)
+      ? null : (levelMYr * 1000) / mw;
+  }
+
+  function ldesCffmInputsHtml() {
+    const refBadge = '<span class="badge proxy">Reference</span>';
+    return `
+      <details class="calc-field-group calc-group" open>
+        <summary><h4>The asset &amp; build</h4><span
+          class="calc-group-active"></span></summary>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Power (MW)</span></div>
+          <input type="number" data-cffm="mw" min="0" step="1"
+            placeholder="e.g. 500 — for £/kW/yr read-outs">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Construction years</span></div>
+          <input type="number" data-cffm="constructionYears" min="1" step="1"
+            placeholder="e.g. 2 to 6">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>CAPEX (£m, real)</span></div>
+          <input type="number" data-cffm="capex" min="0" step="1"
+            placeholder="spread evenly over construction">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>DEVEX (£m, real)</span></div>
+          <input type="number" data-cffm="devex" min="0" step="1"
+            placeholder="blank = none — lands in year 1">
+        </div>
+      </details>
+
+      <details class="calc-field-group calc-group">
+        <summary><h4>Regime &amp; rates</h4><span
+          class="calc-group-active"></span></summary>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Floor return (%, CPIH-real)
+            </span>${refBadge}</div>
+          <input type="number" data-cffm="floorRate" min="0" step="0.01"
+            value="4.47">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Cap return (%, CPIH-real)
+            </span>${refBadge}</div>
+          <input type="number" data-cffm="capRate" min="0" step="0.01"
+            value="7.48">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>IDC rate (%)</span>
+            ${refBadge}</div>
+          <input type="number" data-cffm="idcRate" min="0" step="0.01"
+            value="6.1">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Notional gearing (%)</span>
+            ${refBadge}</div>
+          <input type="number" data-cffm="gearing" min="0" max="100"
+            step="0.5" value="37.5">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Debt transaction costs
+            (% of RAV)</span>${refBadge}</div>
+          <input type="number" data-cffm="txDebtRate" min="0" step="0.1"
+            value="2.5">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Equity transaction costs
+            (% of RAV)</span>${refBadge}</div>
+          <input type="number" data-cffm="txEquityRate" min="0" step="0.1"
+            value="5">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Operational years</span>
+            ${refBadge}</div>
+          <input type="number" data-cffm="opYears" min="1" step="1"
+            value="25">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Residual value (£m, end of
+            regime)</span>${refBadge}</div>
+          <input type="number" data-cffm="residualValue" min="0" step="1"
+            value="0">
+          <details class="calc-note-d">
+            <summary>Where these prefills come from</summary>
+            <div class="calc-note">Ofgem's published Window 1 indicative
+              parameters (Financial Framework decision, 23 Sep 2025):
+              floor from the iBoxx BBB 15+ benchmark, cap from CAPM, IDC
+              indicative 6.03–6.11% (6.1 used), notional pre-operational
+              gearing 37.5%, and the default 25-year regime with zero
+              residual value. Indicative only — the rates refix at each
+              project's FID. Type over any of them; a cleared or changed
+              field counts in the group's "n set" marker.</div>
+          </details>
+        </div>
+      </details>
+
+      <details class="calc-field-group calc-group">
+        <summary><h4>Operations</h4><span
+          class="calc-group-active"></span></summary>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Fixed opex (£m/yr,
+            real)</span></div>
+          <input type="number" data-cffm="opexFixed" min="0" step="0.5"
+            placeholder="blank = none">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Decommissioning allowance
+            (£m/yr, real)</span></div>
+          <input type="number" data-cffm="decom" min="0" step="0.1"
+            placeholder="blank = none — per YEAR, not one-off">
+          <div class="calc-live" id="ldes-cffm-decom-live"></div>
+          <details class="calc-note-d">
+            <summary>What these two feed</summary>
+            <div class="calc-note">Both enter the floor and cap levels as
+              a flat real allowance beside depreciation and the return —
+              the CFFM's fixed-opex and decommissioning building blocks,
+              simplified to flat £m/yr. Blank contributes nothing; no
+              default ships, because the dashboard has not measured your
+              cost base. The decommissioning allowance is the CFFM's
+              ANNUAL baseline, charged every operational year — a one-off
+              end-of-life cost belongs here only as its annuitised
+              equivalent: one-off £X at the end of the regime ≈
+              X × (1+r)<sup>−N</sup> × AF(r, N) per year at the floor
+              rate over N operational years. The live line under the
+              field does this arithmetic for you.</div>
+          </details>
+        </div>
+      </details>
+
+      <details class="calc-field-group calc-group" open>
+        <summary><h4>Gross margin scenarios</h4><span
+          class="calc-group-active"></span></summary>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Low (£m/yr, real)</span></div>
+          <input type="number" data-cffm="gmLow" step="0.5"
+            placeholder="downside view">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>Central (£m/yr, real)</span></div>
+          <input type="number" data-cffm="gmCentral" step="0.5"
+            placeholder="required for the corridor">
+        </div>
+        <div class="calc-field">
+          <div class="calc-field-label"><span>High (£m/yr, real)</span></div>
+          <input type="number" data-cffm="gmHigh" step="0.5"
+            placeholder="upside view">
+          <div class="calc-live" id="ldes-cffm-gm-live"></div>
+          <details class="calc-note-d">
+            <summary>What a gross margin means here</summary>
+            <div class="calc-note">Assessed-revenue-style gross margin:
+              market revenue net of marginal cycling costs, flat in real
+              terms — the quantity Ofgem compares against the corridor.
+              Your view, not a forecast: this dashboard has no observed
+              LDES revenue anchor (its fleet data is 1–2 h BESS), so no
+              default ships and nothing here is backcast.</div>
+          </details>
+        </div>
+      </details>`;
+  }
+
+  function wireLdesCffm() {
+    if (ldesCffmWired) return;
+    const inputsEl = document.getElementById("ldes-cffm-inputs");
+    if (!inputsEl) return;
+    inputsEl.innerHTML = ldesCffmInputsHtml();
+    // The card's own delegated listener — the BESS card's D30 pattern,
+    // but writing to the module-scope ldesCffmCalc, never State.calc.
+    inputsEl.addEventListener("input", (event) => {
+      const el = event.target;
+      const key = el.dataset.cffm;
+      if (!key) return;
+      let value = el.value === "" ? null : parseFloat(el.value);
+      if (value != null && Number.isNaN(value)) value = null;
+      ldesCffmCalc[key] = value;
+      ldesCffmCalculator();
+    });
+    const csvBtn = document.getElementById("ldes-cffm-csv");
+    if (csvBtn) csvBtn.addEventListener("click", downloadLdesCffmCsv);
+    const xlsxBtn = document.getElementById("ldes-cffm-xlsx");
+    if (xlsxBtn) xlsxBtn.addEventListener("click", downloadLdesCffmXlsx);
+    ldesCffmWired = true;
+  }
+
+  /* The mini-CFFM CSV export (D80, reshaped by D81): a three-column
+     section,parameter,value table — `input` rows recording every card
+     field verbatim (not_set when blank), `derived` rows for the level
+     summary and the per-scenario lifetime corridor figures, one
+     `note` caveat row — built by Metrics.cffmCsvRows so the schema is
+     pinned by the Python-mirror tests. D81 (owner feedback,
+     2026-08-29) replaced D80's `#`-comment header plus flat year
+     table: the model is flat, so 25 identical rows carried nothing,
+     and comment-line inputs forced manual parsing. All-ASCII output
+     behind a UTF-8 BOM so Excel never guesses a legacy codepage (the
+     same feedback's mojibake screenshot). Gated exactly like the
+     results: every engine-required input present. */
+  function downloadLdesCffmCsv() {
+    const c = ldesCffmCalc;
+    if (ldesCffmMissingLabels(c).length) return;
+    const inputs = ldesCffmEngineInputs(c);
+    const levels = Metrics.cffmLevels(inputs);
+    if (!levels) return;
+    const corr = c.gmCentral == null ? null : Metrics.cffmCorridor(
+      { floorLevel: levels.floor.level, capLevel: levels.cap.level },
+      { gmLow: c.gmLow != null ? c.gmLow : c.gmCentral,
+        gmCentral: c.gmCentral,
+        gmHigh: c.gmHigh != null ? c.gmHigh : c.gmCentral,
+        opYears: inputs.opYears });
+    const rows = Metrics.cffmCsvRows(levels, corr, c);
+    if (!rows) return;
+    // The note row's caveat is the export's one free-text value;
+    // RFC 4180 quoting keeps its commas out of the column structure.
+    const csv = rows.map((row) => row.map((v) =>
+      typeof v === "string" && v.includes(",") ? `"${v}"` : v)
+      .join(",")).join("\n");
+    // "\uFEFF": the UTF-8 BOM — same rationale as the BESS CSV above.
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "gb_ldes_minicffm.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  /* ============ Mini-CFFM live-formula workbook export (D82) ==========
+     The BESS "Export model (Excel)" discipline applied to the mini-CFFM
+     (owner feedback on D81: the CSV records the figures but cannot show
+     the MECHANICS — the workbook is the palpable version, every derived
+     cell an Excel formula over the Inputs cells, nothing precomputed,
+     so a reader can trace IDC, the RAV walk, the telescoping identity
+     and the annuity flattening cell by cell). Same writer (Xlsx.build),
+     same vendored style table (BESS_XF roles only, no new styles), same
+     closed formula grammar (ops/xlsx_eval.py — POWER exponents written
+     0-x because the grammar has no unary minus), same session-only Blob
+     download. Nothing here calls Metrics.cffmLevels for cell VALUES:
+     the one call in the download gate below only decides whether the
+     engine would accept the inputs at all (the CSV's own gate). */
+
+  /* Inputs-sheet row map (the BESS_AROW convention: one object, every
+     cross-sheet formula references these numbers as strings). One
+     column-E input cell per ENGINE input — rates stored as FRACTIONS
+     with a percent format and a "%" units cell, exactly how the engine
+     consumes them and how BESS_AROW's wacc/captureRate cells already
+     work — plus MW and the three gross-margin scenarios. Unset
+     numerics are 0 with Source "not set" (the BESS capture-rate
+     precedent: an Input cell feeding a live formula must stay numeric,
+     and 0 is the correct "not contributing" value); unset low/high
+     scenarios resolve to the central one exactly as the card's own
+     corridor call does. */
+  const LDES_WROW = {
+    mw: 7, constructionYears: 8, devex: 9, capex: 10,
+    idcRate: 13, gearing: 14, txDebtRate: 15, txEquityRate: 16,
+    floorRate: 17, capRate: 18, opYears: 19, residualValue: 20,
+    opexFixed: 23, decom: 24,
+    gmLow: 27, gmCentral: 28, gmHigh: 29,
+  };
+
+  /* Levels-sheet row map — the mechanics sheet, column-per-year. Two
+     year grids share the F.. columns: the construction block runs
+     years 1..constructionYears, the operations block years 1..opYears
+     (the sheet is built for the CURRENT inputs like the BESS DCF is
+     built for T; the builder regenerates per download, so a changed
+     year count is a re-download, never a formula guard). */
+  const LDES_LROW = {
+    conBanner: 4, hdrCon: 5, additions: 6, idc: 7, closing: 8,
+    txBanner: 10, tx: 11, rav: 12,
+    opsBanner: 14, hdrOp: 15, opening: 16, depreciation: 17,
+    closingOp: 18, returnFloor: 19, returnCap: 20,
+    allowFloor: 21, allowCap: 22, dfFloor: 23, dfCap: 24,
+    discFloor: 25, discCap: 26,
+    annBanner: 28, npvFloor: 29, npvCap: 30, afFloor: 31, afCap: 32,
+    floorLevel: 33, capLevel: 34,
+    corrBanner: 36, gmLow: 37, gmCentral: 38, gmHigh: 39,
+    topUp: 40, aboveCap: 41, clawback: 42, retained: 43,
+    lifeTopUp: 45, lifeClawback: 46, lifeRetained: 47, fa: 48,
+    checksBanner: 50, chkFloor: 51, chkCap: 52,
+  };
+
+  const LDES_CFFM_STANDING_SENTENCE =
+    "Indicative building-blocks arithmetic on the assumptions you " +
+    "enter, ex-tax and flat real. Not Ofgem's CFFM, not a valuation, " +
+    "and no Window 1 project's actual levels.";
+
+  /* Builds the plain-object workbook model Xlsx.build() turns into
+     gb_ldes_minicffm.xlsx. `c` is ldesCffmCalc (raw typed state, for
+     the Source cells), `inputs` is ldesCffmEngineInputs(c) (the
+     fractions the Input cells store). Three sheets: Cover (caveat,
+     headline mirrors, notes, the house cell-style map), Inputs (one
+     input cell per engine input), Levels (the RAV walk, the
+     operations grid, annuitisation, corridor and the identity
+     checks). */
+  function ldesCffmWorkbookModel(c, inputs) {
+    const S = (v, s = 0) => ({ t: "s", v, s });
+    const N = (v, s = 0) => ({ t: "n", v, s });
+    const F = (v, s = 0) => ({ t: "f", v, s });
+    const X = BESS_XF;
+    const W = LDES_WROW, L = LDES_LROW;
+
+    const CY = Math.max(1, Math.floor(inputs.constructionYears));
+    const OY = Math.max(1, Math.floor(inputs.opYears));
+    const maxYears = Math.max(CY, OY);
+    const lastAll = bessColLetter(5 + maxYears); // widest grid column
+    const lastC = bessColLetter(5 + CY);         // last construction year
+    const lastO = bessColLetter(5 + OY);         // last operational year
+    const IN = (row) => `Inputs!$E$${row}`;
+    // The floor and cap rates appear in eight Levels formulas each, so
+    // they are referenced by defined NAME rather than address (the
+    // BESS workbook's WACC precedent) — the named form keeps them
+    // readable in Excel's own formula bar, and the definedNames block
+    // at the bottom binds them to the two Inputs cells.
+    const RATE = { [W.floorRate]: "FLOOR_RATE", [W.capRate]: "CAP_RATE" };
+
+    /* ------------------------------------------------------------ Cover */
+    const cover = {};
+    cover.C2 = S("GB LDES mini cap-and-floor model", X.title);
+    cover.D2 = S("", X.titlePad);
+    cover.E2 = S("", X.titlePad);
+    cover.F2 = S("", X.titlePad);
+    cover.G2 = S("", X.titlePad);
+    cover.C4 = S(LDES_CFFM_STANDING_SENTENCE, X.comment);
+
+    cover.C6 = S("RAV at start of operations (£m)", X.labelBold);
+    cover.E6 = F(`Levels!$E$${L.rav}`, X.link1dp);
+    cover.C7 = S("Floor level (£m/yr, flat real)", X.labelBold);
+    cover.E7 = F(`Levels!$E$${L.floorLevel}`, X.link1dp);
+    cover.C8 = S("Cap level (£m/yr, flat real)", X.labelBold);
+    cover.E8 = F(`Levels!$E$${L.capLevel}`, X.link1dp);
+    cover.C9 = S("FA score (central GM / floor level)", X.labelBold);
+    cover.E9 = F(`Levels!$E$${L.fa}`, X.link1dp);
+
+    const notes = [
+      "Blue cells on a yellow fill are inputs. Every other number is a " +
+        "formula over them. Rates are stored as fractions and displayed " +
+        "as percentages.",
+      "IDC per construction year = rate x (opening RAV + additions / " +
+        "(2 + rate)) - the handbook's A1.70 half-year convention: " +
+        "in-year spend earns a half year of interest, the accumulated " +
+        "balance a full year.",
+      "Depreciation runs the RAV straight-line down TO the residual " +
+        "value over the operational years; the residual is left standing " +
+        "at the end and keeps earning the return until then.",
+      "The return each year is rate x opening RAV - under end-of-year " +
+        "discounting the unique base for which depreciation plus return " +
+        "telescopes exactly to RAV less the discounted residual. The " +
+        "check rows on the Levels sheet pin this identity; both must " +
+        "read ~0.",
+      "Each level is the NPV of the allowance stream (opex + decom + " +
+        "depreciation + return) times the annuity factor " +
+        "rate / (1 - (1 + rate)^-n). Flattening is idempotent on the " +
+        "flat blocks, so only the declining return block is genuinely " +
+        "reshaped.",
+      "Corridor: below the floor the top-up is the shortfall; above the " +
+        "cap 70% of the excess is clawed back for consumers and 30% " +
+        "retained. Lifetime figures are flat and deliberately " +
+        "undiscounted.",
+      "FA score = central gross margin / floor level, read against " +
+        "Ofgem's published 0.60 demotion threshold.",
+      "Formulas carry no cached values, so this file recalculates when " +
+        "it opens. A reader that does not recalculate should use the " +
+        "CSV export instead.",
+      "The year grids are built for the construction and operational " +
+        "years entered at download time; change those on the card and " +
+        "re-download to resize them.",
+    ];
+    notes.forEach((text, i) => { cover["C" + (11 + i)] = S(text, X.comment); });
+
+    /* The owner's "Cell style map", the same house legend the BESS
+       Cover carries (deliberately complete, not trimmed to the styles
+       this export happens to use). Duplicated from the BESS builder
+       rather than factored out of it: that builder is frozen (plan/10
+       D82's own constraint), and the block is the owner's file
+       verbatim in both places. */
+    const mapTop = 11 + notes.length + 1;
+    const mapRow = (row, swatch, text, textStyle) => {
+      if (swatch) cover["C" + row] = swatch;
+      cover["D" + row] = S(text, textStyle == null ? X.mapText : textStyle);
+    };
+    cover["C" + mapTop] = S("Cell style map", X.labelBold);
+    let r = mapTop + 2;
+    cover["C" + r] = S("Inputs and references to them", X.mapHead);
+    cover["D" + r] = S("", X.mapSub); cover["E" + r] = S("", X.mapSub);
+    mapRow(r + 1, N(100, X.inputNum), "Input data (as value)");
+    mapRow(r + 2, N(0.1, X.inputPct), "Input data (as percent)");
+    mapRow(r + 3, N(0.05, X.inputPct), "Links to external files");
+    mapRow(r + 4, F("C" + (r + 1), X.link), "Assumption by reference");
+    mapRow(r + 5, N(50, X.hardNum), "Hard number");
+    r += 7;
+    cover["C" + r] = S("Calculations", X.mapHead);
+    cover["D" + r] = S("", X.mapTextAlt);
+    mapRow(r + 1, F(`C${mapTop + 3}*(1+C${mapTop + 5})`, X.formulaMoney),
+      "Formula: number");
+    mapRow(r + 2, F("C" + (mapTop + 5), X.percentFormula), "Formula: percentage");
+    mapRow(r + 3, N(Xlsx.dateSerial("2023-01-01"), X.dateFormula), "Formula: date");
+    mapRow(r + 4, F(`C${mapTop + 3}*(1+C${mapTop + 5})^(1/2)`, X.changedFormula),
+      "Formula changed in row");
+    mapRow(r + 5, S("", X.unused), "Unused cell");
+    mapRow(r + 6, F(`C${r + 4}/C${r + 1}-1`, X.kpi),
+      "Reference metric (growth, profitability)");
+    r += 8;
+    cover["C" + r] = S("Other", X.mapHead);
+    cover["D" + r] = S("", X.mapTextAlt);
+    mapRow(r + 1, F("C" + (r - 7), X.keyNum), "Key result", X.mapTextKey);
+    mapRow(r + 2, F("C" + (r - 7), X.special), "Special cell");
+    mapRow(r + 3, S("ok", X.check), "Check");
+    r += 5;
+    cover["C" + r] = S("blue color", X.mapPad);
+    cover["D" + r] = S("#0432FF", X.mapBlue);
+    cover["C" + (r + 1)] = S("green color", X.mapPad);
+    cover["D" + (r + 1)] = S("#00B050", X.mapGreen);
+    cover["C" + (r + 2)] = S("filling color", X.mapPad);
+    cover["D" + (r + 2)] = S("#FFF2CC", X.mapFill);
+    cover["C" + (r + 3)] = S("filling color", X.mapPad);
+    cover["D" + (r + 3)] = S("#90D5FF", X.mapFillAlt);
+
+    /* ----------------------------------------------------------- Inputs */
+    const a = {};
+    a.C2 = S("Inputs", X.title);
+    a.B2 = S("", X.titlePad);
+    a.D2 = S("", X.titlePad);
+    a.E2 = S("", X.titlePad);
+    a.F2 = S("", X.titlePad);
+    a.G2 = S("", X.titlePad);
+    a.C4 = S("Metric", X.hdr); a.D4 = S("Units", X.hdrUnitsAssump);
+    a.E4 = S("Input", X.hdr); a.F4 = S("Source", X.hdrSource);
+
+    const section = (row, num, title) => {
+      a["B" + row] = N(num, X.band);
+      a["C" + row] = S(title, X.band);
+      a["D" + row] = S("", X.bandUnitsAssump);
+      a["E" + row] = S("", X.band);
+      a["F" + row] = S("", X.bandSource);
+      a["G" + row] = S("", X.band);
+    };
+    const field = (row, label, unit, value, source) => {
+      a["C" + row] = S(label, X.label);
+      a["D" + row] = S(unit, X.unitsAssump);
+      a["E" + row] = value;
+      a["F" + row] = S(source, X.source);
+    };
+    // The Reference-badged prefills: Source distinguishes the shipped
+    // Ofgem indicative parameter from a typed departure, the same
+    // honesty rule the card's own group markers apply (D71).
+    const refSource = (key) => (ldesCffmCalc[key] === LDES_CFFM_DEFAULTS[key]
+      ? "reference (Ofgem indicative)" : "assumption");
+    const optSource = (v) => (v != null ? "assumption" : "not set");
+
+    section(6, 1, "The asset and build");
+    field(W.mw, "Power", "MW", N(c.mw != null ? c.mw : 0, X.inputNum),
+      optSource(c.mw));
+    field(W.constructionYears, "Construction years", "years",
+      N(inputs.constructionYears, X.inputNum), "assumption");
+    field(W.devex, "DEVEX (lands in year 1)", "GBPm, real",
+      N(inputs.devex, X.inputNum), optSource(c.devex));
+    field(W.capex, "CAPEX (spread over construction)", "GBPm, real",
+      N(inputs.capex, X.inputNum), "assumption");
+
+    section(12, 2, "Regime and rates");
+    field(W.idcRate, "IDC rate", "%", N(inputs.idcRate, X.inputPct),
+      refSource("idcRate"));
+    field(W.gearing, "Notional gearing", "%", N(inputs.gearing, X.inputPct),
+      refSource("gearing"));
+    field(W.txDebtRate, "Debt transaction costs", "% of RAV",
+      N(inputs.txDebtRate, X.inputPct), refSource("txDebtRate"));
+    field(W.txEquityRate, "Equity transaction costs", "% of RAV",
+      N(inputs.txEquityRate, X.inputPct), refSource("txEquityRate"));
+    field(W.floorRate, "Floor return", "%, CPIH-real",
+      N(inputs.floorRate, X.inputPct), refSource("floorRate"));
+    field(W.capRate, "Cap return", "%, CPIH-real",
+      N(inputs.capRate, X.inputPct), refSource("capRate"));
+    field(W.opYears, "Operational years", "years",
+      N(inputs.opYears, X.inputNum), refSource("opYears"));
+    field(W.residualValue, "Residual value, end of regime", "GBPm, real",
+      N(inputs.residualValue, X.inputNum), refSource("residualValue"));
+
+    section(22, 3, "Operations");
+    field(W.opexFixed, "Fixed opex", "GBPm/yr, real",
+      N(inputs.opexFixed, X.inputNum), optSource(c.opexFixed));
+    field(W.decom, "Decommissioning allowance (annual)", "GBPm/yr, real",
+      N(inputs.decom, X.inputNum), optSource(c.decom));
+
+    // Unset low/high resolve to central, exactly as the card's own
+    // corridor call resolves them; an unset central leaves all three at
+    // 0 with Source "not set" (the corridor rows then read a genuine
+    // zero-margin scenario, which the Source column declares).
+    const gmCentral = c.gmCentral != null ? c.gmCentral : 0;
+    const gmResolved = (v) => (v != null ? v : gmCentral);
+    const gmSource = (v) => (v != null ? "assumption"
+      : (c.gmCentral != null ? "not set (defaults to central)" : "not set"));
+    section(26, 4, "Gross margin scenarios");
+    field(W.gmLow, "Gross margin, low", "GBPm/yr, real",
+      N(gmResolved(c.gmLow), X.inputNum), gmSource(c.gmLow));
+    field(W.gmCentral, "Gross margin, central", "GBPm/yr, real",
+      N(gmCentral, X.inputNum), optSource(c.gmCentral));
+    field(W.gmHigh, "Gross margin, high", "GBPm/yr, real",
+      N(gmResolved(c.gmHigh), X.inputNum), gmSource(c.gmHigh));
+
+    /* ----------------------------------------------------------- Levels */
+    const d = {};
+    d.C2 = S("Levels", X.title);
+    for (let col = 4; col <= 5 + maxYears; col++) {
+      d[bessColLetter(col) + "2"] = S("", X.titlePad);
+    }
+    const banner = (row, num, title) => {
+      for (let col = 2; col <= 5 + maxYears; col++) {
+        const ref = bessColLetter(col) + row;
+        if (col === 2) d[ref] = N(num, X.band);
+        else if (col === 3) d[ref] = S(title, X.band);
+        else if (col === 4) d[ref] = S("", X.bandUnitsDcf);
+        else d[ref] = S("", X.band);
+      }
+    };
+    // Year-header row: F holds 1, every later column the previous
+    // plus one (the BESS hdr convention, so the numbers stay live).
+    const yearHdr = (row, label, count) => {
+      d["C" + row] = S(label, X.hdr);
+      d["D" + row] = S("", X.hdrUnitsDcf);
+      d["E" + row] = S("", X.hdr);
+      d["F" + row] = N(1, X.hdr);
+      for (let n = 2; n <= count; n++) {
+        const col = bessColLetter(5 + n), prev = bessColLetter(4 + n);
+        d[col + row] = F(`${prev}${row}+1`, X.hdr);
+      }
+    };
+    // One formula per year column, years 1..count; `first` overrides
+    // the year-1 column when its formula differs (the walk rows).
+    const yearRow = (row, label, unit, template, style, count, first) => {
+      d["C" + row] = S(label, X.label);
+      d["D" + row] = S(unit, X.unitsDcf);
+      for (let n = 1; n <= count; n++) {
+        const col = bessColLetter(5 + n), prev = bessColLetter(4 + n);
+        const f = (n === 1 && first != null) ? first : template(col, prev, n);
+        d[col + row] = F(f, style);
+      }
+    };
+    // A single summary cell in column E, beside its label and units.
+    const summary = (row, label, unit, formula, style, labelStyle, unitStyle) => {
+      d["C" + row] = S(label, labelStyle || X.label);
+      d["D" + row] = S(unit, unitStyle || X.unitsDcf);
+      d["E" + row] = F(formula, style);
+    };
+
+    banner(L.conBanner, 1, "Construction and RAV build");
+    yearHdr(L.hdrCon, "Construction year", CY);
+    yearRow(L.additions, "Additions (devex in year 1 + capex spread)",
+      "GBPm", () => `${IN(W.capex)}/${IN(W.constructionYears)}`,
+      X.formulaNum, CY,
+      `${IN(W.devex)}+${IN(W.capex)}/${IN(W.constructionYears)}`);
+    // A1.70: in-year additions earn a half year of IDC via the simple
+    // half-year-rate discount from mid-year; year 1 has no opening
+    // balance, so its formula states that visibly rather than leaning
+    // on an empty cell reading as zero.
+    yearRow(L.idc, "IDC (rate x (opening RAV + additions / (2 + rate)))",
+      "GBPm",
+      (col, prev) => `${IN(W.idcRate)}*(${prev}${L.closing}` +
+        `+${col}${L.additions}/(2+${IN(W.idcRate)}))`,
+      X.formulaNum, CY,
+      `${IN(W.idcRate)}*(F${L.additions}/(2+${IN(W.idcRate)}))`);
+    yearRow(L.closing, "Closing pre-operational RAV", "GBPm",
+      (col, prev) => `${prev}${L.closing}+${col}${L.additions}+${col}${L.idc}`,
+      X.formulaNum, CY, `F${L.additions}+F${L.idc}`);
+
+    banner(L.txBanner, 2, "Transfer to operations");
+    summary(L.tx,
+      "Transaction costs at transfer (gearing-weighted debt/equity blend)",
+      "GBPm",
+      `${lastC}${L.closing}*(${IN(W.gearing)}*${IN(W.txDebtRate)}` +
+      `+(1-${IN(W.gearing)})*${IN(W.txEquityRate)})`, X.formulaNum);
+    summary(L.rav, "RAV at start of operations", "GBPm",
+      `${lastC}${L.closing}+$E$${L.tx}`, X.keyYears,
+      X.labelBold, X.unitsBold);
+
+    banner(L.opsBanner, 3, "Operations, year by year");
+    yearHdr(L.hdrOp, "Operational year", OY);
+    yearRow(L.opening, "Opening RAV", "GBPm",
+      (col, prev) => `${prev}${L.opening}-${prev}${L.depreciation}`,
+      X.formulaNum, OY, `$E$${L.rav}`);
+    yearRow(L.depreciation, "Depreciation (straight-line to residual)",
+      "GBPm/yr",
+      () => `($E$${L.rav}-${IN(W.residualValue)})/${IN(W.opYears)}`,
+      X.formulaNum, OY);
+    yearRow(L.closingOp, "Closing RAV", "GBPm",
+      (col) => `${col}${L.opening}-${col}${L.depreciation}`,
+      X.formulaNum, OY);
+    yearRow(L.returnFloor, "Return at the floor rate (rate x opening RAV)",
+      "GBPm/yr", (col) => `FLOOR_RATE*${col}${L.opening}`,
+      X.formulaNum, OY);
+    yearRow(L.returnCap, "Return at the cap rate (rate x opening RAV)",
+      "GBPm/yr", (col) => `CAP_RATE*${col}${L.opening}`,
+      X.formulaNum, OY);
+    yearRow(L.allowFloor, "Allowance at the floor rate (unprofiled)",
+      "GBPm/yr",
+      (col) => `${IN(W.opexFixed)}+${IN(W.decom)}` +
+        `+${col}${L.depreciation}+${col}${L.returnFloor}`,
+      X.formulaNum, OY);
+    yearRow(L.allowCap, "Allowance at the cap rate (unprofiled)",
+      "GBPm/yr",
+      (col) => `${IN(W.opexFixed)}+${IN(W.decom)}` +
+        `+${col}${L.depreciation}+${col}${L.returnCap}`,
+      X.formulaNum, OY);
+    // POWER's exponent is 0-year, never -year: the closed evaluator
+    // grammar (ops/xlsx_eval.py) has no unary minus.
+    yearRow(L.dfFloor, "Discount factor at the floor rate", "x",
+      (col) => `POWER(1+FLOOR_RATE,0-${col}$${L.hdrOp})`,
+      X.formula2dp, OY);
+    yearRow(L.dfCap, "Discount factor at the cap rate", "x",
+      (col) => `POWER(1+CAP_RATE,0-${col}$${L.hdrOp})`,
+      X.formula2dp, OY);
+    yearRow(L.discFloor, "Discounted allowance, floor", "GBPm",
+      (col) => `${col}${L.allowFloor}*${col}${L.dfFloor}`,
+      X.formulaNum, OY);
+    yearRow(L.discCap, "Discounted allowance, cap", "GBPm",
+      (col) => `${col}${L.allowCap}*${col}${L.dfCap}`,
+      X.formulaNum, OY);
+
+    banner(L.annBanner, 4, "Annuitised levels");
+    summary(L.npvFloor, "NPV of the floor allowance stream", "GBPm",
+      `SUM(F${L.discFloor}:${lastO}${L.discFloor})`, X.formulaNum);
+    summary(L.npvCap, "NPV of the cap allowance stream", "GBPm",
+      `SUM(F${L.discCap}:${lastO}${L.discCap})`, X.formulaNum);
+    // A1.151 with the rate-0 branch spelled out (degenerates to plain
+    // 1/n spreading), the engine's own explicit branch.
+    const annuityFactor = (rate) =>
+      `IF(${rate}=0,1/${IN(W.opYears)},` +
+      `${rate}/(1-POWER(1+${rate},0-${IN(W.opYears)})))`;
+    summary(L.afFloor, "Annuity factor at the floor rate", "x",
+      annuityFactor(RATE[W.floorRate]), X.formulaNum4dp);
+    summary(L.afCap, "Annuity factor at the cap rate", "x",
+      annuityFactor(RATE[W.capRate]), X.formulaNum4dp);
+    summary(L.floorLevel, "Floor level (NPV x annuity factor)",
+      "GBPm/yr", `E${L.npvFloor}*E${L.afFloor}`, X.keyYears,
+      X.labelBold, X.unitsBold);
+    summary(L.capLevel, "Cap level (NPV x annuity factor)",
+      "GBPm/yr", `E${L.npvCap}*E${L.afCap}`, X.keyYears,
+      X.labelBold, X.unitsBold);
+
+    banner(L.corrBanner, 5, "Corridor, central scenario");
+    // Flat by construction: each year column re-reads the Inputs cell,
+    // so the grid states the flatness rather than hardcoding it.
+    yearRow(L.gmLow, "GM low (flat real)", "GBPm/yr",
+      () => IN(W.gmLow), X.link1dp, OY);
+    yearRow(L.gmCentral, "GM central (flat real)", "GBPm/yr",
+      () => IN(W.gmCentral), X.link1dp, OY);
+    yearRow(L.gmHigh, "GM high (flat real)", "GBPm/yr",
+      () => IN(W.gmHigh), X.link1dp, OY);
+    yearRow(L.topUp, "Floor top-up, central (consumer support)", "GBPm/yr",
+      (col) => `MAX(0,$E$${L.floorLevel}-${col}${L.gmCentral})`,
+      X.formulaNum, OY);
+    yearRow(L.aboveCap, "Above the cap, central", "GBPm/yr",
+      (col) => `MAX(0,${col}${L.gmCentral}-$E$${L.capLevel})`,
+      X.formulaNum, OY);
+    yearRow(L.clawback, "Consumer clawback (70% of above-cap)", "GBPm/yr",
+      (col) => `0.7*${col}${L.aboveCap}`, X.formulaNum, OY);
+    yearRow(L.retained, "Retained by the operator", "GBPm/yr",
+      (col) => `${col}${L.gmCentral}-${col}${L.clawback}`,
+      X.formulaNum, OY);
+    summary(L.lifeTopUp, "Lifetime floor top-up, central", "GBPm",
+      `SUM(F${L.topUp}:${lastO}${L.topUp})`, X.keyYears,
+      X.labelBold, X.unitsBold);
+    summary(L.lifeClawback, "Lifetime consumer clawback, central", "GBPm",
+      `SUM(F${L.clawback}:${lastO}${L.clawback})`, X.keyYears,
+      X.labelBold, X.unitsBold);
+    summary(L.lifeRetained, "Lifetime retained, central", "GBPm",
+      `SUM(F${L.retained}:${lastO}${L.retained})`, X.keyYears,
+      X.labelBold, X.unitsBold);
+    // The engine's faScore guard verbatim: null (here the named "n/a")
+    // unless the floor level is strictly positive.
+    summary(L.fa, "FA score (central GM / floor level)", "x",
+      `IF($E$${L.floorLevel}<=0,"n/a",${IN(W.gmCentral)}/$E$${L.floorLevel})`,
+      X.keyMult, X.labelBold, X.unitsBold);
+
+    banner(L.checksBanner, 6, "Checks");
+    // The telescoping identity the engine's return base exists to
+    // guarantee (and AnnuityIdentityTest pins in the mirror): the PV of
+    // depreciation plus return, discounted at rate r, equals the RAV at
+    // start of operations less the residual discounted from the end of
+    // the regime. Exactly true for this engine at BOTH rates, opex and
+    // residual notwithstanding, so both rows must read ~0. SUMPRODUCT
+    // per component: the grammar multiplies ranges pairwise but has no
+    // elementwise range addition.
+    const identity = (label, depRow, retRow, dfRow, rateRow) => {
+      const pv = (row) =>
+        `SUMPRODUCT(F${row}:${lastO}${row},F${dfRow}:${lastO}${dfRow})`;
+      return summary(label === "floor" ? L.chkFloor : L.chkCap,
+        `Check: PV of depreciation + return telescopes to RAV less ` +
+        `discounted residual (${label} rate, must be ~0)`, "GBPm",
+        `${pv(depRow)}+${pv(retRow)}-($E$${L.rav}-${IN(W.residualValue)}` +
+        `*POWER(1+${RATE[rateRow]},0-${IN(W.opYears)}))`, X.checkMoney,
+        X.check, X.check);
+    };
+    identity("floor", L.depreciation, L.returnFloor, L.dfFloor, W.floorRate);
+    identity("cap", L.depreciation, L.returnCap, L.dfCap, W.capRate);
+
+    return {
+      definedNames: [
+        { name: "FLOOR_RATE", ref: `Inputs!$E$${W.floorRate}` },
+        { name: "CAP_RATE", ref: `Inputs!$E$${W.capRate}` },
+      ],
+      sheets: [
+        { name: "Cover",
+          cols: [[1, 1, 10.8], [3, 3, 11.3], [4, 4, 13.8], [5, 5, 20],
+                 [6, 6, 10.8], [7, 7, 10.8]],
+          freeze: 0, cells: cover },
+        { name: "Inputs",
+          cols: [[1, 1, 10.8], [2, 2, 4], [3, 3, 43], [4, 4, 14],
+                 [5, 5, 14], [6, 6, 24], [7, 7, 10]],
+          freeze: 4, cells: a },
+        { name: "Levels",
+          cols: [[2, 2, 4], [3, 3, 52], [4, 4, 12], [5, 5, 12.7],
+                 [6, 6, 12.7], [7, 5 + maxYears, 12.7]],
+          freeze: 2, zoom: 75, cells: d },
+      ],
+    };
+  }
+
+  /* D82's glue: the CSV export's own gate (all engine-required inputs
+     present and an input set the engine accepts), the BESS xlsx
+     download's Blob plumbing, filename gb_ldes_minicffm.xlsx beside the
+     CSV's .csv. */
+  function downloadLdesCffmXlsx() {
+    const c = ldesCffmCalc;
+    if (ldesCffmMissingLabels(c).length) return;
+    const inputs = ldesCffmEngineInputs(c);
+    if (!Metrics.cffmLevels(inputs)) return;
+    const bytes = Xlsx.build(ldesCffmWorkbookModel(c, inputs));
+    const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-" +
+      "officedocument.spreadsheetml.sheet" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "gb_ldes_minicffm.xlsx";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  /* D71's honesty rule on this card's four groups: "set" means departed
+     from the shipped state — null for the blank cost/margin fields, the
+     published prefill for the Reference-badged rates (clearing one
+     counts too). */
+  function updateLdesCffmGroupMarkers(c) {
+    document.querySelectorAll("#ldes-cffm-inputs details.calc-group")
+      .forEach((group) => {
+        const marker = group.querySelector(".calc-group-active");
+        if (!marker) return;
+        let n = 0;
+        group.querySelectorAll("[data-cffm]").forEach((el) => {
+          const key = el.dataset.cffm;
+          const set = key in LDES_CFFM_DEFAULTS
+            ? ldesCffmCalc[key] !== LDES_CFFM_DEFAULTS[key]
+            : c[key] != null;
+          if (set) n += 1;
+        });
+        const text = n ? `${n} set` : "";
+        if (marker.textContent !== text) marker.textContent = text;
+      });
+  }
+
+  /* The one place typed percents become the engine's fractions and blank
+     optional costs become a zero contribution. devex/opex/decom blank is
+     absence-of-a-cost-line, not a shipped market default — D23 holds. */
+  function ldesCffmEngineInputs(c) {
+    const pct = (v) => (v == null ? null : v / 100);
+    return {
+      constructionYears: c.constructionYears,
+      devex: c.devex != null ? c.devex : 0,
+      capex: c.capex,
+      idcRate: pct(c.idcRate),
+      gearing: pct(c.gearing),
+      txDebtRate: pct(c.txDebtRate),
+      txEquityRate: pct(c.txEquityRate),
+      opexFixed: c.opexFixed != null ? c.opexFixed : 0,
+      decom: c.decom != null ? c.decom : 0,
+      opYears: c.opYears,
+      residualValue: c.residualValue,
+      floorRate: pct(c.floorRate),
+      capRate: pct(c.capRate),
+    };
+  }
+
+  /* Every engine-required input the reader can leave or make blank —
+     the two genuinely-blank required fields first, then any cleared
+     Reference prefill (they arrive filled, so these only ever appear
+     after a deliberate clear). */
+  function ldesCffmMissingLabels(c) {
+    const missing = [];
+    if (c.constructionYears == null) missing.push("construction years");
+    if (c.capex == null) missing.push("CAPEX (£m)");
+    if (c.floorRate == null) missing.push("floor return (%) — cleared");
+    if (c.capRate == null) missing.push("cap return (%) — cleared");
+    if (c.idcRate == null) missing.push("IDC rate (%) — cleared");
+    if (c.gearing == null) missing.push("notional gearing (%) — cleared");
+    if (c.txDebtRate == null) missing.push("debt transaction costs (%) — cleared");
+    if (c.txEquityRate == null) missing.push("equity transaction costs (%) — cleared");
+    if (c.opYears == null) missing.push("operational years — cleared");
+    if (c.residualValue == null) missing.push("residual value (£m) — cleared");
+    return missing;
+  }
+
+  function updateLdesCffmLiveFields(c) {
+    // D79: the decommissioning field is a per-YEAR allowance, and the
+    // trap is entering a one-off end-of-life cost there — silently a
+    // 25x overstatement at the default regime length. The live line
+    // states the lifetime total whenever the field is set, and when
+    // that total exceeds 20% of CAPEX (an allowance-sized number does
+    // not get near that) it offers the annuitised equivalent of the
+    // same figure read as a one-off, at the floor rate — the engine's
+    // own annuity arithmetic (Metrics.cffmAnnuitiseEndOfLife), so the
+    // reader can retype the field rather than discover the error in
+    // the levels.
+    const decomLiveEl = document.getElementById("ldes-cffm-decom-live");
+    if (decomLiveEl) {
+      let text = "";
+      if (c.decom != null && c.opYears != null && c.opYears >= 1) {
+        const lifetime = c.decom * c.opYears;
+        text = `${ldesCffmFmtM(c.decom)}/yr is ${ldesCffmFmtM(lifetime)} ` +
+          `over ${c.opYears} years.`;
+        if (c.capex != null && c.capex > 0 && lifetime > 0.2 * c.capex) {
+          const eq = c.floorRate == null ? null
+            : Metrics.cffmAnnuitiseEndOfLife(
+                c.decom, c.floorRate / 100, c.opYears);
+          text += " That is large for a decommissioning allowance — if " +
+            `you meant a one-off end-of-life cost of ${
+              ldesCffmFmtM(c.decom)}` +
+            (eq != null
+              ? `, its annuitised equivalent is ≈${ldesCffmFmtM(eq)}/yr.`
+              : ", enter its annuitised equivalent instead (see the " +
+                "note below).");
+        }
+      }
+      if (decomLiveEl.textContent !== text) decomLiveEl.textContent = text;
+    }
+    const gmLiveEl = document.getElementById("ldes-cffm-gm-live");
+    if (gmLiveEl) {
+      const perKw = (v) => ldesCffmPerKw(v, c.mw);
+      const parts = [["low", c.gmLow], ["central", c.gmCentral],
+                     ["high", c.gmHigh]]
+        .filter(([, v]) => v != null)
+        .map(([name, v]) => `${name} ${ldesCffmFmtM(v)}/yr` +
+          (perKw(v) != null ? ` = £${perKw(v).toFixed(1)}/kW/yr` : ""));
+      gmLiveEl.textContent = !parts.length ? ""
+        : c.mw > 0 ? `At ${c.mw} MW: ${parts.join(" · ")}`
+        : "Enter power (MW) above for £/kW/yr equivalents.";
+    }
+    updateLdesCffmGroupMarkers(c);
+  }
+
+  function ldesCffmCorridorChart(levels, corr, c, opYears) {
+    const floorLevel = levels.floor.level, capLevel = levels.cap.level;
+    const years = Array.from({ length: opYears }, (_, i) => i + 1);
+    const flat = (v) => years.map(() => v);
+    const fmt = (v) => ldesCffmFmtM(v) + "/yr";
+    // Which GM lines render: only scenarios actually typed — central is
+    // guaranteed by the caller's gate, low/high are optional.
+    const gmSeries = [];
+    const gmAnnotation = (scenario) => {
+      if (!scenario) return "";
+      if (scenario.topUp > 0) return ` · floor top-up ${fmt(scenario.topUp)}`;
+      if (scenario.clawback > 0) {
+        return ` · clawback ${fmt(scenario.clawback)} (70% of the ` +
+          `${fmt(scenario.aboveCap)} above the cap)`;
+      }
+      return " · inside the corridor";
+    };
+    const gmDefs = [
+      ["GM low", c.gmLow, "dashed", corr && corr.low],
+      ["GM central", c.gmCentral, "solid", corr && corr.central],
+      ["GM high", c.gmHigh, "dashed", corr && corr.high],
+    ];
+    gmDefs.forEach(([name, gm, style, scenario]) => {
+      if (gm == null) return;
+      gmSeries.push({
+        name, type: "line", showSymbol: false, data: flat(gm),
+        lineStyle: { width: style === "solid" ? 1.8 : 1.2,
+          color: css("--accent"), type: style,
+          opacity: style === "solid" ? 1 : 0.75 },
+        itemStyle: { color: css("--accent") },
+        // Carried on the series so the tooltip formatter below can
+        // state what the corridor does to this scenario without
+        // recomputing D77's arithmetic in the view layer.
+        cffmNote: gmAnnotation(scenario),
+      });
+    });
+    const opt = base({
+      legend: legendBar({ data: ["Floor", "Cap",
+        ...gmSeries.map((s) => s.name)] }),
+      grid: { left: 56, right: 24, top: 30, bottom: 40 },
+      xAxis: {
+        type: "category", data: years, name: "operational year",
+        nameLocation: "middle", nameGap: 26,
+        nameTextStyle: { color: css("--text-dim") },
+        axisLine: { lineStyle: { color: css("--border") } },
+        axisLabel: { color: css("--text-dim"), fontFamily: MONO },
+        axisTick: { show: false },
+      },
+      yAxis: valueAxis("£m/yr"),
+      series: [
+        // The corridor band: house stacked-invisible-line technique
+        // (bessRevenue's spread band above) — an invisible base at the
+        // floor plus a stacked (cap - floor) delta whose areaStyle is
+        // the shading. Both flat and positive, so the default stack
+        // strategy suffices; the trailing-space name hides the delta
+        // from tooltip and legend.
+        { name: "Corridor", type: "line", stack: "corridor",
+          showSymbol: false, data: flat(floorLevel),
+          lineStyle: { opacity: 0 }, itemStyle: { color: css("--text-dim") },
+          tooltip: { show: false }, silent: true },
+        { name: "Corridor ", type: "line", stack: "corridor",
+          showSymbol: false, data: flat(capLevel - floorLevel),
+          lineStyle: { opacity: 0 },
+          areaStyle: { color: css("--text-dim"), opacity: 0.12 },
+          itemStyle: { color: css("--text-dim") },
+          tooltip: { show: false }, silent: true },
+        { name: "Floor", type: "line", showSymbol: false,
+          data: flat(floorLevel),
+          lineStyle: { width: 1.6, color: "#5ad6a4" },
+          itemStyle: { color: "#5ad6a4" } },
+        { name: "Cap", type: "line", showSymbol: false,
+          data: flat(capLevel),
+          lineStyle: { width: 1.6, color: "#e4573d" },
+          itemStyle: { color: "#e4573d" } },
+        ...gmSeries,
+      ],
+    });
+    // Every series is flat real by construction, so the tooltip's job is
+    // not the values (they never change across the axis) but what the
+    // corridor DOES at each GM line — the top-up/clawback annotation.
+    opt.tooltip.formatter = (params) => {
+      const list = Array.isArray(params) ? params : [params];
+      if (!list.length) return "";
+      const rows = list
+        .filter((p) => !p.seriesName.endsWith(" ")
+          && p.seriesName !== "Corridor")
+        .map((p) => {
+          const series = opt.series.find((s) => s.name === p.seriesName);
+          return `${p.marker} ${p.seriesName}` +
+            `<span style="float:right;margin-left:16px;font-weight:600">` +
+            `${fmt(p.value)}</span>` +
+            ((series && series.cffmNote)
+              ? `<br><span style="margin-left:14px;opacity:.8">` +
+                `${series.cffmNote.slice(3)}</span>` : "");
+        });
+      return `<div style="margin-bottom:3px">Year ${list[0].axisValue} ` +
+        `(flat real)</div>${rows.join("<br>")}`;
+    };
+    chart("ch-ldes-cffm").setOption(opt, true);
+  }
+
+  /* The mini-CFFM's deterministic "Reading:" line (plan/10 D83) —
+     bessCalcReading's discipline verbatim: a pure function over the
+     levels and corridor figures the card just computed, enumerable
+     conditional templates with no model call behind them, at most the
+     three highest-priority firing sentences, silent (null) when
+     nothing fires. `s`:
+       floorLevel/capLevel £m/yr (required); central the corridor's
+       central-scenario object or null; faScore fraction or null;
+       gmHigh the TYPED high scenario £m/yr or null (never the
+       defaulted-to-central resolution — rule 3 is about the reader's
+       own spread); opYears regime years; mw typed MW or null;
+       rav £m. */
+  function ldesCffmReading(s) {
+    if (!s || !Number.isFinite(s.floorLevel)
+      || !Number.isFinite(s.capLevel)) return null;
+    const fmtM = ldesCffmFmtM;
+    const sentences = [];
+
+    // 1. Where the central scenario sits against the corridor.
+    const cn = s.central;
+    if (cn && Number.isFinite(cn.gm)) {
+      if (cn.gm < s.floorLevel) {
+        sentences.push(`The central gross margin sits ` +
+          `${fmtM(s.floorLevel - cn.gm)}/yr below the floor — consumers ` +
+          `would fund roughly ${fmtM(cn.lifetimeTopUp)} over the ` +
+          `${s.opYears}-year regime; Ofgem's Financial Assessment ` +
+          `screens exactly this.`);
+      } else if (cn.gm > s.capLevel) {
+        sentences.push(`The central gross margin sits ` +
+          `${fmtM(cn.gm - s.capLevel)}/yr above the cap — 70% of that ` +
+          `excess (${fmtM(cn.clawback)}/yr) is returned to consumers, ` +
+          `and you keep ${fmtM(cn.retained)}/yr.`);
+      } else {
+        sentences.push(`The central gross margin sits inside the ` +
+          `corridor — no floor support and no clawback on the central ` +
+          `case.`);
+      }
+    }
+
+    // 2. FA score against Ofgem's published 0.60 demotion threshold.
+    if (Number.isFinite(s.faScore)) {
+      sentences.push(s.faScore >= 0.6
+        ? `The ${s.faScore.toFixed(2)} FA score clears Ofgem's 0.60 ` +
+          `threshold.`
+        : `The ${s.faScore.toFixed(2)} FA score fails Ofgem's 0.60 ` +
+          `threshold — in the real Window 1 assessment, projects ` +
+          `scoring below 0.60 on assessed revenues were demoted.`);
+    }
+
+    // 3. Floor above even the typed high scenario.
+    if (Number.isFinite(s.gmHigh) && s.floorLevel > s.gmHigh) {
+      sentences.push(`The floor exceeds even the high scenario — on ` +
+        `these costs the asset does not pay for itself from the market ` +
+        `at any of your scenarios.`);
+    }
+
+    // 4. Cost intensity: the recovery burden per kW.
+    if (s.mw > 0 && s.opYears >= 1 && Number.isFinite(s.rav)
+      && s.floorLevel > 0) {
+      const perKw = (s.floorLevel * 1000) / s.mw;
+      const ravPerKw = (s.rav * 1000) / s.mw;
+      const fmtKw = (v) => v.toLocaleString("en-GB",
+        { maximumFractionDigits: v >= 100 ? 0 : 1 });
+      sentences.push(`The building blocks need £${fmtKw(perKw)}/kW/yr ` +
+        `to recover £${fmtKw(ravPerKw)}/kW of RAV over ${s.opYears} ` +
+        `years.`);
+    }
+
+    if (!sentences.length) return null;
+    return `<b>Reading:</b> ${sentences.slice(0, 3).join(" ")}`;
+  }
+
+  function ldesCffmCalculator() {
+    wireLdesCffm();
+    const c = ldesCffmCalc;
+    updateLdesCffmLiveFields(c);
+
+    const headlineEl = document.getElementById("ldes-cffm-headline");
+    const breakdownEl = document.getElementById("ldes-cffm-breakdown");
+    const readingEl = document.getElementById("ldes-cffm-reading");
+    const emptyEl = document.getElementById("ldes-cffm-empty");
+    const chartEl = document.getElementById("ch-ldes-cffm");
+    const captionEl = document.getElementById("ldes-cffm-caption");
+    const csvBtn = document.getElementById("ldes-cffm-csv");
+    const xlsxBtn = document.getElementById("ldes-cffm-xlsx");
+    if (!headlineEl || !breakdownEl || !emptyEl || !chartEl) return;
+
+    const clearChart = (message) => {
+      chartEl.classList.add("hidden");
+      const inst = chart("ch-ldes-cffm");
+      if (inst) inst.clear();
+      if (captionEl) captionEl.textContent = "";
+      emptyEl.classList.remove("hidden");
+      emptyEl.innerHTML = message;
+    };
+
+    const missing = ldesCffmMissingLabels(c);
+    const inputs = ldesCffmEngineInputs(c);
+    const levels = missing.length ? null : Metrics.cffmLevels(inputs);
+    // D80: the export shares the results' own gate — a computable set
+    // of levels — and needs nothing else (a missing corridor exports
+    // as zeros the header declares not_set). D82: the workbook export
+    // is gated identically, beside it.
+    if (csvBtn) csvBtn.classList.toggle("hidden", !levels);
+    if (xlsxBtn) xlsxBtn.classList.toggle("hidden", !levels);
+    if (!levels) {
+      headlineEl.innerHTML = "";
+      breakdownEl.textContent = "";
+      breakdownEl.classList.add("hidden");
+      if (readingEl) {
+        readingEl.textContent = "";
+        readingEl.classList.add("hidden");
+      }
+      clearChart(missing.length
+        ? `<div class="calc-missing">Enter the required inputs to see the
+            floor and cap levels:<ul>${
+            missing.map((m) => `<li>${m}</li>`).join("")}</ul></div>`
+        : "Enter valid numeric assumptions to see the levels.");
+      return;
+    }
+
+    const floorLevel = levels.floor.level, capLevel = levels.cap.level;
+    const perKwNote = (level) => {
+      const perKw = ldesCffmPerKw(level, c.mw);
+      return perKw != null
+        ? `£${perKw.toFixed(1)}/kW/yr at ${c.mw} MW`
+        : "enter MW for £/kW/yr";
+    };
+    const fmtM = ldesCffmFmtM;
+
+    // Corridor only once a central scenario exists — the FA score and
+    // the transfer tiles are meaningless without one, and inventing a
+    // margin would be a default this card must not ship.
+    const opYears = inputs.opYears;
+    const corr = c.gmCentral == null ? null : Metrics.cffmCorridor(
+      { floorLevel, capLevel },
+      { gmLow: c.gmLow != null ? c.gmLow : c.gmCentral,
+        gmCentral: c.gmCentral,
+        gmHigh: c.gmHigh != null ? c.gmHigh : c.gmCentral,
+        opYears });
+
+    let corridorTiles = "";
+    if (corr) {
+      const fa = corr.faScore;
+      const faBelow = fa != null && fa < 0.6;
+      const faNote = fa == null
+        ? "no positive floor to divide by"
+        : faBelow
+          ? "BELOW Ofgem's published 0.60 demotion threshold — a Window 1 " +
+            "project scoring here was demoted in the assessment"
+          : "central GM ÷ floor · Ofgem's published demotion threshold " +
+            "is 0.60";
+      corridorTiles = `
+      <div class="calc-stat"><span class="cs-label">FA score</span>
+        <span class="cs-value${fa == null ? " neutral" : ""}">${
+          fa == null ? "n/a" : fa.toFixed(2)}</span>
+        <span class="cs-note">${faNote}</span></div>
+      <div class="calc-stat"><span class="cs-label">Lifetime floor
+          top-up</span>
+        <span class="cs-value${corr.central.lifetimeTopUp > 0 ? "" : " neutral"}">${
+          fmtM(corr.central.lifetimeTopUp)}</span>
+        <span class="cs-note">central scenario, ${opYears} yr flat,
+          undiscounted · consumer support up to the floor</span></div>
+      <div class="calc-stat"><span class="cs-label">Lifetime consumer
+          clawback</span>
+        <span class="cs-value${corr.central.lifetimeClawback > 0 ? "" : " neutral"}">${
+          fmtM(corr.central.lifetimeClawback)}</span>
+        <span class="cs-note">central scenario · 70% above the cap
+          returned; 30% retained</span></div>`;
+    }
+
+    headlineEl.innerHTML = `
+      <div class="calc-stat"><span class="cs-label">Floor level</span>
+        <span class="cs-value">${fmtM(floorLevel)}/yr</span>
+        <span class="cs-note">flat real, ex-tax ·
+          ${perKwNote(floorLevel)}</span></div>
+      <div class="calc-stat"><span class="cs-label">Cap level</span>
+        <span class="cs-value">${fmtM(capLevel)}/yr</span>
+        <span class="cs-note">flat real, ex-tax ·
+          ${perKwNote(capLevel)}</span></div>${corridorTiles}`;
+
+    // The building-blocks breakdown: each level restated as its three
+    // annuitised sub-blocks, plus the RAV they all hang off. The blocks
+    // sum to the level by construction (the engine exposes them for
+    // exactly this line).
+    breakdownEl.innerHTML =
+      `RAV <span class="cm-fig">${fmtM(levels.rav)}</span> ` +
+      `(incl. IDC ${fmtM(levels.idcTotal)}, transaction costs ` +
+      `${fmtM(levels.txTotal)}) · floor = return ` +
+      `<span class="cm-fig">${fmtM(levels.floor.returnAnnuity)}</span> + ` +
+      `depreciation <span class="cm-fig">${
+        fmtM(levels.floor.depreciationAnnuity)}</span> + ` +
+      `opex &amp; decom <span class="cm-fig">${
+        fmtM(levels.floor.opexBlock)}</span> · cap = ` +
+      `<span class="cm-fig">${fmtM(levels.cap.returnAnnuity)}</span> + ` +
+      `<span class="cm-fig">${fmtM(levels.cap.depreciationAnnuity)}</span> + ` +
+      `<span class="cm-fig">${fmtM(levels.cap.opexBlock)}</span>`;
+    breakdownEl.classList.remove("hidden");
+
+    /* The D83 reading line — rendered whenever levels exist (the
+       corridor rules simply stay silent without a central scenario)
+       and cleared with everything else on the missing-inputs branch
+       above. See ldesCffmReading's docstring. */
+    if (readingEl) {
+      const reading = ldesCffmReading({
+        floorLevel, capLevel,
+        central: corr ? corr.central : null,
+        faScore: corr ? corr.faScore : null,
+        gmHigh: c.gmHigh,
+        opYears, mw: c.mw, rav: levels.rav,
+      });
+      readingEl.innerHTML = reading || "";
+      readingEl.classList.toggle("hidden", !reading);
+    }
+
+    if (!corr) {
+      clearChart("Enter at least a central gross-margin scenario to see " +
+        "the corridor.");
+      return;
+    }
+    emptyEl.classList.add("hidden");
+    emptyEl.innerHTML = "";
+    chartEl.classList.remove("hidden");
+    ldesCffmCorridorChart(levels, corr, c, opYears);
+    if (captionEl) {
+      captionEl.textContent = `£m/yr, flat real, ex-tax · corridor and ` +
+        `scenarios held flat over the ${opYears} operational years · ` +
+        `lifetime figures undiscounted`;
+    }
+    requestAnimationFrame(resizeAll);
+  }
+
   const PANELS = {
     overview: [overviewMain, overviewDonut, overviewResidual],
     prices: [priceMain, priceHist, priceShape, priceNetLoad],
@@ -5568,6 +8018,10 @@ const Charts = (() => {
             flowsContext],
     stress: [stressDaily, stressEvent],
     bess: [bessActivity, bessRevenue, bessFleetTable, bessCalculator],
+    // D72: LDES is long-duration storage, not BESS — its reference card
+    // has its own tab, so the lazy Data.loadLdesCapfloor() fetch now
+    // fires on this tab's first activation, not the Batteries tab's.
+    ldes: [ldesCapfloor, ldesCffmCalculator],
     methodology: [],
   };
 
