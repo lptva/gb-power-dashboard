@@ -2280,11 +2280,15 @@ const UI = (() => {
          spend earns a half year of interest, the accumulated balance a
          full year. Transaction costs are charged once at transfer, as
          the notional-gearing-weighted blend of the debt and equity
-         rates on the pre-operational RAV. From the start of operations
-         the RAV depreciates straight-line down to the residual value,
-         each year earns a return of rate × opening RAV, and the whole
-         allowance stream (return + depreciation + fixed opex +
-         decommissioning) is discounted and flattened with the
+         rates on the pre-operational RAV. At the start of operations
+         the residual value is deducted from the opening RAV — the
+         CFFM's own year-1 treatment (Op_Rav!K12), so the residual
+         never depreciates and never earns a return — and the
+         depreciable base runs straight-line to zero. Each year earns a
+         return of rate × the average of the opening RAV and the
+         closing RAV discounted one year (the CFFM's Op_Rav!K38 base),
+         and the whole allowance stream (return + depreciation + fixed
+         opex + decommissioning) is discounted and flattened with the
          <a class="term-link" data-term="annuity" href="#g-annuity">
          annuity factor</a> r / (1 − (1 + r)<sup>−n</sup>) — once at the
          floor rate and once at the cap rate. The card's breakdown line
@@ -2296,25 +2300,31 @@ const UI = (() => {
          the regime ≈ X × (1+r)<sup>−N</sup> × AF(r, N) per year at
          the floor rate), and the live line under the field states the
          lifetime total and computes that equivalent so the two cannot
-         be silently confused.</p>
-      <p><b>Three stated simplifications.</b> First, the model is
-         <b>ex-tax</b>: the real CFFM adds a grossed-up nominal
-         corporation-tax annuity to both levels, so genuine levels sit
-         above what this card shows. Second, there is <b>no Repex and no
-         ACOD floor</b>: replacement expenditure re-spreads depreciation
-         in the full model, and the Adjusted Cost of Debt floor option
-         exists for project-financed assets; neither is replicated.
-         Third, the <b>return base is rate × opening RAV</b>, where the
-         handbook (A1.143) averages the opening and discounted closing
-         RAV within each year. The deviation is deliberate: under this
-         card's end-of-year discounting the opening-RAV base is the
-         unique choice for which depreciation plus return telescopes
-         exactly to the RAV — the flat annuity then equals
-         RAV × annuity factor, an identity a reader can check on the
-         card itself (zero opex, zero residual: level = RAV × AF). The
-         handbook's averaged base is NPV-neutral only under the real
-         model's intra-year receipt timing and would miss that identity
-         here.</p>
+         be silently confused. One nuance: the exact annuitised
+         equivalent differs slightly by rate — the floor and cap sides
+         each discount at their own r — and the helper uses the floor
+         rate for both, an approximation we accept.</p>
+      <p><b>Two stated simplifications, verified against the real
+         model.</b> The engine's capital arithmetic was verified cell
+         by cell against Ofgem's CFFM v2.17 (a replica matched the
+         model's cached values to ~10<sup>−13</sup>); its return base
+         and residual timing are the model's own, and the identity a
+         reader can check on the card itself is the model's factor
+         identity (zero opex, zero residual:
+         level = RAV × AF × (2+r)/(2(1+r)) — the (2+r)/(2(1+r))
+         factor comes from the CFFM's averaged return base under
+         end-of-year discounting, and it is in Ofgem's own levels).
+         What remains simplified: first, the model is <b>ex-tax</b> —
+         the real CFFM adds a grossed-up nominal corporation-tax
+         annuity to both levels, and measured on Ofgem's own
+         illustrative dataset the omission leaves this card's levels
+         roughly 10–13% below the true ones (+13.2% on the cap, +10.6%
+         on the notional floor). Second, there is <b>no Repex and no
+         ACOD floor</b>: replacement expenditure re-spreads
+         depreciation in the full model (worth ~0.3–0.7% of the levels
+         in Ofgem's example), and the Adjusted Cost of Debt floor
+         option exists for project-financed assets; neither is
+         replicated.</p>
       <p><b>The corridor.</b> Gross-margin scenarios are held flat real
          against the levels: below the floor the top-up is the
          shortfall; above the
@@ -2339,9 +2349,10 @@ const UI = (() => {
          anything here; and this dashboard's fleet data is 1–2 h BESS,
          so no observed LDES revenue anchor exists — the gross-margin
          fields ship blank with no default, and nothing on the card is
-         a backcast or a forecast. Why the model is ex-tax and why the
-         return base deviates from the handbook's is judgement call 18
-         in the repository's methodology.md. The card's "Download CSV"
+         a backcast or a forecast. Why the model is ex-tax, and the
+         story of verifying its capital arithmetic against the real
+         CFFM v2.17, is judgement call 18 in the repository's
+         methodology.md. The card's "Download CSV"
          button exports a three-column parameter table
          (<code>section,parameter,value</code>) — the model is flat
          real, so there is no year dimension to tabulate: one
@@ -2365,9 +2376,9 @@ const UI = (() => {
          depreciation, the return at each rate, the unprofiled and
          discounted allowance streams), the annuity factors and the two
          level cells, and the central-scenario corridor walk — with the
-         telescoping identity as labelled check rows at each rate: the
-         PV of depreciation plus return must equal the RAV less the
-         discounted residual, exactly, and both cells must read zero.
+         factor identity as labelled check rows at each rate: the
+         capital annuity must equal the depreciable RAV × AF ×
+         (2+r)/(2(1+r)), exactly, and both cells must read zero.
          The grids are sized to the construction and operational years
          entered at download time (re-download after changing them);
          the CSV remains the record of the figures, the workbook the

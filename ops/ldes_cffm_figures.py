@@ -10,17 +10,23 @@ Also mirrored: cffmAnnuitiseEndOfLife -> cffm_annuitise_end_of_life
 Ofgem's LDES cap-and-floor financial model (CFFM), reduced to its ex-tax
 real-terms core (D73/D74): RAV build with interest during construction
 (IDC, the A1.70 formula), transaction costs, straight-line depreciation,
-an NPV-neutral return on RAV, and annuity flattening (A1.151) — computed
-separately at the floor rate and the cap rate. Deliberately OUT of
-scope: the corporation-tax loop (levels are ex-tax), Repex, the ACOD
-floor, and the partial-indexation switch. Everything is flat real terms.
+the model's averaged-base return on RAV, and annuity flattening (A1.151)
+— computed separately at the floor rate and the cap rate. Deliberately
+OUT of scope: the corporation-tax loop (levels are ex-tax), Repex, the
+ACOD floor, and the partial-indexation switch. Everything is flat real
+terms.
 
-Return base: r x opening RAV — under this block's end-of-year
-discounting ((1+r)^-n from the start of operations) the opening RAV is
-the UNIQUE base for which PV(depreciation + return) telescopes exactly
-to RAV - residual x (1+r)^-opYears, the identity AnnuityIdentityTest
-pins. The full CFFM's averaged base (A1.143) is neutral only under its
-own intra-year receipt timing — see the JS docstring for the reasoning.
+Return base (mirrors Op_Rav!K38/K39, verified against CFFM v2.17,
+plan/10 D85): return_n = r x (opening + closing / (1 + r)) / 2, the
+average of the opening RAV and the closing RAV discounted one year, each
+side at its own rate, with plain end-of-year discounting ((1+r)^-n from
+the start of operations, Allowances_Cap!K36). The resulting capital
+annuity satisfies level = depreciable base x AF x (2+r)/(2(1+r)) — the
+factor identity CffmFactorIdentityTest pins. Residual timing (mirrors
+Op_Rav!K12's -I29 year-1 deduction): the residual is deducted from the
+opening operational RAV in year 1, so depreciation AND the return both
+run on RAV - residual, declining to zero; the residual never earns a
+return.
 
 This module has no I/O of its own: every function takes plain dicts and
 returns plain numbers/dicts, exactly like its JS counterpart. Stdlib
@@ -42,6 +48,8 @@ def cffm_levels(inputs):
     (whole construction years, one-shot transaction costs with no IDC of
     their own, depreciation down TO residualValue). None on any
     missing/non-finite required input or constructionYears/opYears < 1.
+    See the JS docstring also for the Op_Rav!K38 return base and the
+    Op_Rav!K12 residual deduction, both verified against CFFM v2.17.
     """
     if not inputs:
         return None
@@ -80,18 +88,20 @@ def cffm_levels(inputs):
                              + (1 - gearing) * values["txEquityRate"])
     rav = pre_op_rav + tx_total
 
-    depreciation = (rav - residual) / op_years
+    depreciable = rav - residual
+    depreciation = depreciable / op_years
     opex_plus_decom = values["opexFixed"] + values["decom"]
 
     def side(r):
-        opening = rav
+        opening = depreciable
         npv_return = npv_dep = npv_opex = 0.0
         for n in range(1, int(op_years) + 1):
             disc = (1 + r) ** -n
-            npv_return += r * opening * disc
+            closing = opening - depreciation
+            npv_return += r * (opening + closing / (1 + r)) / 2 * disc
             npv_dep += depreciation * disc
             npv_opex += opex_plus_decom * disc
-            opening -= depreciation
+            opening = closing
         if r == 0:
             annuity_factor = 1 / op_years
         else:

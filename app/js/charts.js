@@ -6956,7 +6956,11 @@ const Charts = (() => {
               equivalent: one-off £X at the end of the regime ≈
               X × (1+r)<sup>−N</sup> × AF(r, N) per year at the floor
               rate over N operational years. The live line under the
-              field does this arithmetic for you.</div>
+              field does this arithmetic for you. One nuance: the exact
+              annuitised equivalent differs slightly by rate (the floor
+              and cap sides each discount at their own r); the helper
+              uses the floor rate for both, an approximation we
+              accept.</div>
           </details>
         </div>
       </details>
@@ -7060,7 +7064,7 @@ const Charts = (() => {
      (owner feedback on D81: the CSV records the figures but cannot show
      the MECHANICS — the workbook is the palpable version, every derived
      cell an Excel formula over the Inputs cells, nothing precomputed,
-     so a reader can trace IDC, the RAV walk, the telescoping identity
+     so a reader can trace IDC, the RAV walk, the factor identity
      and the annuity flattening cell by cell). Same writer (Xlsx.build),
      same vendored style table (BESS_XF roles only, no new styles), same
      closed formula grammar (ops/xlsx_eval.py — POWER exponents written
@@ -7169,14 +7173,16 @@ const Charts = (() => {
         "(2 + rate)) - the handbook's A1.70 half-year convention: " +
         "in-year spend earns a half year of interest, the accumulated " +
         "balance a full year.",
-      "Depreciation runs the RAV straight-line down TO the residual " +
-        "value over the operational years; the residual is left standing " +
-        "at the end and keeps earning the return until then.",
-      "The return each year is rate x opening RAV - under end-of-year " +
-        "discounting the unique base for which depreciation plus return " +
-        "telescopes exactly to RAV less the discounted residual. The " +
-        "check rows on the Levels sheet pin this identity; both must " +
-        "read ~0.",
+      "Depreciation and the return both run on the depreciable base - " +
+        "RAV less the residual value, deducted from the opening " +
+        "operational RAV in year 1 (the CFFM's Op_Rav!K12) - " +
+        "straight-line to zero. The residual never earns a return.",
+      "The return each year is rate x the average of the opening RAV " +
+        "and the closing RAV discounted one year - the CFFM's " +
+        "Op_Rav!K38 base, verified against CFFM v2.17. With end-of-year " +
+        "discounting the capital annuity then equals depreciable RAV x " +
+        "AF x (2+r)/(2(1+r)); the check rows on the Levels sheet pin " +
+        "this factor identity and both must read ~0.",
       "Each level is the NPV of the allowance stream (opex + decom + " +
         "depreciation + return) times the annuity factor " +
         "rate / (1 - (1 + rate)^-n). Flattening is idempotent on the " +
@@ -7404,21 +7410,35 @@ const Charts = (() => {
 
     banner(L.opsBanner, 3, "Operations, year by year");
     yearHdr(L.hdrOp, "Operational year", OY);
-    yearRow(L.opening, "Opening RAV", "GBPm",
+    // Op_Rav!K12: the residual is deducted from the opening operational
+    // RAV in year 1, so the whole walk runs on the depreciable base and
+    // the residual never earns a return.
+    yearRow(L.opening, "Opening RAV (year 1 less the residual, Op_Rav!K12)",
+      "GBPm",
       (col, prev) => `${prev}${L.opening}-${prev}${L.depreciation}`,
-      X.formulaNum, OY, `$E$${L.rav}`);
-    yearRow(L.depreciation, "Depreciation (straight-line to residual)",
+      X.formulaNum, OY, `$E$${L.rav}-${IN(W.residualValue)}`);
+    yearRow(L.depreciation, "Depreciation (straight-line to zero)",
       "GBPm/yr",
       () => `($E$${L.rav}-${IN(W.residualValue)})/${IN(W.opYears)}`,
       X.formulaNum, OY);
     yearRow(L.closingOp, "Closing RAV", "GBPm",
       (col) => `${col}${L.opening}-${col}${L.depreciation}`,
       X.formulaNum, OY);
-    yearRow(L.returnFloor, "Return at the floor rate (rate x opening RAV)",
-      "GBPm/yr", (col) => `FLOOR_RATE*${col}${L.opening}`,
+    // Op_Rav!K38: the return base averages the opening RAV and the
+    // closing RAV discounted one year, each side at its own rate.
+    // Written as arithmetic, not AVERAGE() - the closed evaluator
+    // grammar (ops/xlsx_eval.py) has no AVERAGE.
+    yearRow(L.returnFloor,
+      "Return at the floor rate (rate x avg(opening, closing/(1+rate)))",
+      "GBPm/yr",
+      (col) => `(${col}${L.opening}+${col}${L.closingOp}` +
+        `/(1+FLOOR_RATE))/2*FLOOR_RATE`,
       X.formulaNum, OY);
-    yearRow(L.returnCap, "Return at the cap rate (rate x opening RAV)",
-      "GBPm/yr", (col) => `CAP_RATE*${col}${L.opening}`,
+    yearRow(L.returnCap,
+      "Return at the cap rate (rate x avg(opening, closing/(1+rate)))",
+      "GBPm/yr",
+      (col) => `(${col}${L.opening}+${col}${L.closingOp}` +
+        `/(1+CAP_RATE))/2*CAP_RATE`,
       X.formulaNum, OY);
     yearRow(L.allowFloor, "Allowance at the floor rate (unprofiled)",
       "GBPm/yr",
@@ -7502,26 +7522,28 @@ const Charts = (() => {
       X.keyMult, X.labelBold, X.unitsBold);
 
     banner(L.checksBanner, 6, "Checks");
-    // The telescoping identity the engine's return base exists to
-    // guarantee (and AnnuityIdentityTest pins in the mirror): the PV of
-    // depreciation plus return, discounted at rate r, equals the RAV at
-    // start of operations less the residual discounted from the end of
-    // the regime. Exactly true for this engine at BOTH rates, opex and
-    // residual notwithstanding, so both rows must read ~0. SUMPRODUCT
-    // per component: the grammar multiplies ranges pairwise but has no
-    // elementwise range addition.
-    const identity = (label, depRow, retRow, dfRow, rateRow) => {
+    // The factor identity of the model's averaged return base (CFFM
+    // v2.17, Op_Rav!K38 + Allowances_Cap!K36; CffmFactorIdentityTest
+    // pins it in the mirror): the capital annuity — PV of depreciation
+    // plus return, discounted at rate r and flattened with AF —
+    // equals depreciable RAV x AF x (2+r)/(2(1+r)). Exactly true for
+    // this engine at BOTH rates, opex and residual notwithstanding, so
+    // both rows must read ~0. SUMPRODUCT per component: the grammar
+    // multiplies ranges pairwise but has no elementwise range addition.
+    const identity = (label, retRow, dfRow, afRow, rateRow) => {
       const pv = (row) =>
         `SUMPRODUCT(F${row}:${lastO}${row},F${dfRow}:${lastO}${dfRow})`;
+      const rate = RATE[rateRow];
       return summary(label === "floor" ? L.chkFloor : L.chkCap,
-        `Check: PV of depreciation + return telescopes to RAV less ` +
-        `discounted residual (${label} rate, must be ~0)`, "GBPm",
-        `${pv(depRow)}+${pv(retRow)}-($E$${L.rav}-${IN(W.residualValue)}` +
-        `*POWER(1+${RATE[rateRow]},0-${IN(W.opYears)}))`, X.checkMoney,
+        `Check: capital annuity = RAV x AF x (2+r)/(2(1+r)), on the ` +
+        `depreciable RAV (${label} rate, must be ~0)`, "GBPm",
+        `(${pv(L.depreciation)}+${pv(retRow)})*$E$${afRow}` +
+        `-($E$${L.rav}-${IN(W.residualValue)})*$E$${afRow}` +
+        `*(2+${rate})/(2*(1+${rate}))`, X.checkMoney,
         X.check, X.check);
     };
-    identity("floor", L.depreciation, L.returnFloor, L.dfFloor, W.floorRate);
-    identity("cap", L.depreciation, L.returnCap, L.dfCap, W.capRate);
+    identity("floor", L.returnFloor, L.dfFloor, L.afFloor, W.floorRate);
+    identity("cap", L.returnCap, L.dfCap, L.afCap, W.capRate);
 
     return {
       definedNames: [

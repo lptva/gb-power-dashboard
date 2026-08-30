@@ -1,17 +1,19 @@
 """Tests for the mini-CFFM engine (plan/10 Phase 3, B2).
 
 Exercises ops/ldes_cffm_figures.py, the Python mirror of
-app/js/metrics.js (cffmLevels, cffmCorridor). No external worked example
-of the CFFM's ex-tax core exists, so the anchor here is the annuity
-identity itself (AnnuityIdentityTest): with every side-block switched
-off, the flattened ex-tax level must equal RAV x annuity factor exactly
-— the classic result the NPV-neutral return base exists to guarantee.
-Around it: the A1.70 IDC walk hand-computed year by year, the
-depreciation total (A1.139 adapted), the transaction-cost gearing split,
-the corridor arithmetic (D77), null safety, and a JS/Python shape-parity
-guard in the DoubleCountGuardTest source-grep style (the engine formulas
-are fingerprinted in BOTH source files, and the Python outputs are
-pinned against closed-form hand derivations).
+app/js/metrics.js (cffmLevels, cffmCorridor). The anchor is the factor
+identity of Ofgem's own capital arithmetic, verified cell by cell
+against CFFM v2.17 (plan/10 D85): the model's averaged return base
+(Op_Rav!K38) under plain end-of-year discounting (Allowances_Cap!K36)
+makes the flattened ex-tax capital annuity equal depreciable RAV x AF x
+(2+r)/(2(1+r)) exactly — CffmFactorIdentityTest pins it with every
+side-block switched off. Around it: the residual's Op_Rav!K12 year-1
+deduction (ResidualTimingTest), the A1.70 IDC walk hand-computed year
+by year, the depreciation total (A1.139 adapted), the transaction-cost
+gearing split, the corridor arithmetic (D77), null safety, and a
+JS/Python shape-parity guard in the DoubleCountGuardTest source-grep
+style (the engine formulas are fingerprinted in BOTH source files, and
+the Python outputs are pinned against closed-form hand derivations).
 """
 
 import base64
@@ -42,16 +44,30 @@ def annuity_factor(r, n):
     return r / (1 - (1 + r) ** -n)
 
 
-class AnnuityIdentityTest(unittest.TestCase):
-    """THE anchor. Single construction year, devex 0, idcRate 0, tx
-    rates 0, opex/decom 0, residual 0: the RAV is then exactly the
-    capex, and the ex-tax level must equal RAV x annuity factor at both
-    rates. This is the loan-amortisation identity: straight-line
-    depreciation plus a return of r x opening RAV, discounted at
-    (1+r)^-n, telescopes to PV = RAV, and the A1.151 factor turns that
-    PV back into the flat payment on principal RAV. It pins the whole
-    chain (RAV build -> blocks -> NPV -> annuity) with no external
-    worked example needed."""
+def capital_factor(r):
+    """(2+r)/(2(1+r)) — the factor Ofgem's averaged return base
+    (Op_Rav!K38) leaves in the capital annuity under plain end-of-year
+    discounting (Allowances_Cap!K36). Derivation, independent of the
+    engine loop: with dep = D/N and opening_n = D - (n-1)dep,
+    PV(dep + r x opening) telescopes to D (the classic identity); the
+    averaged base return_n = r x (opening_n + closing_n/(1+r))/2 shifts
+    that PV by -r x D/(2(1+r)) (because closing_n = opening_{n+1} and
+    closing_N = 0), giving PV = D x (2+r)/(2(1+r)). Verified against
+    CFFM v2.17 (plan/10 D85)."""
+    return (2 + r) / (2 * (1 + r))
+
+
+class CffmFactorIdentityTest(unittest.TestCase):
+    """THE anchor, corrected 2026-08-30 after cell-level verification
+    against Ofgem's CFFM v2.17 (this class replaces the old
+    AnnuityIdentityTest, which pinned level = RAV x AF on an opening-RAV
+    return base the real model does not use). Single construction year,
+    devex 0, idcRate 0, tx rates 0, opex/decom 0, residual 0: the RAV
+    is then exactly the capex, and the ex-tax level must equal
+    RAV x AF x (2+r)/(2(1+r)) at both rates — the (2+r)/(2(1+r))
+    factor is IN Ofgem's own levels, produced by the Op_Rav!K38
+    averaged return base under end-of-year discounting. It pins the
+    whole chain (RAV build -> blocks -> NPV -> annuity)."""
 
     COMBOS = [
         # (floorRate, capRate, opYears) — includes the Ofgem defaults
@@ -59,6 +75,7 @@ class AnnuityIdentityTest(unittest.TestCase):
         (0.0447, 0.0748, 25),
         (0.0300, 0.0600, 10),
         (0.0200, 0.0900, 40),
+        (0.0500, 0.0700, 15),
     ]
 
     @staticmethod
@@ -69,17 +86,19 @@ class AnnuityIdentityTest(unittest.TestCase):
                 "opYears": op_years, "residualValue": 0,
                 "floorRate": floor_rate, "capRate": cap_rate}
 
-    def test_level_equals_rav_times_annuity_factor(self):
+    def test_level_is_rav_times_af_times_capital_factor(self):
         for floor_rate, cap_rate, op_years in self.COMBOS:
             with self.subTest(floor=floor_rate, cap=cap_rate, n=op_years):
                 out = cffm_levels(self.inputs(floor_rate, cap_rate, op_years))
                 self.assertAlmostEqual(out["rav"], 500.0, delta=1e-12)
                 self.assertAlmostEqual(
                     out["floor"]["level"],
-                    500.0 * annuity_factor(floor_rate, op_years), delta=1e-8)
+                    500.0 * annuity_factor(floor_rate, op_years)
+                    * capital_factor(floor_rate), delta=1e-8)
                 self.assertAlmostEqual(
                     out["cap"]["level"],
-                    500.0 * annuity_factor(cap_rate, op_years), delta=1e-8)
+                    500.0 * annuity_factor(cap_rate, op_years)
+                    * capital_factor(cap_rate), delta=1e-8)
 
     def test_floor_level_below_cap_level(self):
         for floor_rate, cap_rate, op_years in self.COMBOS:
@@ -138,8 +157,9 @@ class IdcFormulaTest(unittest.TestCase):
 
 class DepreciationTotalTest(unittest.TestCase):
     """A1.139 adapted: total depreciation over the operational period
-    equals RAV - residualValue, with the residual left standing (and
-    still earning the return) at the end."""
+    equals RAV - residualValue. The residual is deducted from the
+    opening operational RAV in year 1 (Op_Rav!K12) — it never
+    depreciates and never earns a return."""
 
     BASE = {"constructionYears": 1, "devex": 0, "capex": 240,
             "idcRate": 0, "gearing": 0.5, "txDebtRate": 0,
@@ -160,14 +180,80 @@ class DepreciationTotalTest(unittest.TestCase):
         self.assertAlmostEqual(out["cap"]["depreciationAnnuity"], 8.0,
                                delta=1e-9)
 
-    def test_residual_left_standing_earns_the_return(self):
-        # residualValue = RAV: depreciation is zero every year, the
-        # opening RAV never declines, and the level collapses to the
-        # flat return on the standing residual: 0.05 x 240 = 12.
+    def test_residual_equal_to_rav_zeroes_the_capital_side(self):
+        # residualValue = RAV: the depreciable base is zero, so there is
+        # nothing to depreciate AND nothing earning a return — the
+        # residual is absent from the walk (Op_Rav!K12), not left
+        # standing. With no opex/decom the level is exactly 0. (The old
+        # convention paid r x RAV = 12/yr on the standing residual; the
+        # real model does not.)
         out = cffm_levels(dict(self.BASE, residualValue=240))
         self.assertAlmostEqual(out["cap"]["depreciationAnnuity"], 0.0,
                                delta=1e-12)
-        self.assertAlmostEqual(out["cap"]["level"], 12.0, delta=1e-9)
+        self.assertAlmostEqual(out["cap"]["returnAnnuity"], 0.0,
+                               delta=1e-12)
+        self.assertAlmostEqual(out["cap"]["level"], 0.0, delta=1e-12)
+
+
+class ResidualTimingTest(unittest.TestCase):
+    """Op_Rav!K12 (verified against CFFM v2.17): the residual is
+    deducted from the opening operational RAV in year 1 only, so the
+    whole capital walk runs on D = RAV - R and the level closed form is
+    D x AF x (2+r)/(2(1+r)) (+ opex). Hand case: single construction
+    year, capex 240, no IDC/tx/opex/decom, R = 40, floor 5% over 20
+    years — D = 200:
+      AF(0.05, 20)  = 0.05/(1 - 1.05^-20) = 0.080242587191
+      factor(0.05)  = 2.05/2.1            = 0.976190476190
+      level(R=40)   = 200 x AF x factor   = 15.666409880087
+      level(R=0)    = 240 x AF x factor   = 18.799691856105
+    """
+
+    BASE = {"constructionYears": 1, "devex": 0, "capex": 240,
+            "idcRate": 0, "gearing": 0.5, "txDebtRate": 0,
+            "txEquityRate": 0, "opexFixed": 0, "decom": 0, "opYears": 20,
+            "residualValue": 40, "floorRate": 0.05, "capRate": 0.07}
+
+    def test_hand_pinned_level_with_residual(self):
+        out = cffm_levels(self.BASE)
+        self.assertAlmostEqual(out["floor"]["level"], 15.666409880087,
+                               delta=1e-9)
+        self.assertAlmostEqual(
+            out["floor"]["level"],
+            200.0 * annuity_factor(0.05, 20) * capital_factor(0.05),
+            delta=1e-12)
+
+    def test_level_difference_decomposes_into_dep_and_return_changes(self):
+        # level(R) - level(0) must be exactly the annuitised
+        # depreciation change (-R/N: the flat stream annuitises to
+        # itself) plus the return change from the smaller base
+        # (-R x (AF x factor - 1/N)) — nothing else moves.
+        with_r = cffm_levels(self.BASE)["floor"]
+        without = cffm_levels(dict(self.BASE, residualValue=0))["floor"]
+        R, N = 40.0, 20
+        af_fac = annuity_factor(0.05, N) * capital_factor(0.05)
+        dep_change = (with_r["depreciationAnnuity"]
+                      - without["depreciationAnnuity"])
+        ret_change = with_r["returnAnnuity"] - without["returnAnnuity"]
+        self.assertAlmostEqual(dep_change, -R / N, delta=1e-9)
+        self.assertAlmostEqual(ret_change, -R * (af_fac - 1.0 / N),
+                               delta=1e-9)
+        self.assertAlmostEqual(with_r["level"] - without["level"],
+                               dep_change + ret_change, delta=1e-12)
+        self.assertAlmostEqual(with_r["level"] - without["level"],
+                               -R * af_fac, delta=1e-9)
+
+    def test_old_r_times_residual_overstatement_is_gone(self):
+        # The retired convention left the residual in the RAV earning
+        # r x R every year: level_old = (RAV - R x (1+r)^-N) x AF
+        #   = (240 - 40 x 1.05^-20) x 0.080242587191
+        #   = 18.048517438138.
+        # The corrected level with the residual absent from the walk is
+        # LOWER — 15.666409880087 — because the residual earns nothing.
+        out = cffm_levels(self.BASE)
+        old_convention = ((240.0 - 40.0 * 1.05 ** -20)
+                          * annuity_factor(0.05, 20))
+        self.assertAlmostEqual(old_convention, 18.048517438138, delta=1e-9)
+        self.assertLess(out["floor"]["level"], old_convention)
 
 
 class TransactionCostTest(unittest.TestCase):
@@ -481,19 +567,30 @@ class JsPyParityShapeTest(unittest.TestCase):
               "capRate": 0.0748}
 
     def test_full_featured_case_pinned(self):
-        # Hand derivation:
+        # Hand derivation, independent of the engine's year loop:
         #   IDC walk (IdcFormulaTest's devex case): pre-op closing
         #     351.28471394, IDC total 31.28471394.
         #   tx = 351.28471394 x (0.55 x 0.01 + 0.45 x 0.04)
         #      = 351.28471394 x 0.0235 = 8.25519078.
-        #   RAV = 359.53990472.
-        # Level, closed form (the telescoping identity — depreciation
-        # plus return on opening RAV discounted at (1+r)^-n sums to
-        # RAV - residual x (1+r)^-25 — plus the flat opex+decom block,
-        # which annuitises to itself):
-        #   level(r) = (RAV - 10 x (1+r)^-25) x AF(r) + 6
-        #   AF(0.0447) = 0.06723094 -> floor level 29.94689649
-        #   AF(0.0748) = 0.08955334 -> cap   level 38.05046583
+        #   RAV = 359.53990472; depreciable base D = RAV - 10.
+        # Level, closed form: the classic telescoping gives
+        # PV(dep + r x opening) = D; the Op_Rav!K38 averaged base
+        # return_n = r x (opening_n + closing_n/(1+r))/2 shifts that PV
+        # by -r x D/(2(1+r)) (closing_n = opening_{n+1}, closing_N = 0),
+        # so PV = D x (2+r)/(2(1+r)) — see capital_factor's docstring —
+        # and, with the flat opex+decom block annuitising to itself:
+        #   level(r) = (RAV - 10) x AF(r) x (2+r)/(2(1+r)) + 6
+        #   AF(0.0447) = 0.06723094, factor = 0.97860630
+        #     -> floor level 28.99714672
+        #   AF(0.0748) = 0.08955334, factor = 0.96520283
+        #     -> cap   level 36.21322856
+        # (Spreadsheet-style walk cross-check, floor side: opening year
+        # 1 = 349.53990, dep = 13.98159619/yr, closing year 1 =
+        # 335.55831; return year 1 = 0.0447 x (349.53990 +
+        # 335.55831/1.0447)/2 = 14.99105; summing all 25 discounted
+        # allowance rows (opex 6 + dep + return) gives NPV = 431.30658
+        # and NPV x AF = 28.99715, matching the closed form; the
+        # capital-only PV is 342.06195 = D x 0.97860630.)
         out = cffm_levels(self.INPUTS)
         self.assertAlmostEqual(out["idcTotal"], 31.284713944687045,
                                delta=1e-6)
@@ -502,8 +599,8 @@ class JsPyParityShapeTest(unittest.TestCase):
         rav = 359.5399047223872
         self.assertAlmostEqual(out["rav"], rav, delta=1e-6)
         for side, r in (("floor", 0.0447), ("cap", 0.0748)):
-            expected = ((rav - 10 * (1 + r) ** -25)
-                        * annuity_factor(r, 25) + 6)
+            expected = ((rav - 10) * annuity_factor(r, 25)
+                        * capital_factor(r) + 6)
             self.assertAlmostEqual(out[side]["level"], expected,
                                    delta=1e-6, msg=side)
             # Flat blocks annuitise to themselves; the three blocks sum
@@ -515,9 +612,9 @@ class JsPyParityShapeTest(unittest.TestCase):
                                    + out[side]["depreciationAnnuity"]
                                    + out[side]["opexBlock"],
                                    out[side]["level"], delta=1e-9)
-        self.assertAlmostEqual(out["floor"]["level"], 29.946896492071467,
+        self.assertAlmostEqual(out["floor"]["level"], 28.997146720273,
                                delta=1e-6)
-        self.assertAlmostEqual(out["cap"]["level"], 38.05046582991988,
+        self.assertAlmostEqual(out["cap"]["level"], 36.213228555972,
                                delta=1e-6)
 
     def test_source_fingerprints_match_in_both_files(self):
@@ -526,9 +623,13 @@ class JsPyParityShapeTest(unittest.TestCase):
         # A1.70's half-year-simple IDC denominator...
         self.assertIn("/ (2 + idcRate)", js)
         self.assertIn("/ (2 + idc_rate)", py)
-        # ...and A1.151's annuity factor, in each language's idiom.
+        # ...A1.151's annuity factor, in each language's idiom...
         self.assertIn("1 - Math.pow(1 +", js)
         self.assertIn("1 - (1 + r) ** -op_years", py)
+        # ...and the Op_Rav!K38 averaged return base (CFFM v2.17) —
+        # the same token in both languages by construction.
+        self.assertIn("(opening + closing / (1 + r)) / 2", js)
+        self.assertIn("(opening + closing / (1 + r)) / 2", py)
         # The mirror header contract must survive edits.
         self.assertIn("MIRRORS app/js/metrics.js (cffmLevels -> "
                       "cffm_levels,\ncffmCorridor -> cffm_corridor). "
@@ -569,10 +670,13 @@ class WorkbookExportTest(unittest.TestCase):
     (gb_ldes_minicffm.xlsx), the BESS WorkbookExport discipline applied
     to the LDES card. Fixture is
     tests/fixtures/ldes_wb_case_1/{inputs.json, workbook.b64}, captured
-    2026-08-29 by driving the app's real card on the dev server (:8137)
-    — filling every field through the delegated input listener and
-    intercepting the "Export model (Excel)" button's own Blob — so the
-    bytes are exactly what a reader downloads, not a re-serialisation.
+    2026-08-29 and re-captured 2026-08-30 (the CFFM v2.17 correction:
+    averaged return base, year-1 residual deduction, factor-identity
+    check rows) by driving the app's real card on the dev server
+    (:8137) — filling every field through the delegated input listener
+    and intercepting the "Export model (Excel)" button's own Blob — so
+    the bytes are exactly what a reader downloads, not a
+    re-serialisation.
 
     inputs.json carries the ENGINE-level input shape (fractions, the
     same keys cffm_levels consumes) plus mw and the three gross-margin
@@ -707,10 +811,11 @@ class WorkbookExportTest(unittest.TestCase):
             self.assertEqual(g.value("Cover", cover_ref),
                              g.value("Levels", levels_ref), cover_ref)
 
-    # 9. the telescoping-identity check rows: PV(depreciation + return)
-    # discounted at each rate equals RAV less the discounted residual —
-    # the engine's return base exists to guarantee this, so both rows
-    # must evaluate to (numerically) zero.
+    # 9. the factor-identity check rows: the capital annuity —
+    # (PV(depreciation) + PV(return)) x AF at each rate — equals
+    # depreciable RAV x AF x (2+r)/(2(1+r)), the arithmetic of Ofgem's
+    # averaged return base under end-of-year discounting (CFFM v2.17),
+    # so both rows must evaluate to (numerically) zero.
     def test_identity_check_rows_are_zero(self):
         g = self._grid()
         for ref in ("E51", "E52"):
@@ -748,16 +853,17 @@ class WorkbookExportTest(unittest.TestCase):
                                    delta=self._tol(want), msg=ref)
 
     # 11. the card's own advertised identity (methodology: "zero opex,
-    # zero residual: level = RAV x AF"), through the workbook's
-    # formulas with the cost cells zeroed in memory — and the check
-    # rows must stay at zero under the overrides too.
-    def test_simple_variant_level_is_rav_times_annuity_factor(self):
+    # zero residual: level = RAV x AF x (2+r)/(2(1+r))"), through the
+    # workbook's formulas with the cost cells zeroed in memory — and
+    # the check rows must stay at zero under the overrides too.
+    def test_simple_variant_level_is_the_factor_identity(self):
         g, inputs = self._variant(opexFixed=0.0, decom=0.0,
                                   residualValue=0.0)
         rav = g.value("Levels", "E12")
         for ref, rate in (("E33", inputs["floorRate"]),
                           ("E34", inputs["capRate"])):
-            want = rav * annuity_factor(rate, inputs["opYears"])
+            want = (rav * annuity_factor(rate, inputs["opYears"])
+                    * capital_factor(rate))
             self.assertAlmostEqual(g.value("Levels", ref), want,
                                    delta=self._tol(want), msg=ref)
         for ref in ("E51", "E52"):
@@ -796,6 +902,49 @@ class WorkbookExportTest(unittest.TestCase):
     def test_defined_names(self):
         self.assertEqual(self.names.get("FLOOR_RATE"), "Inputs!$E$17")
         self.assertEqual(self.names.get("CAP_RATE"), "Inputs!$E$18")
+
+
+class OfgemExampleAnchorTest(unittest.TestCase):
+    """Documentation anchor from the CFFM v2.17 verification (plan/10
+    D85, 2026-08-30). Ofgem's own illustrative dataset, read straight
+    off the workbook's cells:
+
+      RAV at start of operations   613.916473  £m
+      cap level, ex-tax            62.396189   £m/yr
+      notional floor, ex-tax       50.309813   £m/yr
+
+    A replica of the model's arithmetic matched its cached values to
+    ~1e-13. Measured against those cells, this engine's remaining
+    structural gaps — after the return-base and residual-timing
+    corrections this file pins — are exactly the DOCUMENTED ones:
+
+      no corporation-tax loop   true levels exceed ex-tax by ~+13.2%
+                                (cap), ~+10.6% (notional floor),
+                                ~+5.4% (ACOD floor)
+      no Repex                  ~0.3-0.7% of the levels (populated in
+                                Ofgem's own example)
+      one-shot transaction      ~-1% (the real model capitalises IDC
+      costs                     on early debt transaction costs)
+      construction profile      spread evenly here; profiled there
+
+    No engine-parity assertion is made on these numbers: mapping the
+    example's inputs profile-faithfully needs Repex and transaction-
+    cost IDC the mini engine deliberately omits, and forcing a fake
+    parity through fudged inputs would pin nothing real. The corrected
+    engine's exact match to the model's ex-tax CAPITAL arithmetic is
+    what CffmFactorIdentityTest and ResidualTimingTest pin; this class
+    records the verification's measured constants so they live beside
+    those tests rather than only in plan/10."""
+
+    RAV_GBPM = 613.916473
+    CAP_EX_TAX_GBPM_YR = 62.396189
+    NOTIONAL_FLOOR_EX_TAX_GBPM_YR = 50.309813
+
+    def test_no_profile_faithful_mapping_is_asserted(self):
+        self.skipTest(
+            "documentation constants only — a profile-faithful mapping "
+            "of Ofgem's example needs Repex and transaction-cost IDC "
+            "the mini engine deliberately omits (plan/10 D85)")
 
 
 if __name__ == "__main__":

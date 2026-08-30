@@ -902,16 +902,21 @@ const Metrics = (() => {
      Ofgem's LDES cap-and-floor financial model (CFFM), reduced to its
      ex-tax real-terms core (D73/D74): RAV build with interest during
      construction (IDC), transaction costs, straight-line depreciation,
-     an NPV-neutral return on RAV, and annuity flattening — computed
-     separately at the floor rate and the cap rate. Deliberately OUT of
-     scope: the corporation-tax loop (levels here are ex-tax; the real
-     CFFM adds a grossed-up nominal tax annuity), Repex, the ACOD floor,
-     and the partial-indexation switch (dropped by Ofgem). Everything is
-     flat real terms — no inflation arithmetic anywhere. Mirrored by
-     ops/ldes_cffm_figures.py; same discipline as the BESS block above:
-     pure null-safe functions, no DOM, no State — the card owns inputs
-     and rendering, this module owns arithmetic only. Formula references
-     (A1.x) are to the CFFM Handbook v2.1, annex A1. ================== */
+     the model's averaged-base return on RAV, and annuity flattening —
+     computed separately at the floor rate and the cap rate.
+     Deliberately OUT of scope: the corporation-tax loop (levels here
+     are ex-tax; the real CFFM adds a grossed-up nominal tax annuity —
+     measured on Ofgem's own illustrative dataset the omission leaves
+     these levels roughly 10-13% below the true ones), Repex, the ACOD
+     floor, and the partial-indexation switch (dropped by Ofgem).
+     Everything is flat real terms — no inflation arithmetic anywhere.
+     Mirrored by ops/ldes_cffm_figures.py; same discipline as the BESS
+     block above: pure null-safe functions, no DOM, no State — the card
+     owns inputs and rendering, this module owns arithmetic only.
+     Formula references (A1.x) are to the CFFM Handbook v2.1, annex A1;
+     cell references (Op_Rav!.., Allowances_Cap!..) are to CFFM v2.17,
+     against which the capital arithmetic was verified (plan/10 D85,
+     2026-08-30). ====================================================== */
 
   /* Floor and cap levels (£m/yr, flat real, ex-tax). `inputs`, all real
      £m unless stated:
@@ -942,23 +947,23 @@ const Metrics = (() => {
        x txEquityRate). The real model also capitalises IDC on early
        debt transaction costs; this mini version does not.
      - RAV at start of operations = closing pre-op RAV + tx.
-       Depreciation runs the RAV down TO residualValue (assumption —
-       the handbook does not state the sign convention): depreciable
-       base = RAV - residualValue, straight-line over opYears (no Repex,
-       so no re-spread), the residual left standing at the end.
-     - NPV-neutral return, per operational year n at rate r:
-       return_n = r x openingRAV_n. Under this block's end-of-year
-       discounting ((1+r)^-n from the start of operations, A1.153) the
-       opening RAV is the UNIQUE return base for which
-       PV(depreciation + return) telescopes exactly to
-       RAV - residualValue x (1+r)^-opYears — the classic result the
-       NPV-neutral base exists to guarantee, pinned by the annuity
-       identity test. The full CFFM instead averages opening and
-       discounted closing RAV (A1.143), which is neutral only under its
-       own intra-year receipt timing; carried over verbatim here it
-       would undershoot the identity by (2+r)/(2(1+r)) (2.1% at the
-       floor rate), so the mini model states the base it actually uses
-       rather than approximating the big model's.
+       Residual timing (mirrors Op_Rav!K12's -I29 year-1 deduction,
+       verified against CFFM v2.17): the residual is deducted from the
+       opening operational RAV in year 1, so the whole walk — both
+       depreciation AND the return — runs on the depreciable base
+       RAV - residualValue, straight-line to ZERO over opYears (no
+       Repex, so no re-spread). The residual never depreciates and
+       NEVER earns a return; it is simply absent from the walk.
+     - Return, per operational year n at rate r (mirrors Op_Rav!K38/
+       K39, verified against CFFM v2.17): closing_n = opening_n -
+       depreciation, and return_n = r x (opening_n + closing_n/(1+r))/2
+       — the model's average of the opening RAV and the closing RAV
+       discounted one year, each side at its own rate. Combined with
+       this block's plain end-of-year discounting ((1+r)^-n from the
+       start of operations, Allowances_Cap!K36), the capital-side
+       annuity satisfies level = depreciable base x AF x
+       (2+r)/(2(1+r)) — NOT level = RAV x AF: that factor is IN
+       Ofgem's own levels, and the factor identity test pins it.
      - Annuitisation at each rate (A1.151):
        annuityFactor = r / (1 - (1+r)^-opYears) (r = 0 degenerates to
        1/opYears, an explicit branch like annuityPayment's); NPV =
@@ -995,15 +1000,17 @@ const Metrics = (() => {
       * (gearing * txDebtRate + (1 - gearing) * txEquityRate);
     const rav = preOpRav + txTotal;
 
-    const depreciation = (rav - residualValue) / opYears;
+    const depreciable = rav - residualValue;
+    const depreciation = depreciable / opYears;
     const side = (r) => {
-      let opening = rav, npvReturn = 0, npvDep = 0, npvOpex = 0;
+      let opening = depreciable, npvReturn = 0, npvDep = 0, npvOpex = 0;
       for (let n = 1; n <= opYears; n++) {
         const disc = Math.pow(1 + r, -n);
-        npvReturn += r * opening * disc;
+        const closing = opening - depreciation;
+        npvReturn += r * (opening + closing / (1 + r)) / 2 * disc;
         npvDep += depreciation * disc;
         npvOpex += (opexFixed + decom) * disc;
-        opening -= depreciation;
+        opening = closing;
       }
       const annuityFactor = r === 0 ? 1 / opYears
         : r / (1 - Math.pow(1 + r, -opYears));

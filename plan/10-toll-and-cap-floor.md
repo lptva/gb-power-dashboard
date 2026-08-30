@@ -366,38 +366,58 @@ all state that genuine levels sit above the ex-tax ones.**
   than a loud omission. The card-meta says "ex-tax" on the card itself,
   not only in the methodology.
 
-### D75: return base = rate × opening RAV
+### D75: return base matches Op_Rav!K38 (corrected 2026-08-30 after verification against CFFM v2.17)
 
-**Each operational year's return is rate × opening RAV, deviating from
-handbook A1.143, which averages the opening and the discounted closing
-RAV within the year.**
+**Each operational year's return is rate × the average of the opening
+RAV and the closing RAV discounted one year — the CFFM's own base
+(`Op_Rav!K38 = AVERAGE(opening, closing/(1+r))`), each side at its own
+rate, combined with plain end-of-year discounting
+(`Allowances_Cap!K36 = (1+r)^-year`).**
 
-- The engine agent's finding, recorded verbatim: the averaged base,
-  carried over into this model's end-of-year discounting, breaks the
-  annuity identity by (2+r)/(2(1+r)) — about 2.1% at the floor rate.
-  Its NPV-neutrality in the real CFFM comes from intra-year receipt
-  timing that this model does not replicate. The handbook publishes no
-  worked example, so the annuity identity (level = RAV × annuity
-  factor with every side block off) is the only available parity
-  anchor — and under end-of-year discounting the opening-RAV base is
-  the unique base for which PV(depreciation + return) telescopes
-  exactly to the RAV, satisfying that identity. The mini model states
-  the base it actually uses rather than approximating the big model's.
-- Pinned by `AnnuityIdentityTest` in `tests/test_ldes_cffm.py`, so the
-  choice cannot silently regress.
+- The original choice (shipped with Phase 3) was rate × opening RAV.
+  Why it was made: the handbook (A1.143) describes the averaged base
+  but publishes no worked example, so the annuity identity
+  (level = RAV × AF with every side block off) looked like the only
+  available parity anchor, and the opening-RAV base is the unique one
+  satisfying it under end-of-year discounting; the averaged base was
+  believed NPV-neutral only under intra-year receipt timing this
+  model lacks.
+- What the workbook showed (cell-level verification against the real
+  CFFM v2.17): the model combines the averaged base with plain
+  end-of-year discounting, so the (2+r)/(2(1+r)) factor is IN Ofgem's
+  levels — the model's capital-side annuity satisfies
+  level = depreciable RAV × AF × (2+r)/(2(1+r)), NOT
+  level = RAV × AF. The old justification's "intra-year receipt
+  timing" claim was false: nothing in the model re-times receipts to
+  neutralise the averaged base.
+- The correction: the engine (JS + Python mirror) now accumulates
+  return_n = r × (opening + closing/(1+r))/2 on the depreciable-base
+  walk, keeping end-of-year discounting unchanged; the corrected
+  factor identity is pinned by `CffmFactorIdentityTest` in
+  `tests/test_ldes_cffm.py` (replacing `AnnuityIdentityTest`), so the
+  base cannot silently regress in either direction.
 
-### D76: residual value is an end-of-regime value
+### D76: residual is deducted from the opening RAV in year 1 (corrected 2026-08-30 after verification against CFFM v2.17)
 
-**Depreciation runs the RAV down TO the residual value (depreciable
-base = RAV − residual), with the residual left standing — and still
-earning the return — at the end of the regime.**
+**The residual value is deducted from the opening operational RAV in
+year 1 only (`Op_Rav!K12 = -Inputs!I29`): both depreciation and the
+return run on the depreciable base RAV − residual, declining to zero —
+the residual never depreciates and never earns a return.**
 
-- The handbook leaves the sign convention unstated. This reading is
-  the standard regulatory-depreciation one, and it produces the
-  closed form the tests pin: level = (RAV − residual·(1+r)^−N)·AF + 
-  opex + decom. The default is zero residual, Ofgem's own default
-  (biddable), so the convention only matters when the reader types
-  one.
+- The original choice was "residual left standing, earning the return
+  until the end of the regime": the handbook leaves the convention
+  unstated, and that reading (the standard regulatory-depreciation
+  one) produced the then-pinned closed form
+  level = (RAV − residual·(1+r)^−N)·AF + opex + decom.
+- The workbook answered the question directly: `Op_Rav!K12` subtracts
+  the residual from the opening operational RAV in year 1, so it is
+  simply absent from the walk. The old convention overstated the
+  level by roughly r × residual per year; the corrected closed form is
+  level = (RAV − residual)·AF·(2+r)/(2(1+r)) + opex + decom, and
+  `ResidualTimingTest` pins the timing (including that the old
+  overstatement is gone). The default is zero residual, Ofgem's own
+  default (biddable), so the correction only moves levels when the
+  reader types one.
 
 ### D77: corridor arithmetic from the decision documents
 
@@ -579,9 +599,9 @@ D78's no-exports call.**
   walk (top-up, above-cap, 70% clawback, retained) with lifetime SUM
   cells and the FA cell (`"n/a"` on a non-positive floor, the
   engine's own guard), and two labelled check rows pinning the
-  telescoping identity \u2014 PV(depreciation + return) = RAV less the
-  discounted residual \u2014 at each rate, exactly true for this engine's
-  return base, so both must read 0.
+  factor identity \u2014 capital annuity = depreciable RAV \u00d7 AF \u00d7
+  (2+r)/(2(1+r)) (the D75/D85 correction) \u2014 at each rate, exactly
+  true for this engine's return base, so both must read 0.
 - The two grids are built for the CURRENT inputs (the BESS DCF's
   built-for-T convention): the builder regenerates per download, so a
   changed year count is a re-download, never a formula guard. The
@@ -597,9 +617,10 @@ D78's no-exports call.**
   cells) against `ops/ldes_cffm_figures.py` within
   `max(1e-6 x |x|, 0.01)`, both identity check rows at zero, plus
   three in-memory Inputs-override variants (ungeared/no-tx,
-  zero-opex-and-residual level = RAV x AF, and the rate-0 annuity
-  branch) re-verified against the mirror \u2014 the live-formula claim
-  under test: new inputs, same cells, engine-parity output.
+  zero-opex-and-residual level = RAV x AF x (2+r)/(2(1+r)), and the
+  rate-0 annuity branch) re-verified against the mirror \u2014 the
+  live-formula claim under test: new inputs, same cells,
+  engine-parity output.
 
 ### D83: rule-based result annotations on both calculators
 
@@ -710,3 +731,47 @@ a parameter table loads as data.
   BOM first bytes, parameter block against the tiles for a full
   toll-plus-debt case and a required-only case, blank separator,
   year-table schema byte-identical, LDES exports untouched.
+
+### D85: engine verified against CFFM v2.17
+
+**The mini-CFFM's capital arithmetic was verified cell by cell against
+Ofgem's actual cap-and-floor financial model, CFFM v2.17, on
+2026-08-30; the D75 (return base) and D76 (residual timing) decisions
+above were corrected in place as a result, and the corrected engine
+now matches the model's ex-tax capital arithmetic exactly.**
+
+- Method: a replica of the model's arithmetic, built from the
+  workbook's own formulas (`Op_Rav`, `Allowances_Cap` and friends),
+  matched its cached values to ~1e-13 — so the cell readings below
+  are the model's, not an interpretation of the handbook.
+- What the verification established, cell by cell:
+  - Return base: `Op_Rav!K38 = AVERAGE(opening, closing/(1+r))`,
+    return = base × r at each side's own rate, combined with plain
+    end-of-year discounting (`Allowances_Cap!K36 = (1+r)^-year`).
+    Consequence: the capital-side annuity satisfies
+    level = depreciable RAV × AF × (2+r)/(2(1+r)), not RAV × AF
+    (D75 corrected).
+  - Residual: `Op_Rav!K12 = -Inputs!I29`, deducted from the opening
+    operational RAV in year 1 only — it never depreciates and never
+    earns a return (D76 corrected).
+- Component diff, measured on Ofgem's own illustrative dataset
+  (RAV 613.916473, cap ex-tax 62.396189, notional floor ex-tax
+  50.309813 £m; the constants are also recorded beside the tests in
+  `OfgemExampleAnchorTest`) — our remaining DOCUMENTED gaps:
+  - no corporation-tax loop: true levels exceed ex-tax by ~+13.2%
+    (cap), ~+10.6% (notional floor), ~+5.4% (ACOD floor) — the
+    headline understatement, loudly stated on the card and in the
+    methodology;
+  - no Repex: ~0.3–0.7% of the levels (Repex is populated in Ofgem's
+    own example);
+  - one-shot transaction costs: ~−1% (the real model capitalises IDC
+    on early debt transaction costs);
+  - construction profile: capex spread evenly here, profiled there.
+- Shipped alongside: engine correction in `app/js/metrics.js` +
+  `ops/ldes_cffm_figures.py`; workbook builder's return rows,
+  opening-RAV row and check rows rewritten to the corrected
+  arithmetic (fixture `ldes_wb_case_1` re-captured);
+  `CffmFactorIdentityTest` / `ResidualTimingTest` / re-derived parity
+  pins; ui.js in-app methodology, methodology.md (judgement call 18
+  and the formula block), README caveat bullet and CHANGELOG all
+  updated with the measured numbers.

@@ -1517,3 +1517,38 @@ asset like yours — and does the corridor bite?". Decisions D73–D78.
   columns). Docs: in-app methodology CSV paragraph, methodology.md
   CSV downloads section and its free-text-exception sentence (now
   covering both calculators' note rows), plan/10 D84.
+
+### Mini-CFFM corrected to match Ofgem's CFFM v2.17 (2026-08-30)
+- What was wrong: the engine's return base was `rate × opening RAV`,
+  justified by the annuity identity `level = RAV × AF` and by a claim
+  that the handbook's averaged base (A1.143) was NPV-neutral only
+  under intra-year receipt timing; and the residual value was left
+  standing in the RAV, earning the return until the end of the regime.
+- How found: cell-level verification against the real CFFM v2.17
+  workbook (a replica matched its cached values to ~1e-13). The model
+  combines the averaged base (`Op_Rav!K38 = AVERAGE(opening,
+  closing/(1+r))`) with plain end-of-year discounting
+  (`Allowances_Cap!K36`), so the (2+r)/(2(1+r)) factor is IN Ofgem's
+  levels — the intra-year-timing claim was false; and `Op_Rav!K12`
+  deducts the residual from the opening operational RAV in year 1, so
+  it never earns a return.
+- What changed: `Metrics.cffmLevels` (+ the `ops/ldes_cffm_figures.py`
+  mirror) now returns `r × (opening + closing/(1+r))/2` on the
+  depreciable-base walk (RAV − residual, declining to zero); the
+  corrected closed form is
+  `level = (RAV − residual)·AF·(2+r)/(2(1+r)) + opex + decom` (levels
+  move DOWN slightly: ~−1.7% floor / ~−2.9% cap on a residual-free
+  case). Workbook builder: return rows, opening-RAV row and both
+  check rows rewritten (check: capital annuity = depreciable
+  RAV × AF × (2+r)/(2(1+r)) ≈ 0), fixture `ldes_wb_case_1`
+  re-captured. Tests: `CffmFactorIdentityTest` replaces
+  `AnnuityIdentityTest`, new `ResidualTimingTest`, parity pins
+  re-derived by hand, `OfgemExampleAnchorTest` records the
+  verification constants. Docs: plan/10 D75/D76 corrected in place +
+  D85 verification record, judgement call 18, in-app methodology,
+  README caveat bullet.
+- Remaining documented gaps (measured on Ofgem's own illustrative
+  dataset): no corporation-tax loop — true levels exceed ex-tax by
+  ~+13.2% (cap) / ~+10.6% (notional floor); no Repex (~0.3–0.7%);
+  one-shot transaction costs (~−1%); evenly-spread construction
+  profile.
